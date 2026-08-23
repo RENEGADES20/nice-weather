@@ -1,0 +1,3 @@
+# Fixture manifests verify exact response bytes. Keep those bytes unchanged
+# across Windows and POSIX checkouts.
+tests/fixtures/** -text
