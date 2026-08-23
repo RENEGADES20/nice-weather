@@ -118,4 +118,3 @@ def validate_city_config(config: CityConfig) -> None:
     )
     if any(value <= 0 for value in positive_values):
         raise ValueError("Freshness, runner, model and paper limits must be positive")
-

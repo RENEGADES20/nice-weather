@@ -1,0 +1,154 @@
+{
+  "capture": {
+    "received_at": "2026-08-23T04:41:57.331576Z",
+    "url": "https://aviationweather.gov/api/data/metar?ids=KLGA&format=json&taf=false&hours=24",
+    "http_status": 200,
+    "extract": "observation, receipt and Celsius temperature fields retained"
+  },
+  "observations": [
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-23T04:00:00Z",
+      "receiptTime": "2026-08-23T03:56:29.276Z",
+      "temp": 21.7
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-23T03:00:00Z",
+      "receiptTime": "2026-08-23T02:56:39.608Z",
+      "temp": 22.2
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-23T02:00:00Z",
+      "receiptTime": "2026-08-23T01:56:51.961Z",
+      "temp": 22.2
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-23T01:00:00Z",
+      "receiptTime": "2026-08-23T00:56:25.331Z",
+      "temp": 22.8
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-23T00:00:00Z",
+      "receiptTime": "2026-08-22T23:56:29.172Z",
+      "temp": 23.3
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T23:00:00Z",
+      "receiptTime": "2026-08-22T22:54:10.487Z",
+      "temp": 25
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T22:00:00Z",
+      "receiptTime": "2026-08-22T21:56:30.668Z",
+      "temp": 23.9
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T21:00:00Z",
+      "receiptTime": "2026-08-22T20:56:24.387Z",
+      "temp": 23.9
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T20:00:00Z",
+      "receiptTime": "2026-08-22T19:54:08.813Z",
+      "temp": 24.4
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T19:00:00Z",
+      "receiptTime": "2026-08-22T18:56:22.834Z",
+      "temp": 24.4
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T18:00:00Z",
+      "receiptTime": "2026-08-22T17:54:12.088Z",
+      "temp": 23.9
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T17:00:00Z",
+      "receiptTime": "2026-08-22T16:54:06.640Z",
+      "temp": 22.8
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T16:00:00Z",
+      "receiptTime": "2026-08-22T15:54:08.223Z",
+      "temp": 22.2
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T15:00:00Z",
+      "receiptTime": "2026-08-22T14:56:26.458Z",
+      "temp": 22.2
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T14:00:00Z",
+      "receiptTime": "2026-08-22T13:54:13.569Z",
+      "temp": 21.7
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T13:00:00Z",
+      "receiptTime": "2026-08-22T12:54:09.714Z",
+      "temp": 21.7
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T12:00:00Z",
+      "receiptTime": "2026-08-22T11:54:09.395Z",
+      "temp": 21.7
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T11:00:00Z",
+      "receiptTime": "2026-08-22T10:54:07.843Z",
+      "temp": 21.1
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T10:00:00Z",
+      "receiptTime": "2026-08-22T09:54:06.639Z",
+      "temp": 21.1
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T09:00:00Z",
+      "receiptTime": "2026-08-22T08:54:06.376Z",
+      "temp": 21.1
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T08:00:00Z",
+      "receiptTime": "2026-08-22T07:54:07.025Z",
+      "temp": 21.7
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T07:00:00Z",
+      "receiptTime": "2026-08-22T06:54:08.270Z",
+      "temp": 22.2
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T06:00:00Z",
+      "receiptTime": "2026-08-22T05:54:14.632Z",
+      "temp": 21.7
+    },
+    {
+      "icaoId": "KLGA",
+      "reportTime": "2026-08-22T05:00:00Z",
+      "receiptTime": "2026-08-22T04:54:14.105Z",
+      "temp": 21.7
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "capture": {
+    "received_at": "2026-08-23T04:42:51.888639Z",
+    "requested_url": "https://api.weather.gov/points/40.7772422,-73.8726056",
+    "final_url": "https://api.weather.gov/points/40.7772,-73.8726",
+    "http_status": 200,
+    "redirect_status": 301
+  },
+  "id": "https://api.weather.gov/points/40.7772,-73.8726",
+  "geometry": {
+    "type": "Point",
+    "coordinates": [
+      -73.8726,
+      40.7772
+    ]
+  },
+  "properties": {
+    "gridId": "OKX",
+    "gridX": 37,
+    "gridY": 46,
+    "forecast": "https://api.weather.gov/gridpoints/OKX/37,46/forecast",
+    "forecastHourly": "https://api.weather.gov/gridpoints/OKX/37,46/forecast/hourly",
+    "observationStations": "https://api.weather.gov/gridpoints/OKX/37,46/stations",
+    "timeZone": "America/New_York"
+  }
+}

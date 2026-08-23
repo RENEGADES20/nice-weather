@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
+from datetime import datetime
 from pathlib import Path
 
+from nice_weather.adapters.polymarket import PolymarketReadOnlyAdapter
+from nice_weather.adapters.weather import WeatherReadOnlyAdapter
 from nice_weather.config import load_city_config
+from nice_weather.domain import RunMode, utc_now
+from nice_weather.queries import DashboardQuery
+from nice_weather.runner import run_fixture_once, run_live_once
 from nice_weather.store import WeatherStore
 
 
@@ -20,7 +27,92 @@ def build_parser() -> argparse.ArgumentParser:
 
     config_parser = subparsers.add_parser("config-check", help="Validate NYC/KLGA config")
     config_parser.add_argument("--config", type=Path)
+
+    run_once = subparsers.add_parser("run-once", help="Run one decision cycle")
+    run_once.add_argument("--mode", choices=("fixture", "shadow", "paper"), required=True)
+    run_once.add_argument("--fixture", type=Path)
+    run_once.add_argument("--db", type=Path, required=True)
+    run_once.add_argument("--config", type=Path)
+    run_once.add_argument("--city", choices=("NYC",), default="NYC")
+
+    run_loop = subparsers.add_parser("run-loop", help="Run bounded-frequency live cycles")
+    run_loop.add_argument("--mode", choices=("shadow", "paper"), required=True)
+    run_loop.add_argument("--db", type=Path, required=True)
+    run_loop.add_argument("--config", type=Path)
+    run_loop.add_argument("--city", choices=("NYC",), default="NYC")
+    run_loop.add_argument("--interval-seconds", type=int, default=60)
+    run_loop.add_argument("--max-cycles", type=int)
+
+    smoke = subparsers.add_parser("smoke", help="Run one read-only source smoke test")
+    smoke.add_argument(
+        "--target", choices=("polymarket", "observations", "forecast", "dashboard"), required=True
+    )
+    smoke.add_argument("--city", choices=("NYC",), default="NYC")
+    smoke.add_argument("--config", type=Path)
+    smoke.add_argument("--db", type=Path)
     return parser
+
+
+def _decision_json(decision: object) -> str:
+    return json.dumps(
+        {
+            "decision_id": decision.decision_id,
+            "decision_time": decision.decision_time.isoformat(),
+            "mode": decision.mode.value,
+            "status": decision.status,
+            "overall_action": decision.overall_action,
+            "health": decision.health_level.value,
+            "reason_codes": [code.value for code in decision.reason_codes],
+            "approved_bins": [item.label for item in decision.outcomes if item.risk_approved],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _run_smoke(args: argparse.Namespace) -> dict[str, object]:
+    config = load_city_config(args.config)
+    now = utc_now()
+    if args.target == "polymarket":
+        with PolymarketReadOnlyAdapter() as adapter:
+            snapshot = adapter.discover(config, now)
+        events = snapshot.payload.get("events", [])
+        return {
+            "target": args.target,
+            "ok": len(events) == 1,
+            "event_ids": [str(event.get("id")) for event in events],
+            "received_at": snapshot.received_at.isoformat(),
+        }
+    if args.target == "observations":
+        start = datetime.combine(
+            now.astimezone(config.zone).date(), datetime.min.time(), config.zone
+        )
+        with WeatherReadOnlyAdapter() as adapter:
+            snapshot = adapter.fetch_observations(config.station_id, start, now)
+        return {
+            "target": args.target,
+            "ok": bool(snapshot.payload.get("observations")),
+            "count": len(snapshot.payload.get("observations", [])),
+            "received_at": snapshot.received_at.isoformat(),
+        }
+    if args.target == "forecast":
+        with WeatherReadOnlyAdapter() as adapter:
+            snapshots = adapter.fetch_forecast(config, now.astimezone(config.zone).date(), now)
+        hourly = next(snapshot for snapshot in snapshots if snapshot.kind == "hourly_forecast")
+        return {
+            "target": args.target,
+            "ok": bool(hourly.payload.get("properties", {}).get("periods")),
+            "count": len(hourly.payload.get("properties", {}).get("periods", [])),
+            "received_at": hourly.received_at.isoformat(),
+        }
+    if args.db is None:
+        raise SystemExit("--db is required for dashboard smoke")
+    summary = DashboardQuery(args.db).get_latest_decision_summary()
+    return {
+        "target": args.target,
+        "ok": summary is not None,
+        "decision_id": summary["decision_id"] if summary else None,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,9 +139,57 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if args.command == "run-once":
+        try:
+            if args.mode == "fixture":
+                if args.fixture is None:
+                    raise SystemExit("--fixture is required in fixture mode")
+                decision = run_fixture_once(args.fixture, args.db, args.config)
+            else:
+                decision = run_live_once(RunMode(args.mode.upper()), args.db, args.config)
+        except Exception as exc:
+            print(
+                json.dumps(
+                    {"status": "error", "error_type": type(exc).__name__, "message": str(exc)}
+                )
+            )
+            return 2
+        print(_decision_json(decision))
+        return 0
+    if args.command == "run-loop":
+        if args.interval_seconds < 5:
+            raise SystemExit("--interval-seconds must be at least 5")
+        mode = RunMode(args.mode.upper())
+        cycle = 0
+        try:
+            while args.max_cycles is None or cycle < args.max_cycles:
+                cycle += 1
+                try:
+                    decision = run_live_once(mode, args.db, args.config)
+                    print(_decision_json(decision), flush=True)
+                except Exception as exc:
+                    print(
+                        json.dumps(
+                            {
+                                "status": "cycle_error",
+                                "cycle": cycle,
+                                "error_type": type(exc).__name__,
+                                "message": str(exc),
+                            }
+                        ),
+                        flush=True,
+                    )
+                if args.max_cycles is None or cycle < args.max_cycles:
+                    time.sleep(args.interval_seconds)
+        except KeyboardInterrupt:
+            print(json.dumps({"status": "stopped", "cycles": cycle}))
+        return 0
+    if args.command == "smoke":
+        result = _run_smoke(args)
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0 if result["ok"] else 1
     raise AssertionError(f"Unhandled command: {args.command}")
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

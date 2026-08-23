@@ -237,7 +237,7 @@ class ProbabilityEstimate:
     model_version: str
     generated_at: datetime
     baseline_tmax_f: float
-    observed_tmax_f: float
+    observed_tmax_f: float | None
     mean_tmax_f: float
     median_tmax_f: float
     interval_low_f: float

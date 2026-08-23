@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 INSERT INTO schema_meta(version)
 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
+UPDATE schema_meta SET version = 2;
 
 CREATE TABLE IF NOT EXISTS raw_snapshots (
   snapshot_id TEXT PRIMARY KEY,
@@ -243,3 +244,9 @@ CREATE TABLE IF NOT EXISTS runner_heartbeats (
   status TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS runner_locks (
+  lock_name TEXT PRIMARY KEY,
+  owner_id TEXT NOT NULL,
+  acquired_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
