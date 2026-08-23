@@ -1,0 +1,493 @@
+{
+  "capture": {
+    "received_at": "2026-08-23T04:41:42.283783Z",
+    "url_template": "https://clob.polymarket.com/book?token_id={yes_token_id}",
+    "http_status": 200,
+    "depth": "five closest levels retained"
+  },
+  "books": [
+    {
+      "market": "0x8f22dd115d18e3ddf2fb94838ecc3d983a760333e0c249e25fdf471a581edbcb",
+      "asset_id": "72729876794135747639443285240013162704395907721964766605955132705609778679658",
+      "timestamp": "1787460038261",
+      "hash": "2f6d6c85260948a51e8154096bf4ae2acc61b7ee",
+      "tick_size": "0.001",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.001",
+          "size": "78"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.014",
+          "size": "30"
+        },
+        {
+          "price": "0.013",
+          "size": "50"
+        },
+        {
+          "price": "0.006",
+          "size": "590"
+        },
+        {
+          "price": "0.005",
+          "size": "400"
+        },
+        {
+          "price": "0.004",
+          "size": "5"
+        }
+      ]
+    },
+    {
+      "market": "0x592563ad26563f9c550f2acfeeccd09386c9e157fd505326ec6cb02a2159561d",
+      "asset_id": "41505517671433943974888589600782754556680403527242676738152348377859770464187",
+      "timestamp": "1787460007247",
+      "hash": "a921a6c9df54eb3e543f7fea4dc7e8f94d72e2d7",
+      "tick_size": "0.001",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.001",
+          "size": "78"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.014",
+          "size": "30"
+        },
+        {
+          "price": "0.013",
+          "size": "50"
+        },
+        {
+          "price": "0.006",
+          "size": "460"
+        },
+        {
+          "price": "0.005",
+          "size": "400"
+        },
+        {
+          "price": "0.004",
+          "size": "5"
+        }
+      ]
+    },
+    {
+      "market": "0x600911f84d4db3de3e517b7468d3a24845babb42e19b361429f656bcc9d34ea7",
+      "asset_id": "33368428570654482349757804489561036997228924758308660788152105124699598900319",
+      "timestamp": "1787459771854",
+      "hash": "095e1348d08241c48603f5e486ad4f417448ab48",
+      "tick_size": "0.001",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.001",
+          "size": "78"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.04",
+          "size": "32"
+        },
+        {
+          "price": "0.039",
+          "size": "50"
+        },
+        {
+          "price": "0.006",
+          "size": "330"
+        },
+        {
+          "price": "0.005",
+          "size": "400"
+        },
+        {
+          "price": "0.004",
+          "size": "5"
+        }
+      ]
+    },
+    {
+      "market": "0x3ea8e61c315bd14c8df459210a2a5a10fd0f89ff047ab924edfada6edf3021da",
+      "asset_id": "36852245070851497358303607184312158700598641275097186533724920427870472932983",
+      "timestamp": "1787460008169",
+      "hash": "6eb3ec63d1e2b9814f44e35ced6fd2af018cb0e3",
+      "tick_size": "0.001",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.001",
+          "size": "88"
+        },
+        {
+          "price": "0.002",
+          "size": "100"
+        },
+        {
+          "price": "0.005",
+          "size": "80"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.049",
+          "size": "50"
+        },
+        {
+          "price": "0.048",
+          "size": "50"
+        },
+        {
+          "price": "0.04",
+          "size": "10"
+        },
+        {
+          "price": "0.03",
+          "size": "10"
+        },
+        {
+          "price": "0.02",
+          "size": "10"
+        }
+      ]
+    },
+    {
+      "market": "0xea98659c79d0b2e0f3262b9221f21bfabd77bdd6cf390332c78588a128bfe056",
+      "asset_id": "3721402518198055261833618063452056351310992607368914703890007277003076065445",
+      "timestamp": "1787459780935",
+      "hash": "befd22434e652d2c2d02d60e100486f0e6b3565c",
+      "tick_size": "0.01",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.01",
+          "size": "318.11"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.1",
+          "size": "70"
+        },
+        {
+          "price": "0.09",
+          "size": "20"
+        },
+        {
+          "price": "0.08",
+          "size": "20"
+        },
+        {
+          "price": "0.07",
+          "size": "52"
+        },
+        {
+          "price": "0.06",
+          "size": "208"
+        }
+      ]
+    },
+    {
+      "market": "0xc954518cf569d6ab5dbd9224052d8fe2735cd489c0ffe074ac098c0129f102e5",
+      "asset_id": "44642062591155974496468632580612528472995559213753820462092026573255729070026",
+      "timestamp": "1787460081854",
+      "hash": "f03cc005b6566535f3f27049edcb8ddec2e92a0f",
+      "tick_size": "0.01",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.02",
+          "size": "773"
+        },
+        {
+          "price": "0.03",
+          "size": "20"
+        },
+        {
+          "price": "0.04",
+          "size": "15"
+        },
+        {
+          "price": "0.05",
+          "size": "155"
+        },
+        {
+          "price": "0.06",
+          "size": "110"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.16",
+          "size": "10"
+        },
+        {
+          "price": "0.14",
+          "size": "10"
+        },
+        {
+          "price": "0.12",
+          "size": "165"
+        },
+        {
+          "price": "0.11",
+          "size": "90"
+        },
+        {
+          "price": "0.09",
+          "size": "82.5"
+        }
+      ]
+    },
+    {
+      "market": "0x0e4b7be2d9fd8fb5e408087025971892df8b821e85e91a5daccecf6ae1dd4640",
+      "asset_id": "29021338058883778837184563856390400887275370826838581154455937498117062593073",
+      "timestamp": "1787460092300",
+      "hash": "f8157204a9ad24431f53bfe5bc78212b21e92641",
+      "tick_size": "0.01",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.18",
+          "size": "11.11"
+        },
+        {
+          "price": "0.19",
+          "size": "15.79"
+        },
+        {
+          "price": "0.22",
+          "size": "20"
+        },
+        {
+          "price": "0.23",
+          "size": "301.25"
+        },
+        {
+          "price": "0.24",
+          "size": "596.78"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.29",
+          "size": "50"
+        },
+        {
+          "price": "0.28",
+          "size": "220"
+        },
+        {
+          "price": "0.27",
+          "size": "20"
+        },
+        {
+          "price": "0.26",
+          "size": "174"
+        },
+        {
+          "price": "0.25",
+          "size": "112"
+        }
+      ]
+    },
+    {
+      "market": "0xb0fccb5c47d9fc83424a90ab21d75265cf661b415231b83e15c13e89fa69129d",
+      "asset_id": "67913620292064703140021904281032033758453605245871508343496490926812792485268",
+      "timestamp": "1787460091856",
+      "hash": "85350ca4188d6ea3ede5ea5476eebfa1cd7360cd",
+      "tick_size": "0.01",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.31",
+          "size": "30"
+        },
+        {
+          "price": "0.32",
+          "size": "35"
+        },
+        {
+          "price": "0.53",
+          "size": "34"
+        },
+        {
+          "price": "0.54",
+          "size": "88.33"
+        },
+        {
+          "price": "0.55",
+          "size": "289"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.61",
+          "size": "20"
+        },
+        {
+          "price": "0.6",
+          "size": "30"
+        },
+        {
+          "price": "0.59",
+          "size": "50"
+        },
+        {
+          "price": "0.58",
+          "size": "129.56"
+        },
+        {
+          "price": "0.57",
+          "size": "177"
+        }
+      ]
+    },
+    {
+      "market": "0xd5bd2f0de52c631850b4c8869eab4402afee7ef55545055becda92fe65f23b76",
+      "asset_id": "89417399206391283526949500888917902214370746982952681379663940046503627494939",
+      "timestamp": "1787460092823",
+      "hash": "53fa214b14486713cd72ca05b8bfeedd10b8ab6b",
+      "tick_size": "0.01",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.05",
+          "size": "130"
+        },
+        {
+          "price": "0.06",
+          "size": "117"
+        },
+        {
+          "price": "0.07",
+          "size": "15"
+        },
+        {
+          "price": "0.08",
+          "size": "123.33"
+        },
+        {
+          "price": "0.09",
+          "size": "77"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.19",
+          "size": "14.69"
+        },
+        {
+          "price": "0.15",
+          "size": "64"
+        },
+        {
+          "price": "0.14",
+          "size": "50"
+        },
+        {
+          "price": "0.12",
+          "size": "196.81"
+        },
+        {
+          "price": "0.11",
+          "size": "65"
+        }
+      ]
+    },
+    {
+      "market": "0xcfc1f060e7710fda31dbce1eaf86a615e1d57012aa90e68656e3581df426dc6f",
+      "asset_id": "88593643235132692906918820026537725724050985571424356773360699819915587547583",
+      "timestamp": "1787460092397",
+      "hash": "665edff4d7d2c96db3e8f75d33060b7d5a01f01c",
+      "tick_size": "0.01",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.01",
+          "size": "58"
+        },
+        {
+          "price": "0.02",
+          "size": "272"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.2",
+          "size": "30"
+        },
+        {
+          "price": "0.11",
+          "size": "28.08"
+        },
+        {
+          "price": "0.1",
+          "size": "50"
+        },
+        {
+          "price": "0.07",
+          "size": "160"
+        },
+        {
+          "price": "0.06",
+          "size": "26"
+        }
+      ]
+    },
+    {
+      "market": "0x9194048de0ed0eb71b9835cf695c5fc5891edc722e95b2741705c2624a2c5f4f",
+      "asset_id": "97241578986346850006750647978158480309244838190483355940236963613269089595104",
+      "timestamp": "1787459801853",
+      "hash": "f61ccdf1c47b73b75618dd6756a65dd642cb27cc",
+      "tick_size": "0.01",
+      "min_order_size": "5",
+      "neg_risk": true,
+      "bids": [
+        {
+          "price": "0.01",
+          "size": "353"
+        }
+      ],
+      "asks": [
+        {
+          "price": "0.07",
+          "size": "32.25"
+        },
+        {
+          "price": "0.06",
+          "size": "50"
+        },
+        {
+          "price": "0.05",
+          "size": "39"
+        },
+        {
+          "price": "0.04",
+          "size": "20"
+        },
+        {
+          "price": "0.02",
+          "size": "12.1"
+        }
+      ]
+    }
+  ]
+}

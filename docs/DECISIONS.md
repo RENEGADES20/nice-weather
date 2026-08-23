@@ -320,6 +320,66 @@ Runner 是唯一 writer；Dashboard 不访问外部 API、不计算概率或信�
 
 当单 writer 的吞吐、恢复或查询延迟无法覆盖多城市、多市场或更高频订单簿需求时，重新评估运行层和存储方案。
 
+## D-022：首版概率采用 NWS hourly Tmax 与固定正态不确定性
+
+日期：2026-08-23
+
+决定：
+
+目标纽约当地日的 NWS hourly 最高温作为 baseline Tmax；当日已实现 KLGA Tmax 作为分布均值下限；最终 Tmax 使用固定 `sigma=3°F` 的正态研究基线，并按来源整华氏度规则以半度连续边界积分到完整互斥档位。概率和必须位于 `1 ± 1e-6`。
+
+原因：
+
+透明基线可以完整追溯到 hourly forecast、METAR 和合约档位，不依赖训练平台或历史校准基础设施。
+
+影响：
+
+模型版本、均值、中位数、80% 区间、概率和和输入 snapshot ID 全部入库并显示。固定 sigma 明确标为未校准研究假设；预报缺失、当地日覆盖不足或概率和异常阻止候选。
+
+重新评估条件：
+
+连续 Paper 收集足够机场日样本后，使用严格 as-of 数据评估 bias、spread 和档位校准，再决定是否加入集合预报或动态 sigma。
+
+## D-023：Paper 使用显示深度、VWAP、动态 taker fee 与保守恢复
+
+日期：2026-08-23
+
+决定：
+
+新建 YES 仓使用 Ask 深度，退出使用 Bid 深度；计划数量逐层计算 VWAP。净优势扣除动态天气市场 fee、VWAP slippage、0.02 uncertainty buffer，并要求至少 0.03。PaperBroker 支持六种订单状态、部分成交、稳定 fill key、重复 book 幂等、现金预留、Bid mark、realized/unrealized/total P&L 与最终档位情景 P&L。
+
+原因：
+
+页面摘要价不能代表可成交价格；显示深度与保守成本假设可以避免首版系统性高估 edge。稳定 ID 和 SQLite 恢复用于防止重启后的重复成交和账目漂移。
+
+影响：
+
+SHADOW 永远不创建 Paper 订单。PAPER 仍为本地模拟，不调用外部交易接口。每次新决策先取消失效的未完成旧订单，再按当前完整 state 重新审批。首版不模拟排队位置、隐藏流动性、maker rebate 或微秒撮合。
+
+重新评估条件：
+
+完成 PAPER CANARY 并积累订单簿更新和实际成交可比样本后，再评估挂单持续周期、排队模型和 WebSocket 增量簿。
+
+## D-024：main 使用短生命周期分支、PR 与最小 required CI
+
+日期：2026-08-23
+
+决定：
+
+canonical repository 固定为 `RENEGADES20/nice-weather`。首次 main 提交只包含审阅后的项目骨架；后续功能通过短生命周期 feature branch 和 Pull Request 进入 `main`，采用 squash merge，不建立长期 `develop` 分支。active Ruleset `Protect main` 要求 `lint`、`unit`、`fixture-dashboard` 三项检查通过并解决 review conversations，required approvals 暂为 0，同时禁止删除和 force push。
+
+原因：
+
+该流程为公开仓库提供可复现的最小质量门槛，并使 fixture、领域逻辑、SQLite 和 Dashboard 在同一变更集内接受联合验证。当前仓库只有单一开发者，将 approval 数设为 0 可以避免无人可审批导致的自锁。
+
+影响：
+
+CI 主路径完全使用 fixture，不依赖外部 API。Live smoke、持续 Runner 和 PAPER CANARY 由人工执行或另行调度，不阻止日常 PR。公开提交继续使用明确路径 allowlist，研究归档、PPT、SQLite、日志、缓存和本机 X 研究工具保持在仓库之外。
+
+重新评估条件：
+
+仓库加入独立 reviewer 后，将 required approvals 调整为 1；只有在发布频率、部署目标或团队规模明显增加时再评估额外 CI/CD 或分支策略。
+
 ## 新决策模板
 
 ```markdown

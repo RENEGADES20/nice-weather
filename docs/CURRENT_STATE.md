@@ -1,12 +1,12 @@
 # 当前状态
 
-最后更新：2026-08-22
+最后更新：2026-08-23
 
 ## 当前阶段
 
-项目处于“纽约 KLGA MVP 独立项目骨架实施中，fixture 纵向闭环待完成”的阶段。
+项目处于“纽约 KLGA MVP 纵向闭环已通过 PR #1 验收并合并至受保护 main，待人工批准 PAPER CANARY”的阶段。
 
-新项目目录已经确定首版范围、架构接口和三周实施路线，并开始建立独立 Python package、SQLite schema、配置、测试和 CI。旧代码仅按能力审计后择要迁移，研究资料仍在旧项目：
+独立 Python package、真实 API fixture、合约解析、Tmax 概率、Signal/Risk、PaperBroker、SQLite WAL、持续 Runner、统一查询层和 Streamlit Dashboard 已形成一条可执行主链。旧代码仅按能力审计后择要迁移，研究资料仍在旧项目：
 
 ```text
 D:\ALLPROJECTS\x learner
@@ -58,48 +58,41 @@ D:\ALLPROJECTS\x learner\天气预测市场交易系统_项目启动会.pptx
 
 ## 当前主要缺口
 
-- 连续 Polymarket L2 订单簿采集。
-- 连续 METAR、模型运行、规则和修订版本采集。
-- 同时保存 `source_time` 与 `received_at` 的事件存储。
-- 可重复、确定性的机场日事件回放。
-- Nautilus Polymarket 适配技术验证。
-- 订单状态恢复、重连与持仓对账。
-- 长期实时纸盘监控。
-- 足够规模的概率校准与样本外策略结果。
+- PAPER CANARY 尚未人工批准和启动；当前实际 live 验证只运行 SHADOW。
+- 尚未连续运行 3 个 Paper canary 市场日和 10 个 continuous paper 市场日。
+- 基线正态分布固定 `sigma=3°F`，没有经过样本外校准。
+- CLOB 使用 REST 快照，尚未接 WebSocket 增量簿或 maker 排队模型。
+- 自动结算等待 Gamma winning outcome；跨机场日未完成结算的旧持仓仍需人工对账。
+- 外部 API 失败已有 `system_events`、循环续跑和 heartbeat，尚未经过长时间断流与重连演练。
+- Nautilus Trader、复杂回放、集合预报和多城市继续后置。
 
-## 2026-08-22 MVP 工程骨架
+## 2026-08-23 MVP 纵向闭环
 
 - 项目包名固定为 `nice_weather`，运行时使用轻量 Runner，Nautilus Trader 继续后置。
 - NYC/KLGA 数据新鲜度、模型、Signal 和 Paper 限额集中在 `config/nyc_klga.toml`。
-- SQLite 采用单 writer、WAL 和 Dashboard 只读短连接。
-- 首版 Dashboard 固定为单 Streamlit 应用和 Plotly 图表。
-- 当前新增内容仍需完成真实 fixture、端到端决策、PaperBroker、Dashboard 和 live smoke 验收。
+- SQLite 采用 writer lease、WAL、完整 decision 事务和 Dashboard 只读短连接。
+- 真实 fixture 固定 Gamma event `892623`、11 个 YES token 订单簿、KLGA METAR、NWS points/hourly、接收时间和 SHA-256。
+- Fixture 重复运行得到稳定 decision/order/fill ID；当前真实快照产生 `82-83°F` Paper 候选和一次成交。
+- PaperBroker 支持 submitted、accepted、partially_filled、filled、canceled、rejected、重复 book 幂等、Bid 退出、恢复、账目和情景 P&L。
+- 单个 Streamlit/Plotly 应用实现 Overview、Market Detail、Paper、System & Audit 四个 tabs，全部读取同一个 `complete decision_id`。
+- 2026-08-23 live smoke：Gamma event `888236`、3 条 KLGA METAR、156 个 NWS period 均成功；一次 SHADOW 和两个连续 SHADOW 周期健康为 `OK`，Paper 订单与 fill 均为 0。
+- Streamlit 实际进程 `/_stcore/health` 返回 `ok`；本地完整测试当前为 22 passed。
+- GitHub PR #1 的 `lint`、`unit`、`fixture-dashboard` 均通过；功能分支以 squash 方式合并到 `main`。
+- `main` 由 active Ruleset `Protect main` 保护：必须通过 PR，required approvals 为 0，必须解决 review conversations，三项 CI 均为 required check，并禁止删除和 force push。
 
 ## 推荐的下一步
 
-### 第一优先级：建立纽约 MVP 项目骨架
+### 第一优先级：人工检查 LIVE SHADOW
 
-建立代码、数据、配置和运行产物目录；落地 `CityConfig(NYC/KLGA)`、三类数据适配器和 SQLite 事件存储。
+至少覆盖两个连续 KLGA 市场日，核对规则文本、订单簿接收年龄、METAR、NWS 覆盖、no-trade 原因和 Dashboard decision trace。
 
-### 第二优先级：完成 KLGA 机场日数据闭环
+### 第二优先级：经人工批准后运行 PAPER CANARY
 
-围绕 Polymarket 纽约最高温市场持续保存：
+保持 100 美元起始现金、单档 5 美元和单机场日 20 美元限额，运行 3 个市场日并人工对账订单、部分成交、退出、持仓、P&L 和恢复。
 
-- 合约规则与站点映射。
-- 市场元数据。
-- L2 快照与增量。
-- 成交。
-- METAR。
-- 天气模型版本。
-- 本地接收时间。
+### 第三优先级：持续运行与验收
 
-### 第三优先级：完成概率、风险与 Paper 订单闭环
-
-实现合约解析、基线 Tmax 概率、信号、风险审批、`PaperBroker`、订单生命周期与 P&L。历史测试继续遵守 as-of 数据边界，首个 MVP 不把大型回放平台作为前置交付。
-
-### 第四优先级：持续运行与验收
-
-完成 Runner、数据新鲜度、异常停机、日志和演示验收。Nautilus Trader 保留为后续运行层技术验证，不阻塞首版。
+完成 10 个连续市场日的持续 Paper、断流、重启、规则版本变化和结算验收。Nautilus Trader 保留为后续运行层技术验证。
 
 ## 当前 MVP 固定口径
 

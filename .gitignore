@@ -1,4 +1,5 @@
 .venv/
+*.egg-info/
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -24,4 +25,3 @@ assets/
 *.pptx
 *.pptx.inspect.ndjson
 ~$*
-

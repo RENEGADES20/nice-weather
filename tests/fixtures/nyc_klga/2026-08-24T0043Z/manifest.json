@@ -1,0 +1,29 @@
+{
+  "fixture_id": "nyc-klga-2026-08-24T0043Z",
+  "captured_from_real_public_apis": true,
+  "decision_time": "2026-08-23T04:43:00Z",
+  "mode": "FIXTURE",
+  "city_code": "NYC",
+  "station_id": "KLGA",
+  "market_local_date": "2026-08-24",
+  "timezone": "America/New_York",
+  "files": {
+    "gamma_event": "gamma_event.json",
+    "clob_books": "clob_books.json",
+    "aviationweather_metar": "aviationweather_metar.json",
+    "nws_points": "nws_points.json",
+    "nws_hourly": "nws_hourly.json"
+  },
+  "sha256": {
+    "aviationweather_metar.json": "8d81a66a6483ea3d36478518813844511c89ba70d6d0c5ef5a4c522c39bd1ac8",
+    "clob_books.json": "f125eef5297c12d4e2bb415a4063326f8f7666791723f7c877b058023bc24a45",
+    "gamma_event.json": "5f84370f044f757caf84340bd9d5aa0b8f3aa85b310f01444df99118df31b63f",
+    "nws_hourly.json": "44ad2dc67dbc95a2fe7d9af7758f6da596bd6bdc711288307e3f13d753eb2194",
+    "nws_points.json": "9ea8ff27f43fbb5cdfc8f397b505aeb913e0b24dff0b1aa812a53f1d8446b86a"
+  },
+  "notes": [
+    "Responses are review-friendly field-preserving extracts of the cited public API responses.",
+    "No wallet, credential, private key, order endpoint, or paid API was used.",
+    "NWS point request returned 301 to the supported coordinate precision; both URLs are retained."
+  ]
+}
