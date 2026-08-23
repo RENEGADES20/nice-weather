@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.env
+.env.*
+!.env.example
+var/
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.log
+
+# Local research and presentation artifacts are reviewed separately before publication.
+research_runs/
+tools/
+.ppt-build/
+assets/
+纽约天气交易MVP_项目架构与流程/
+*.pptx
+*.pptx.inspect.ndjson
+~$*
+

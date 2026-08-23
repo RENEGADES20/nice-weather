@@ -1,0 +1,43 @@
+[city]
+city_code = "NYC"
+city_name = "New York City"
+station_id = "KLGA"
+station_name = "LaGuardia Airport"
+latitude = 40.7772422
+longitude = -73.8726056
+timezone = "America/New_York"
+metric = "daily_max_temperature"
+allowed_units = ["F"]
+
+[freshness]
+market_metadata_seconds = 900
+order_book_seconds = 90
+observation_age_seconds = 5400
+observation_receipt_seconds = 300
+forecast_issue_seconds = 21600
+forecast_receipt_seconds = 1200
+runner_heartbeat_seconds = 135
+
+[runner]
+poll_interval_seconds = 60
+metadata_interval_seconds = 300
+observation_interval_seconds = 120
+forecast_interval_seconds = 900
+dashboard_refresh_seconds = 10
+
+[model]
+version = "baseline-nws-normal-v1"
+sigma_f = 3.0
+uncertainty_interval = 0.80
+
+[signal]
+uncertainty_buffer = 0.02
+minimum_net_edge = 0.03
+target_notional = 5.0
+
+[paper]
+starting_cash = 100.0
+max_bin_notional = 5.0
+max_city_day_notional = 20.0
+stale_order_cycles = 2
+
