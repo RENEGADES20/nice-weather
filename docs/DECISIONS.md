@@ -360,6 +360,26 @@ SHADOW 永远不创建 Paper 订单。PAPER 仍为本地模拟，不调用外部
 
 完成 PAPER CANARY 并积累订单簿更新和实际成交可比样本后，再评估挂单持续周期、排队模型和 WebSocket 增量簿。
 
+## D-024：main 使用短生命周期分支、PR 与最小 required CI
+
+日期：2026-08-23
+
+决定：
+
+canonical repository 固定为 `RENEGADES20/nice-weather`。首次 main 提交只包含审阅后的项目骨架；后续功能通过短生命周期 feature branch 和 Pull Request 进入 `main`，采用 squash merge，不建立长期 `develop` 分支。active Ruleset `Protect main` 要求 `lint`、`unit`、`fixture-dashboard` 三项检查通过并解决 review conversations，required approvals 暂为 0，同时禁止删除和 force push。
+
+原因：
+
+该流程为公开仓库提供可复现的最小质量门槛，并使 fixture、领域逻辑、SQLite 和 Dashboard 在同一变更集内接受联合验证。当前仓库只有单一开发者，将 approval 数设为 0 可以避免无人可审批导致的自锁。
+
+影响：
+
+CI 主路径完全使用 fixture，不依赖外部 API。Live smoke、持续 Runner 和 PAPER CANARY 由人工执行或另行调度，不阻止日常 PR。公开提交继续使用明确路径 allowlist，研究归档、PPT、SQLite、日志、缓存和本机 X 研究工具保持在仓库之外。
+
+重新评估条件：
+
+仓库加入独立 reviewer 后，将 required approvals 调整为 1；只有在发布频率、部署目标或团队规模明显增加时再评估额外 CI/CD 或分支策略。
+
 ## 新决策模板
 
 ```markdown

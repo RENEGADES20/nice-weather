@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-项目处于“纽约 KLGA MVP 纵向闭环可运行，待 feature PR 合并与人工批准 PAPER CANARY”的阶段。
+项目处于“纽约 KLGA MVP 纵向闭环已通过 PR #1 验收并合并至受保护 main，待人工批准 PAPER CANARY”的阶段。
 
 独立 Python package、真实 API fixture、合约解析、Tmax 概率、Signal/Risk、PaperBroker、SQLite WAL、持续 Runner、统一查询层和 Streamlit Dashboard 已形成一条可执行主链。旧代码仅按能力审计后择要迁移，研究资料仍在旧项目：
 
@@ -77,22 +77,20 @@ D:\ALLPROJECTS\x learner\天气预测市场交易系统_项目启动会.pptx
 - 单个 Streamlit/Plotly 应用实现 Overview、Market Detail、Paper、System & Audit 四个 tabs，全部读取同一个 `complete decision_id`。
 - 2026-08-23 live smoke：Gamma event `888236`、3 条 KLGA METAR、156 个 NWS period 均成功；一次 SHADOW 和两个连续 SHADOW 周期健康为 `OK`，Paper 订单与 fill 均为 0。
 - Streamlit 实际进程 `/_stcore/health` 返回 `ok`；本地完整测试当前为 22 passed。
+- GitHub PR #1 的 `lint`、`unit`、`fixture-dashboard` 均通过；功能分支以 squash 方式合并到 `main`。
+- `main` 由 active Ruleset `Protect main` 保护：必须通过 PR，required approvals 为 0，必须解决 review conversations，三项 CI 均为 required check，并禁止删除和 force push。
 
 ## 推荐的下一步
 
-### 第一优先级：完成 feature PR 与 main 保护
-
-提交当前 feature branch，等待 `lint`、`unit`、`fixture-dashboard` 三项 CI，通过 PR 合并 main 并启用 required checks、禁止 force push 和分支删除。
-
-### 第二优先级：人工检查 LIVE SHADOW
+### 第一优先级：人工检查 LIVE SHADOW
 
 至少覆盖两个连续 KLGA 市场日，核对规则文本、订单簿接收年龄、METAR、NWS 覆盖、no-trade 原因和 Dashboard decision trace。
 
-### 第三优先级：经人工批准后运行 PAPER CANARY
+### 第二优先级：经人工批准后运行 PAPER CANARY
 
 保持 100 美元起始现金、单档 5 美元和单机场日 20 美元限额，运行 3 个市场日并人工对账订单、部分成交、退出、持仓、P&L 和恢复。
 
-### 第四优先级：持续运行与验收
+### 第三优先级：持续运行与验收
 
 完成 10 个连续市场日的持续 Paper、断流、重启、规则版本变化和结算验收。Nautilus Trader 保留为后续运行层技术验证。
 
