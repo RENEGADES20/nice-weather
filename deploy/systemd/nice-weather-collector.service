@@ -1,0 +1,23 @@
+[Unit]
+Description=Nice Weather KLGA official weather collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nice-weather
+Group=nice-weather
+WorkingDirectory=/opt/nice-weather
+Environment=PYTHONUNBUFFERED=1
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/nice-weather/.playwright
+ExecStart=/opt/nice-weather/.venv/bin/nice-weather collect-weather --db /var/lib/nice-weather/weather.sqlite3 --config /etc/nice-weather/collector.toml
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nice-weather
+
+[Install]
+WantedBy=multi-user.target

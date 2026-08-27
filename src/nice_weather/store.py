@@ -15,7 +15,10 @@ from nice_weather.domain import (
     PaperOrderStatus,
     ProbabilityEstimate,
     RawSnapshot,
+    SettlementEvidence,
+    SourceCapture,
     UnifiedState,
+    content_hash,
     stable_id,
 )
 from nice_weather.paper import (
@@ -59,7 +62,28 @@ class WeatherStore:
             raise RuntimeError("Cannot initialize schema through a read-only connection")
         schema = files("nice_weather").joinpath("schema.sql").read_text(encoding="utf-8")
         self.connection.executescript(schema)
+        self._migrate_v3_columns()
         self.connection.commit()
+
+    def _migrate_v3_columns(self) -> None:
+        columns = {
+            row["name"]
+            for row in self.connection.execute("PRAGMA table_info(weather_observations)")
+        }
+        additions = {
+            "source": "TEXT NOT NULL DEFAULT 'aviationweather'",
+            "temperature_c": "REAL",
+            "raw_unit": "TEXT",
+            "quality_control_json": "TEXT NOT NULL DEFAULT '{}'",
+            "source_version": "TEXT",
+            "revision": "INTEGER NOT NULL DEFAULT 1",
+            "local_date": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                self.connection.execute(
+                    f'ALTER TABLE weather_observations ADD COLUMN "{name}" {definition}'
+                )
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -208,6 +232,417 @@ class WeatherStore:
                 ),
             )
 
+    def save_source_capture(
+        self,
+        capture: SourceCapture,
+        *,
+        payload: Any,
+        observations: list[dict[str, Any]] | None = None,
+        forecast_periods: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Persist one changed source response and its normalized rows atomically."""
+        with self.transaction() as connection:
+            inserted = connection.execute(
+                """
+                INSERT OR IGNORE INTO source_captures(
+                  capture_id, source, kind, station_id, requested_at, source_time,
+                  observed_at, issued_at, received_at, local_date, source_version,
+                  content_hash, request_url, http_status, content_type, content_encoding,
+                  raw_size_bytes, raw_blob
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    capture.capture_id,
+                    capture.source,
+                    capture.kind,
+                    capture.station_id,
+                    self._iso(capture.requested_at),
+                    self._iso(capture.source_time),
+                    self._iso(capture.observed_at),
+                    self._iso(capture.issued_at),
+                    self._iso(capture.received_at),
+                    capture.local_date.isoformat(),
+                    capture.source_version,
+                    capture.content_hash,
+                    capture.request_url,
+                    capture.http_status,
+                    capture.content_type,
+                    capture.content_encoding,
+                    len(capture.raw_bytes),
+                    capture.raw_bytes,
+                ),
+            ).rowcount
+            if not inserted:
+                return False
+            if capture.content_type == "application/json":
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO raw_snapshots(
+                      snapshot_id, source, kind, source_time, observed_at, issued_at,
+                      valid_from, valid_to, received_at, source_version, content_hash,
+                      event_id, market_id, token_id, request_url, http_status,
+                      duplicate_of_snapshot_id, payload_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        capture.capture_id,
+                        capture.source,
+                        capture.kind,
+                        self._iso(capture.source_time),
+                        self._iso(capture.observed_at),
+                        self._iso(capture.issued_at),
+                        None,
+                        None,
+                        self._iso(capture.received_at),
+                        capture.source_version,
+                        capture.content_hash,
+                        None,
+                        None,
+                        None,
+                        capture.request_url,
+                        capture.http_status,
+                        None,
+                        self.dumps(payload),
+                    ),
+                )
+            for item in observations or []:
+                observed_at = item["observed_at"]
+                observation_hash = content_hash(
+                    {
+                        "temperature_f": item.get("temperature_f"),
+                        "temperature_c": item.get("temperature_c"),
+                        "raw_unit": item.get("raw_unit"),
+                        "raw_text": item.get("raw_text", ""),
+                        "quality_control": item.get("quality_control", {}),
+                    }
+                )
+                revision = int(
+                    connection.execute(
+                        """
+                        SELECT COUNT(*) FROM weather_observations
+                        WHERE station_id=? AND observed_at=? AND source=?
+                        """,
+                        (capture.station_id, self._iso(observed_at), capture.source),
+                    ).fetchone()[0]
+                ) + 1
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO weather_observations(
+                      observation_id, snapshot_id, station_id, observed_at, received_at,
+                      temperature_f, raw_text, source, temperature_c, raw_unit,
+                      quality_control_json, source_version, revision, local_date
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        stable_id(
+                            "observation",
+                            capture.source,
+                            observed_at,
+                            observation_hash,
+                        ),
+                        capture.capture_id,
+                        capture.station_id,
+                        self._iso(observed_at),
+                        self._iso(capture.received_at),
+                        item.get("temperature_f"),
+                        item.get("raw_text", ""),
+                        capture.source,
+                        item.get("temperature_c"),
+                        item.get("raw_unit"),
+                        self.dumps(item.get("quality_control", {})),
+                        capture.source_version,
+                        revision,
+                        observed_at.astimezone(item["zone"]).date().isoformat(),
+                    ),
+                )
+            if forecast_periods is not None:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO weather_forecasts VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        stable_id("forecast", capture.source, capture.content_hash),
+                        capture.capture_id,
+                        capture.source,
+                        capture.station_id,
+                        self._iso(capture.issued_at or capture.received_at),
+                        self._iso(capture.received_at),
+                        capture.local_date.isoformat(),
+                        capture.source_version,
+                        capture.content_hash,
+                        len(forecast_periods),
+                    ),
+                )
+                for item in forecast_periods:
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO forecast_points(
+                          forecast_point_id, snapshot_id, source, issued_at, valid_at,
+                          received_at, temperature_f
+                        ) VALUES(?,?,?,?,?,?,?)
+                        """,
+                        (
+                            stable_id(
+                                "forecast_point",
+                                capture.content_hash,
+                                item["valid_at"],
+                            ),
+                            capture.capture_id,
+                            capture.source,
+                            self._iso(capture.issued_at or capture.received_at),
+                            self._iso(item["valid_at"]),
+                            self._iso(capture.received_at),
+                            item["temperature_f"],
+                        ),
+                    )
+        return True
+
+    def save_settlement_evidence(self, evidence: SettlementEvidence) -> bool:
+        screenshot_hash = None
+        if evidence.screenshot_png is not None:
+            import hashlib
+
+            screenshot_hash = hashlib.sha256(evidence.screenshot_png).hexdigest()
+        with self.transaction() as connection:
+            return bool(
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO settlement_evidence VALUES(
+                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
+                    )
+                    """,
+                    (
+                        evidence.evidence_id,
+                        evidence.capture_id,
+                        evidence.station_id,
+                        evidence.local_date.isoformat(),
+                        self._iso(evidence.received_at),
+                        self._iso(evidence.page_updated_at),
+                        evidence.tmax_f,
+                        self._iso(evidence.first_next_day_observed_at),
+                        evidence.first_next_day_temperature_f,
+                        evidence.table_text,
+                        evidence.parse_status,
+                        evidence.no_trade_reason,
+                        int(evidence.finalized),
+                        evidence.screenshot_png,
+                        screenshot_hash,
+                    ),
+                ).rowcount
+            )
+
+    def latest_settlement_evidence(self, local_date: Any) -> sqlite3.Row | None:
+        value = local_date.isoformat() if hasattr(local_date, "isoformat") else str(local_date)
+        return self.connection.execute(
+            """
+            SELECT * FROM settlement_evidence
+            WHERE local_date=? ORDER BY received_at DESC LIMIT 1
+            """,
+            (value,),
+        ).fetchone()
+
+    def pending_source_captures(self, limit: int = 2000) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT capture.* FROM source_captures AS capture
+            WHERE NOT EXISTS (
+              SELECT 1 FROM r2_export_items AS item WHERE item.source_id=capture.capture_id
+            )
+            ORDER BY capture.received_at LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def pending_screenshots(self, limit: int = 200) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            """
+            SELECT * FROM settlement_evidence AS evidence
+            WHERE screenshot_png IS NOT NULL AND NOT EXISTS (
+              SELECT 1 FROM r2_export_items AS item WHERE item.source_id=evidence.evidence_id
+            )
+            ORDER BY received_at LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def record_r2_export(
+        self,
+        *,
+        export_id: str,
+        export_type: str,
+        source: str | None,
+        local_date: str,
+        object_key: str,
+        sha256: str,
+        size_bytes: int,
+        source_ids: list[str],
+        created_at: datetime,
+        uploaded_at: datetime | None,
+        status: str,
+        error: str | None = None,
+    ) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT INTO r2_exports(
+                  export_id, export_type, source, local_date, object_key, sha256,
+                  size_bytes, source_ids_json, created_at, uploaded_at, status, error
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(object_key) DO UPDATE SET
+                  uploaded_at=excluded.uploaded_at,
+                  status=excluded.status,
+                  error=excluded.error
+                """,
+                (
+                    export_id,
+                    export_type,
+                    source,
+                    local_date,
+                    object_key,
+                    sha256,
+                    size_bytes,
+                    self.dumps(source_ids),
+                    self._iso(created_at),
+                    self._iso(uploaded_at),
+                    status,
+                    error,
+                ),
+            )
+            if status == "uploaded":
+                for source_id in source_ids:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO r2_export_items VALUES(?,?)",
+                        (export_id, source_id),
+                    )
+
+    def rows_for_local_date(self, table: str, local_date: str) -> list[dict[str, Any]]:
+        if table == "forecast_points":
+            rows = self.connection.execute(
+                """
+                SELECT point.* FROM forecast_points AS point
+                JOIN source_captures AS capture ON capture.capture_id=point.snapshot_id
+                WHERE capture.local_date=? ORDER BY point.valid_at, point.forecast_point_id
+                """,
+                (local_date,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+        allowed = {
+            "source_captures": "local_date",
+            "weather_observations": "local_date",
+            "weather_forecasts": "local_date",
+            "settlement_evidence": "local_date",
+        }
+        if table not in allowed:
+            raise ValueError(f"Unsupported export table: {table}")
+        rows = self.connection.execute(
+            f'SELECT * FROM "{table}" WHERE "{allowed[table]}"=? ORDER BY rowid',
+            (local_date,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            for key, value in tuple(item.items()):
+                if isinstance(value, bytes):
+                    item[key] = None
+            result.append(item)
+        return result
+
+    def r2_usage_summary(self) -> dict[str, Any]:
+        row = self.connection.execute(
+            """
+            SELECT COALESCE(SUM(size_bytes), 0) AS bytes,
+                   MIN(uploaded_at) AS first_upload,
+                   MAX(uploaded_at) AS last_upload,
+                   COUNT(*) AS object_count
+            FROM r2_exports WHERE status='uploaded'
+            """
+        ).fetchone()
+        return dict(row)
+
+    def r2_exports_for_day(self, local_date: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            """
+            SELECT export_type, source, object_key, sha256, size_bytes, uploaded_at
+            FROM r2_exports WHERE local_date=? AND status='uploaded'
+            ORDER BY object_key
+            """,
+            (local_date,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def has_r2_export(self, export_type: str, local_date: str) -> bool:
+        return (
+            self.connection.execute(
+                """
+                SELECT 1 FROM r2_exports
+                WHERE export_type=? AND local_date=? AND status='uploaded' LIMIT 1
+                """,
+                (export_type, local_date),
+            ).fetchone()
+            is not None
+        )
+
+    def collector_status(self) -> dict[str, Any]:
+        now = datetime.now().astimezone()
+        sources = []
+        rows = self.connection.execute(
+            """
+            SELECT source, kind, MAX(received_at) AS last_received_at, COUNT(*) AS versions
+            FROM source_captures GROUP BY source, kind ORDER BY source, kind
+            """
+        ).fetchall()
+        for row in rows:
+            received_at = datetime.fromisoformat(row["last_received_at"])
+            sources.append(
+                {
+                    "source": row["source"],
+                    "kind": row["kind"],
+                    "last_received_at": row["last_received_at"],
+                    "age_seconds": max(0.0, (now - received_at).total_seconds()),
+                    "versions": int(row["versions"]),
+                }
+            )
+        errors = self.connection.execute(
+            """
+            SELECT occurred_at, source, event_type, message FROM system_events
+            WHERE context_json LIKE '%\"collector\":true%'
+            ORDER BY occurred_at DESC LIMIT 10
+            """
+        ).fetchall()
+        settlement = self.connection.execute(
+            """
+            SELECT local_date, received_at, tmax_f, parse_status, no_trade_reason,
+                   finalized, first_next_day_observed_at
+            FROM settlement_evidence ORDER BY received_at DESC LIMIT 1
+            """
+        ).fetchone()
+        storage_rows = self.connection.execute(
+            """
+            SELECT local_date, source, COUNT(*) AS captures,
+                   COALESCE(SUM(raw_size_bytes), 0) AS compressed_raw_bytes
+            FROM source_captures
+            WHERE local_date=(SELECT MAX(local_date) FROM source_captures)
+            GROUP BY local_date, source ORDER BY source
+            """
+        ).fetchall()
+        screenshot_row = self.connection.execute(
+            """
+            SELECT COALESCE(SUM(LENGTH(screenshot_png)), 0) AS screenshot_bytes
+            FROM settlement_evidence
+            WHERE local_date=(SELECT MAX(local_date) FROM settlement_evidence)
+            """
+        ).fetchone()
+        return {
+            "sources": sources,
+            "recent_errors": [dict(row) for row in errors],
+            "latest_settlement": dict(settlement) if settlement is not None else None,
+            "latest_local_date_storage": {
+                "sources": [dict(row) for row in storage_rows],
+                "screenshot_bytes": int(screenshot_row["screenshot_bytes"]),
+            },
+            "r2": self.r2_usage_summary(),
+        }
+
     @staticmethod
     def dumps(value: Any) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -282,7 +717,12 @@ class WeatherStore:
                         )
             for item in state.observations:
                 connection.execute(
-                    "INSERT OR REPLACE INTO weather_observations VALUES(?,?,?,?,?,?,?)",
+                    """
+                    INSERT OR REPLACE INTO weather_observations(
+                      observation_id, snapshot_id, station_id, observed_at, received_at,
+                      temperature_f, raw_text
+                    ) VALUES(?,?,?,?,?,?,?)
+                    """,
                     (
                         stable_id("observation", item.snapshot_id, item.observed_at),
                         item.snapshot_id,

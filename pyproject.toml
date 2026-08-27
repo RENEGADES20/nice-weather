@@ -16,7 +16,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+collector = [
+  "boto3>=1.35,<2",
+  "playwright>=1.48,<2",
+  "pyarrow>=17,<22",
+]
 dev = [
+  "boto3>=1.35,<2",
+  "pyarrow>=17,<22",
   "pytest>=8,<10",
   "ruff>=0.9,<1",
 ]

@@ -8,3 +8,6 @@ def test_nyc_klga_config_is_fixed_to_mvp_scope() -> None:
     assert config.timezone == "America/New_York"
     assert config.allowed_units == ("F",)
     assert config.model.sigma_f == 3.0
+    assert config.collector.metar_interval_seconds == 120
+    assert config.collector.forecast_interval_seconds == 900
+    assert config.collector.nws_observation_interval_seconds == 300

@@ -25,6 +25,18 @@ observation_interval_seconds = 120
 forecast_interval_seconds = 900
 dashboard_refresh_seconds = 10
 
+[collector]
+metar_interval_seconds = 120
+forecast_interval_seconds = 900
+nws_observation_interval_seconds = 300
+settlement_interval_seconds = 3600
+settlement_close_interval_seconds = 120
+r2_sync_interval_seconds = 900
+daily_export_hour = 3
+daily_export_minute = 15
+storage_warning_bytes = 7516192768
+settlement_url = "https://www.weather.gov/wrh/timeseries?site=KLGA"
+
 [model]
 version = "baseline-nws-normal-v1"
 sigma_f = 3.0
@@ -40,4 +52,3 @@ starting_cash = 100.0
 max_bin_notional = 5.0
 max_city_day_notional = 20.0
 stale_order_cycles = 2
-

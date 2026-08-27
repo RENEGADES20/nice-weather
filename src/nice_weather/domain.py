@@ -94,6 +94,60 @@ class RawSnapshot:
 
 
 @dataclass(frozen=True)
+class SourceCapture:
+    capture_id: str
+    source: str
+    kind: str
+    station_id: str
+    requested_at: datetime
+    received_at: datetime
+    local_date: date
+    source_version: str
+    content_hash: str
+    request_url: str
+    http_status: int
+    content_type: str
+    raw_bytes: bytes
+    source_time: datetime | None = None
+    observed_at: datetime | None = None
+    issued_at: datetime | None = None
+    content_encoding: str = "gzip"
+
+    def __post_init__(self) -> None:
+        for name in ("requested_at", "received_at"):
+            require_aware(getattr(self, name), name)
+        for name in ("source_time", "observed_at", "issued_at"):
+            value = getattr(self, name)
+            if value is not None:
+                require_aware(value, name)
+
+
+@dataclass(frozen=True)
+class SettlementEvidence:
+    evidence_id: str
+    capture_id: str
+    station_id: str
+    local_date: date
+    received_at: datetime
+    table_text: str
+    parse_status: str
+    tmax_f: float | None = None
+    page_updated_at: datetime | None = None
+    first_next_day_observed_at: datetime | None = None
+    first_next_day_temperature_f: float | None = None
+    no_trade_reason: str | None = None
+    finalized: bool = False
+    screenshot_png: bytes | None = None
+
+    def __post_init__(self) -> None:
+        require_aware(self.received_at, "received_at")
+        for name in ("page_updated_at", "first_next_day_observed_at"):
+            value = getattr(self, name)
+            if value is not None:
+                require_aware(value, name)
+
+
+@dataclass(frozen=True)
 class ContractBin:
     bin_id: str
     label: str

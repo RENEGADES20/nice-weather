@@ -15,6 +15,7 @@ var/
 *.sqlite3-shm
 *.sqlite3-wal
 *.log
+weather data api.txt
 
 # Local research and presentation artifacts are reviewed separately before publication.
 research_runs/

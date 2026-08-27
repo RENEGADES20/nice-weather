@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import time
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from nice_weather.adapters.polymarket import PolymarketReadOnlyAdapter
 from nice_weather.adapters.weather import WeatherReadOnlyAdapter
+from nice_weather.collector import WeatherCollector
 from nice_weather.config import load_city_config
 from nice_weather.domain import RunMode, utc_now
 from nice_weather.queries import DashboardQuery
+from nice_weather.r2_archive import R2Archive
 from nice_weather.runner import run_fixture_once, run_live_once
 from nice_weather.store import WeatherStore
 
@@ -50,6 +53,26 @@ def build_parser() -> argparse.ArgumentParser:
     smoke.add_argument("--city", choices=("NYC",), default="NYC")
     smoke.add_argument("--config", type=Path)
     smoke.add_argument("--db", type=Path)
+
+    collect = subparsers.add_parser("collect-weather", help="Collect KLGA weather source versions")
+    collect.add_argument("--db", type=Path, required=True)
+    collect.add_argument("--config", type=Path)
+    collect.add_argument("--once", action="store_true")
+    collect.add_argument("--skip-settlement", action="store_true")
+
+    r2_check = subparsers.add_parser("r2-check", help="Verify append-only R2 write and read")
+    r2_check.add_argument("--db", type=Path, required=True)
+    r2_check.add_argument("--config", type=Path)
+
+    r2_sync = subparsers.add_parser("r2-sync", help="Upload pending captures and daily Parquet")
+    r2_sync.add_argument("--db", type=Path, required=True)
+    r2_sync.add_argument("--config", type=Path)
+    r2_sync.add_argument("--local-date", type=date.fromisoformat)
+    r2_sync.add_argument("--no-daily", action="store_true")
+
+    status = subparsers.add_parser("collector-status", help="Show source and storage health")
+    status.add_argument("--db", type=Path, required=True)
+    status.add_argument("--config", type=Path)
     return parser
 
 
@@ -188,6 +211,64 @@ def main(argv: list[str] | None = None) -> int:
         result = _run_smoke(args)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0 if result["ok"] else 1
+    if args.command == "collect-weather":
+        config = load_city_config(args.config)
+        collector = WeatherCollector(config, str(args.db))
+        if args.once:
+            results = collector.collect_once(include_settlement=not args.skip_settlement)
+            print(json.dumps({"results": results}, ensure_ascii=False, sort_keys=True))
+            return 0 if all(result["ok"] for result in results) else 1
+        if args.skip_settlement:
+            raise SystemExit("--skip-settlement is supported only with --once")
+        try:
+            collector.run_forever()
+        except KeyboardInterrupt:
+            print(json.dumps({"status": "stopped"}))
+        return 0
+    if args.command == "r2-check":
+        config = load_city_config(args.config)
+        with WeatherStore(args.db) as store:
+            store.init_schema()
+        result = R2Archive(args.db, config).check()
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.command == "r2-sync":
+        config = load_city_config(args.config)
+        with WeatherStore(args.db) as store:
+            store.init_schema()
+        result = R2Archive(args.db, config).sync(
+            local_date=args.local_date,
+            daily_if_due=not args.no_daily,
+        )
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.command == "collector-status":
+        config = load_city_config(args.config)
+        with WeatherStore(args.db) as store:
+            store.init_schema()
+            result = store.collector_status()
+        disk = shutil.disk_usage(args.db.resolve().parent)
+        result["disk"] = {
+            "total_bytes": disk.total,
+            "used_bytes": disk.used,
+            "free_bytes": disk.free,
+        }
+        r2 = result["r2"]
+        first = r2.get("first_upload")
+        if first:
+            elapsed_days = max(
+                1.0,
+                (datetime.now().astimezone() - datetime.fromisoformat(first)).total_seconds()
+                / 86400,
+            )
+            per_day = float(r2["bytes"]) / elapsed_days
+            r2["estimated_bytes_per_day"] = round(per_day)
+            r2["projected_30_day_bytes"] = round(per_day * 30)
+            r2["projected_365_day_bytes"] = round(per_day * 365)
+        r2["warning_threshold_bytes"] = config.collector.storage_warning_bytes
+        r2["warning"] = int(r2["bytes"]) >= config.collector.storage_warning_bytes
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
     raise AssertionError(f"Unhandled command: {args.command}")
 
 

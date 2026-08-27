@@ -86,6 +86,12 @@ CityConfig(NYC / KLGA)
 
 下列分层继续作为长期扩展架构；首版只实现支撑纽约 Paper Trading 闭环的最小子集。
 
+### 独立天气采集与归档
+
+2026-08-27 起，天气采集从决策 Runner 的轮询中拆出独立进程。AviationWeather METAR、NWS hourly forecast、NWS station observations 和 Weather.gov 结算页面按各自频率进入同一个 SQLite WAL。每份版本保存来源时间、接收时间、内容哈希和压缩原始响应。
+
+SQLite 允许采集器和 Paper Runner 以短事务并发写入；决策 Runner 的 lease 继续防止两个交易 Runner 同时运行。R2 同步器只读取已提交记录，上传内容寻址的原始批次、结算截图、每日 Parquet 和 manifest。R2 与本地存储均不自动删除。
+
 ## 1. 研究证据层
 
 输入：

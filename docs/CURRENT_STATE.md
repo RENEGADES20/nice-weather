@@ -1,10 +1,22 @@
 # 当前状态
 
-最后更新：2026-08-23
+最后更新：2026-08-27
 
 ## 当前阶段
 
 项目处于“纽约 KLGA MVP 纵向闭环已通过 PR #1 验收并合并至受保护 main，待人工批准 PAPER CANARY”的阶段。
+
+天气数据基础设施已在 `codex/weather-data-recorder-r2` 分支加入独立采集器、schema v3、Cloudflare R2 追加归档和 Ubuntu systemd 部署方案；合并与 VM 人工部署仍待完成。
+
+## 2026-08-27 独立天气采集与 R2
+
+- 新增 AviationWeather KLGA METAR、NWS hourly forecast、NWS station observations 和 Weather.gov 结算页面的独立调度。
+- SQLite schema v3 保存压缩原始响应、观测修订、预报版本、结算证据和 R2 上传账本。
+- R2 每 15 分钟上传 gzip NDJSON 原始批次和少量结算截图；纽约时间 03:15 后导出前一日 Zstandard Parquet 与 manifest。
+- 新增 `collect-weather`、`r2-check`、`r2-sync` 和 `collector-status` 命令。
+- 提供 Ubuntu systemd 单元和逐步部署、验收、回滚 runbook；本地与 R2 均不自动删除。
+- 当前范围只包含 KLGA 官方天气数据，不包含 Polymarket、订单簿、其他城市或历史回填。
+- 本地发布前检查为 Ruff 通过、30 项测试通过；2026-08-27 live smoke 的三类 API 均成功，Weather.gov 真实表格解析为 `parsed`，当时 KLGA 已实现 Tmax 为 `77°F`，尚未跨日最终确认。
 
 独立 Python package、真实 API fixture、合约解析、Tmax 概率、Signal/Risk、PaperBroker、SQLite WAL、持续 Runner、统一查询层和 Streamlit Dashboard 已形成一条可执行主链。旧代码仅按能力审计后择要迁移，研究资料仍在旧项目：
 

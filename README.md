@@ -16,6 +16,8 @@ Gamma / CLOB + AviationWeather / NWS
 → Streamlit / Plotly Dashboard
 ```
 
+独立天气采集链持续保存 KLGA METAR（Meteorological Aerodrome Report，航空例行天气报告）、NWS（National Weather Service，美国国家气象局）逐小时预报、NWS 实况观测和 Weather.gov 结算证据。它与 Paper Trading Runner 共享 SQLite WAL（Write-Ahead Logging，预写日志），通过短事务并发写入；R2 同步进程每 15 分钟上传内容寻址的压缩批次，并在纽约时间 03:15 后生成前一日 Zstandard Parquet。
+
 项目没有钱包接入、私钥配置、真实下单客户端或自动资金操作。所有策略和 3°F 基线分布均为未校准的研究假设。
 
 ## 环境
@@ -27,6 +29,12 @@ python -m venv .venv
 .\.venv\Scripts\python -m pip install --upgrade pip
 .\.venv\Scripts\python -m pip install -e ".[dev]"
 .\.venv\Scripts\python -m nice_weather.cli config-check
+```
+
+部署采集器时安装可选依赖：
+
+```powershell
+.\.venv\Scripts\python -m pip install -e ".[collector]"
 ```
 
 配置集中在 `config/nyc_klga.toml`。默认阈值包括 90 秒订单簿接收年龄、90 分钟 METAR 观测年龄、5 分钟 METAR 接收年龄、6 小时 forecast issue 年龄、0.02 uncertainty buffer、0.03 minimum net edge、100 美元 Paper 现金、单档 5 美元和单机场日 20 美元限额。
@@ -82,6 +90,25 @@ WHERE snapshot_id IN (
 ```
 
 Runner 将错误写入 `system_events`，每轮写入 `runner_heartbeats`。同一数据库使用 `runner_locks` 防止并发 writer；Dashboard 在 Runner 未提交事务时仍读取上一条完整 decision。
+
+## 独立天气采集与 R2
+
+```powershell
+# 单轮采集；包含需要 Playwright Chromium 的 Weather.gov 页面证据
+.\.venv\Scripts\python -m nice_weather.cli collect-weather --once --db var\weather.sqlite3
+
+# 持续采集
+.\.venv\Scripts\python -m nice_weather.cli collect-weather --db var\weather.sqlite3
+
+# 检查来源延迟、本地磁盘与 R2 用量预测
+.\.venv\Scripts\python -m nice_weather.cli collector-status --db var\weather.sqlite3
+
+# 从环境变量读取 R2 凭证
+.\.venv\Scripts\python -m nice_weather.cli r2-check --db var\weather.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli r2-sync --db var\weather.sqlite3
+```
+
+R2 只接受环境变量 `R2_ENDPOINT_URL`、`R2_BUCKET`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` 和 `R2_PREFIX`。仓库不会读取本地 `weather data api.txt`。完整 Ubuntu 人工部署、systemd、权限、验收和回滚步骤见 [`docs/VM_DEPLOYMENT.md`](docs/VM_DEPLOYMENT.md)。
 
 ## 测试与 smoke
 
