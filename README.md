@@ -138,4 +138,3 @@ PR required checks 使用固定 fixture，不依赖网络。Live smoke 手动执
 4. [`docs/SYSTEM_ARCHITECTURE.md`](docs/SYSTEM_ARCHITECTURE.md)
 5. [`docs/RESEARCH_INDEX.md`](docs/RESEARCH_INDEX.md)
 
-旧项目和研究库仍位于 `D:\ALLPROJECTS\x learner`，没有迁入当前运行链或 CI。
