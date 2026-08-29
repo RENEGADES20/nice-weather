@@ -27,6 +27,20 @@ class RunnerConfig:
 
 
 @dataclass(frozen=True)
+class CollectorConfig:
+    metar_interval_seconds: int
+    forecast_interval_seconds: int
+    nws_observation_interval_seconds: int
+    settlement_interval_seconds: int
+    settlement_close_interval_seconds: int
+    r2_sync_interval_seconds: int
+    daily_export_hour: int
+    daily_export_minute: int
+    storage_warning_bytes: int
+    settlement_url: str
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     version: str
     sigma_f: float
@@ -61,6 +75,7 @@ class CityConfig:
     allowed_units: tuple[str, ...]
     freshness: FreshnessConfig
     runner: RunnerConfig
+    collector: CollectorConfig
     model: ModelConfig
     signal: SignalConfig
     paper: PaperConfig
@@ -91,6 +106,7 @@ def load_city_config(path: str | Path | None = None) -> CityConfig:
         allowed_units=tuple(city["allowed_units"]),
         freshness=FreshnessConfig(**raw["freshness"]),
         runner=RunnerConfig(**raw["runner"]),
+        collector=CollectorConfig(**raw["collector"]),
         model=ModelConfig(**raw["model"]),
         signal=SignalConfig(**raw["signal"]),
         paper=PaperConfig(**raw["paper"]),
@@ -113,8 +129,21 @@ def validate_city_config(config: CityConfig) -> None:
         config.freshness.market_metadata_seconds,
         config.freshness.order_book_seconds,
         config.runner.poll_interval_seconds,
+        config.collector.metar_interval_seconds,
+        config.collector.forecast_interval_seconds,
+        config.collector.nws_observation_interval_seconds,
+        config.collector.settlement_interval_seconds,
+        config.collector.settlement_close_interval_seconds,
+        config.collector.r2_sync_interval_seconds,
+        config.collector.storage_warning_bytes,
         config.model.sigma_f,
         config.paper.starting_cash,
     )
     if any(value <= 0 for value in positive_values):
         raise ValueError("Freshness, runner, model and paper limits must be positive")
+    if not 0 <= config.collector.daily_export_hour <= 23:
+        raise ValueError("Collector daily export hour must be between 0 and 23")
+    if not 0 <= config.collector.daily_export_minute <= 59:
+        raise ValueError("Collector daily export minute must be between 0 and 59")
+    if not config.collector.settlement_url.startswith("https://www.weather.gov/"):
+        raise ValueError("Settlement evidence URL must use the official weather.gov site")

@@ -380,6 +380,26 @@ CI 主路径完全使用 fixture，不依赖外部 API。Live smoke、持续 Run
 
 仓库加入独立 reviewer 后，将 required approvals 调整为 1；只有在发布频率、部署目标或团队规模明显增加时再评估额外 CI/CD 或分支策略。
 
+## D-025：KLGA 官方天气采用独立采集器与 R2 追加归档
+
+日期：2026-08-27
+
+决定：
+
+将 AviationWeather METAR、NWS 逐小时预报、NWS 站点实况和 Weather.gov 结算证据从决策周期中拆为独立采集器。采集器与 Paper Runner 共享 SQLite WAL，通过短事务写入；Cloudflare R2 每 15 分钟追加同步压缩原始批次，并每日生成 Parquet 与 manifest。
+
+原因：
+
+天气来源具有不同更新频率，决策 Runner 的统一轮询会产生重复请求和数据间隔。独立保存 `received_at`、内容哈希、修订版本和结算页面证据，可以从当前时点开始形成严格 as-of 数据集，同时控制 10 GB 免费存储预算。
+
+影响：
+
+SQLite 从“决策 Runner 唯一 writer”调整为“决策 Runner lease 唯一、采集器与 R2 状态使用独立短事务”。R2 对象采用内容寻址和 append-only；本地与 R2 均不启用自动删除。第一版不采集 Polymarket、订单簿、其他城市或历史回填。Weather.gov 页面解析有歧义时保存证据并输出 `no-trade` 原因。
+
+重新评估条件：
+
+连续 24 小时实测超过 10 MiB/天、SQLite 写锁影响决策周期，或页面结构导致持续解析失败时，重新评估批次粒度、数据库拆分和结算证据来源。
+
 ## 新决策模板
 
 ```markdown

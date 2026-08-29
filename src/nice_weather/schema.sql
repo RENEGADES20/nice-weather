@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 INSERT INTO schema_meta(version)
 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
-UPDATE schema_meta SET version = 2;
+UPDATE schema_meta SET version = 3;
 
 CREATE TABLE IF NOT EXISTS raw_snapshots (
   snapshot_id TEXT PRIMARY KEY,
@@ -250,3 +250,89 @@ CREATE TABLE IF NOT EXISTS runner_locks (
   acquired_at TEXT NOT NULL,
   expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS source_captures (
+  capture_id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  station_id TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  source_time TEXT,
+  observed_at TEXT,
+  issued_at TEXT,
+  received_at TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  source_version TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  request_url TEXT NOT NULL,
+  http_status INTEGER NOT NULL,
+  content_type TEXT NOT NULL,
+  content_encoding TEXT NOT NULL,
+  raw_size_bytes INTEGER NOT NULL,
+  raw_blob BLOB NOT NULL,
+  UNIQUE(source, kind, content_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_source_captures_received
+  ON source_captures(source, kind, received_at);
+CREATE INDEX IF NOT EXISTS idx_source_captures_local_date
+  ON source_captures(local_date, source, kind);
+
+CREATE TABLE IF NOT EXISTS weather_forecasts (
+  forecast_id TEXT PRIMARY KEY,
+  capture_id TEXT NOT NULL REFERENCES source_captures(capture_id),
+  source TEXT NOT NULL,
+  station_id TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  source_version TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  period_count INTEGER NOT NULL,
+  UNIQUE(source, station_id, content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS settlement_evidence (
+  evidence_id TEXT PRIMARY KEY,
+  capture_id TEXT NOT NULL REFERENCES source_captures(capture_id),
+  station_id TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  page_updated_at TEXT,
+  tmax_f REAL,
+  first_next_day_observed_at TEXT,
+  first_next_day_temperature_f REAL,
+  table_text TEXT NOT NULL,
+  parse_status TEXT NOT NULL,
+  no_trade_reason TEXT,
+  finalized INTEGER NOT NULL DEFAULT 0,
+  screenshot_png BLOB,
+  screenshot_sha256 TEXT,
+  UNIQUE(capture_id)
+);
+CREATE INDEX IF NOT EXISTS idx_settlement_evidence_day
+  ON settlement_evidence(local_date, received_at);
+
+CREATE TABLE IF NOT EXISTS r2_exports (
+  export_id TEXT PRIMARY KEY,
+  export_type TEXT NOT NULL,
+  source TEXT,
+  local_date TEXT NOT NULL,
+  object_key TEXT NOT NULL UNIQUE,
+  sha256 TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  source_ids_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  uploaded_at TEXT,
+  status TEXT NOT NULL,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_r2_exports_status
+  ON r2_exports(status, local_date, export_type);
+
+CREATE TABLE IF NOT EXISTS r2_export_items (
+  export_id TEXT NOT NULL REFERENCES r2_exports(export_id),
+  source_id TEXT NOT NULL,
+  PRIMARY KEY(export_id, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_r2_export_items_source
+  ON r2_export_items(source_id);
