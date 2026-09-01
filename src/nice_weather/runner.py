@@ -7,7 +7,6 @@ from pathlib import Path
 
 from nice_weather.adapters.fixture import FixtureBundle, load_fixture
 from nice_weather.adapters.polymarket import PolymarketReadOnlyAdapter
-from nice_weather.adapters.weather import WeatherReadOnlyAdapter
 from nice_weather.config import CityConfig, load_city_config
 from nice_weather.contract import parse_gamma_contract
 from nice_weather.decision import build_outcomes
@@ -34,20 +33,29 @@ from nice_weather.paper import PaperBroker
 from nice_weather.probability import estimate_tmax
 from nice_weather.reason_codes import ReasonCode
 from nice_weather.store import WeatherStore
+from nice_weather.weather_repository import WeatherRepository
 
 
 def _age(decision_time: datetime, source_time: datetime) -> float:
     return max(0.0, (decision_time - source_time).total_seconds())
 
 
-def _fixture_health(bundle: object, contract: object, config: CityConfig) -> DataHealth:
+def _fixture_health(
+    bundle: object, contract: object, config: CityConfig, *, require_books: bool = True
+) -> DataHealth:
     decision_time = bundle.decision_time
     gamma = bundle.gamma_snapshot
     book_received = min((book.received_at for book in bundle.books.values()), default=None)
     book_source_time = min((book.exchange_time for book in bundle.books.values()), default=None)
-    metar_received = bundle.observations[0].received_at if bundle.observations else None
+    metar_observations = [
+        item for item in bundle.observations if item.source == "aviationweather"
+    ]
+    nws_observations = [item for item in bundle.observations if item.source == "nws"]
+    metar_received = max(
+        (item.received_at for item in metar_observations), default=None
+    )
     metar_source_time = max(
-        (observation.observed_at for observation in bundle.observations), default=None
+        (observation.observed_at for observation in metar_observations), default=None
     )
     forecast_received = bundle.forecasts[0].received_at if bundle.forecasts else None
     forecast_source_time = max((forecast.issued_at for forecast in bundle.forecasts), default=None)
@@ -94,15 +102,16 @@ def _fixture_health(bundle: object, contract: object, config: CityConfig) -> Dat
         ReasonCode.DATA_MARKET_METADATA_MISSING,
         ReasonCode.DATA_MARKET_METADATA_STALE,
     )
-    check(
-        "order_book",
-        book_received,
-        book_source_time,
-        config.freshness.order_book_seconds,
-        None,
-        ReasonCode.DATA_ORDER_BOOK_MISSING,
-        ReasonCode.DATA_ORDER_BOOK_STALE,
-    )
+    if require_books:
+        check(
+            "execution_quote",
+            book_received,
+            book_source_time,
+            config.freshness.order_book_seconds,
+            None,
+            ReasonCode.DATA_ORDER_BOOK_MISSING,
+            ReasonCode.DATA_ORDER_BOOK_STALE,
+        )
     check(
         "metar",
         metar_received,
@@ -112,6 +121,20 @@ def _fixture_health(bundle: object, contract: object, config: CityConfig) -> Dat
         ReasonCode.DATA_OBSERVATION_MISSING,
         ReasonCode.DATA_OBSERVATION_STALE,
     )
+    if bundle.manifest.get("live"):
+        nws_received = max((item.received_at for item in nws_observations), default=None)
+        nws_source_time = max(
+            (item.observed_at for item in nws_observations), default=None
+        )
+        check(
+            "nws_observations",
+            nws_received,
+            nws_source_time,
+            config.freshness.observation_receipt_seconds,
+            config.freshness.observation_age_seconds,
+            ReasonCode.DATA_OBSERVATION_MISSING,
+            ReasonCode.DATA_OBSERVATION_STALE,
+        )
     check(
         "forecast",
         forecast_received,
@@ -122,11 +145,14 @@ def _fixture_health(bundle: object, contract: object, config: CityConfig) -> Dat
         ReasonCode.DATA_FORECAST_STALE,
     )
     forecast_hours = {
-        item.valid_at.astimezone(config.zone).hour
+        item.valid_at.astimezone(UTC)
         for item in bundle.forecasts
         if item.valid_at.astimezone(config.zone).date() == contract.local_day
     }
-    if len(forecast_hours) != 24:
+    expected_hours = round(
+        (contract.observation_end - contract.observation_start).total_seconds() / 3600
+    )
+    if len(forecast_hours) != expected_hours:
         checks.append(
             HealthCheck(
                 "forecast_coverage",
@@ -135,7 +161,7 @@ def _fixture_health(bundle: object, contract: object, config: CityConfig) -> Dat
                 forecast_source_time,
                 None,
                 (ReasonCode.DATA_FORECAST_COVERAGE_GAP,),
-                message=f"local_hours={len(forecast_hours)} expected=24",
+                message=f"local_hours={len(forecast_hours)} expected={expected_hours}",
             )
         )
     if contract.ambiguities:
@@ -173,6 +199,9 @@ def _run_bundle(
     database_path: str | Path,
     config: CityConfig,
     mode: RunMode,
+    *,
+    official_hourly_tmax_f: float | None = None,
+    require_books: bool = True,
 ) -> Decision:
     contract = parse_gamma_contract(bundle.gamma_snapshot.payload, config)
     zone = config.zone
@@ -186,8 +215,15 @@ def _run_bundle(
         for item in bundle.forecasts
         if item.valid_at.astimezone(zone).date() == contract.local_day
     )
-    health = _fixture_health(bundle, contract, config)
-    input_ids = tuple(sorted(snapshot.snapshot_id for snapshot in bundle.snapshots))
+    health = _fixture_health(bundle, contract, config, require_books=require_books)
+    input_ids = tuple(
+        sorted(
+            {
+                *(snapshot.snapshot_id for snapshot in bundle.snapshots),
+                *bundle.extra_input_snapshot_ids,
+            }
+        )
+    )
     input_set_hash = content_hash(input_ids)
     state = UnifiedState(
         decision_time=bundle.decision_time,
@@ -200,7 +236,7 @@ def _run_bundle(
         health=health,
         input_set_hash=input_set_hash,
     )
-    observed_tmax = max((item.temperature_f for item in observations), default=None)
+    observed_tmax = official_hourly_tmax_f
     if forecasts:
         forecast_tmax = max(item.temperature_f for item in forecasts)
         estimate = estimate_tmax(
@@ -408,32 +444,67 @@ def _run_live_cycle(
                 ReasonCode.MARKET_NOT_FOUND,
             )
         contract = parse_gamma_contract(gamma_snapshot.payload, config)
-        book_snapshots = market_adapter.fetch_books(
-            [item.yes_token_id for item in contract.bins], request_time
+        decision_time = utc_now()
+        weather_state = WeatherRepository(database_path).get_state_as_of(
+            config.station_id, contract.local_day, decision_time
         )
-    with WeatherReadOnlyAdapter() as weather_adapter:
-        observation_snapshot = weather_adapter.fetch_observations(
-            config.station_id, contract.observation_start, request_time
+        forecasts = tuple(
+            item
+            for item in weather_state.forecasts
+            if item.valid_at.astimezone(config.zone).date() == contract.local_day
         )
-        forecast_snapshots = weather_adapter.fetch_forecast(
-            config, contract.local_day, request_time
+        official_tmax = (
+            float(weather_state.settlement["tmax_f"])
+            if weather_state.settlement and weather_state.settlement.get("tmax_f") is not None
+            else None
         )
-    decision_time = utc_now()
+        candidate_tokens: list[str] = []
+        if forecasts:
+            preliminary = estimate_tmax(
+                contract,
+                max(item.temperature_f for item in forecasts),
+                official_tmax,
+                config.model.sigma_f,
+                decision_time,
+                weather_state.input_capture_ids,
+                config.model.version,
+            )
+            probability_by_bin = {
+                item.bin_id: item.probability for item in preliminary.probabilities
+            }
+            candidate_tokens = [
+                item.yes_token_id
+                for item in contract.bins
+                if item.active
+                and not item.closed
+                and probability_by_bin.get(item.bin_id, 0.0)
+                >= config.signal.quote_probability_floor
+            ]
+            if not candidate_tokens:
+                candidate_tokens = [
+                    item.yes_token_id
+                    for item in sorted(
+                        contract.bins,
+                        key=lambda item: probability_by_bin.get(item.bin_id, 0.0),
+                        reverse=True,
+                    )[:3]
+                ]
+        if mode is RunMode.PAPER:
+            with WeatherStore(database_path) as store:
+                store.init_schema()
+                broker = store.load_paper_broker(config.paper.starting_cash)
+            by_bin = {item.bin_id: item for item in contract.bins}
+            for bin_id, position in broker.positions.items():
+                if position.quantity and bin_id in by_bin:
+                    candidate_tokens.append(by_bin[bin_id].yes_token_id)
+        candidate_tokens = list(dict.fromkeys(candidate_tokens))
+        book_snapshots = market_adapter.fetch_candidate_quotes(candidate_tokens, decision_time)
     books = {
         book.token_id: book
         for book in (_book_from_snapshot(snapshot) for snapshot in book_snapshots)
     }
-    observations = _observations_from_snapshot(observation_snapshot, config.station_id)
-    hourly_snapshot = next(
-        snapshot for snapshot in forecast_snapshots if snapshot.kind == "hourly_forecast"
-    )
-    forecasts = _forecasts_from_snapshot(hourly_snapshot)
-    snapshots = (
-        gamma_snapshot,
-        *book_snapshots,
-        observation_snapshot,
-        *forecast_snapshots,
-    )
+    observations = weather_state.observations
+    snapshots = (gamma_snapshot, *book_snapshots)
     if any(snapshot.received_at > decision_time for snapshot in snapshots):
         raise RuntimeError(ReasonCode.DATA_AS_OF_VIOLATION.value)
     bundle = FixtureBundle(
@@ -444,8 +515,16 @@ def _run_live_cycle(
         books=books,
         observations=observations,
         forecasts=forecasts,
+        extra_input_snapshot_ids=weather_state.input_capture_ids,
     )
-    return _run_bundle(bundle, database_path, config, mode)
+    return _run_bundle(
+        bundle,
+        database_path,
+        config,
+        mode,
+        official_hourly_tmax_f=official_tmax,
+        require_books=bool(candidate_tokens),
+    )
 
 
 def run_live_once(

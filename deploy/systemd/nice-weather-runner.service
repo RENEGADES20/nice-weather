@@ -1,6 +1,6 @@
 [Unit]
-Description=Nice Weather KLGA official weather collector
-After=network-online.target
+Description=Nice Weather KLGA shadow runner
+After=network-online.target nice-weather-collector.service
 Wants=network-online.target
 
 [Service]
@@ -9,9 +9,8 @@ User=nice-weather
 Group=nice-weather
 WorkingDirectory=/opt/nice-weather/repo
 Environment=PYTHONUNBUFFERED=1
-Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/nice-weather/.playwright
 EnvironmentFile=-/etc/nice-weather/nice-weather.env
-ExecStart=/opt/nice-weather/.venv/bin/nice-weather collect-weather --db /var/lib/nice-weather/nice-weather.sqlite3 --config /etc/nice-weather/nice-weather.toml
+ExecStart=/opt/nice-weather/.venv/bin/nice-weather run-loop --mode shadow --city NYC --interval-seconds 60 --config /etc/nice-weather/nice-weather.toml --db /var/lib/nice-weather/nice-weather.sqlite3
 Restart=on-failure
 RestartSec=15
 NoNewPrivileges=true

@@ -16,6 +16,18 @@ from nice_weather.config import CityConfig
 from nice_weather.domain import stable_id, utc_now
 from nice_weather.store import WeatherStore
 
+WEATHER_EXPORT_TABLES = (
+    "source_captures",
+    "poll_attempts",
+    "weather_observations",
+    "weather_forecasts",
+    "forecast_points",
+    "settlement_evidence",
+    "settlement_rows",
+    "weather_feature_snapshots",
+    "weather_daily_labels",
+)
+
 
 @dataclass(frozen=True)
 class R2Config:
@@ -23,7 +35,7 @@ class R2Config:
     bucket: str
     access_key_id: str
     secret_access_key: str
-    prefix: str = "nyc-klga/v1"
+    prefix: str = "nyc-klga/v2"
 
     @classmethod
     def from_env(cls) -> R2Config:
@@ -44,7 +56,7 @@ class R2Config:
             bucket=os.environ["R2_BUCKET"],
             access_key_id=os.environ["R2_ACCESS_KEY_ID"],
             secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
-            prefix=os.environ.get("R2_PREFIX", "nyc-klga/v1").strip("/"),
+            prefix=os.environ.get("R2_PREFIX", "nyc-klga/v2").strip("/"),
         )
 
 
@@ -147,6 +159,7 @@ class R2Archive:
             for row in captures:
                 records.append(
                     {
+                        "schema_version": 2,
                         "capture_id": row["capture_id"],
                         "source": row["source"],
                         "kind": row["kind"],
@@ -253,13 +266,7 @@ class R2Archive:
             ) from exc
         local_date_text = local_date.isoformat()
         uploaded = []
-        for table_name in (
-            "source_captures",
-            "weather_observations",
-            "weather_forecasts",
-            "forecast_points",
-            "settlement_evidence",
-        ):
+        for table_name in WEATHER_EXPORT_TABLES:
             with WeatherStore(self.database_path) as store:
                 store.init_schema()
                 rows = store.rows_for_local_date(table_name, local_date_text)
@@ -293,7 +300,7 @@ class R2Archive:
             store.init_schema()
             objects = store.r2_exports_for_day(local_date_text)
         manifest = {
-            "schema_version": 1,
+            "schema_version": 2,
             "station_id": self.city_config.station_id,
             "timezone": self.city_config.timezone,
             "local_date": local_date_text,

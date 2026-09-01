@@ -13,6 +13,12 @@ class MarketDataAdapter(Protocol):
     def fetch_books(self, token_ids: list[str], decision_time: datetime) -> list[RawSnapshot]: ...
 
 
+class QuoteGateway(Protocol):
+    def fetch_candidate_quotes(
+        self, token_ids: list[str], decision_time: datetime
+    ) -> list[RawSnapshot]: ...
+
+
 class ObservationAdapter(Protocol):
     def fetch_observations(
         self, station_id: str, start: datetime, decision_time: datetime

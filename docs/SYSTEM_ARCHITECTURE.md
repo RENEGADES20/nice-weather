@@ -1,8 +1,28 @@
 # 系统架构概览
 
-最后更新：2026-08-16
+最后更新：2026-09-01
 
 本文描述模块职责、输入、输出和主要失败方式。具体模型权重、风险比例、交易阈值、数据库字段和运行参数留给后续技术设计。
+
+## 0A. 当前统一运行架构
+
+```text
+官方天气源 -> Collector -> nice-weather.sqlite3/WAL -> R2 v2
+                               |
+                               +-> WeatherRepository(as-of)
+                                        |
+Polymarket Gamma -> Runner -> 阶段 A 分布 -> 候选 token -> CLOB Quote
+                                        |                     |
+                                        +-> Decision / Paper <-+
+Dashboard <---------------------- 统一库只读查询
+```
+
+- Collector 写 `poll_attempts` 和内容变化后的 `source_captures`；各来源失败独立记录。
+- Runner 只从 Repository 获取天气，所有 as-of 查询强制 `received_at <= decision_time`。
+- 阶段 A 使用 NWS 预报与 Weather.gov 官方已实现 Tmax 下界；高频观测只提供诊断和趋势特征。
+- CLOB 只对概率门槛候选、持仓和未完成 Paper order请求；生产只保存有限 `execution_quotes`。
+- R2 v1 保持不可变，新数据进入 v2；allowlist 排除所有市场、决策、Paper 和资金数据。
+- SQLite 使用 WAL、5 秒 busy timeout、短 `BEGIN IMMEDIATE` 事务和 Runner lease。歧义、过期或锁超时均进入可审计 `no-trade`。
 
 ## 0. 纽约 KLGA 标准 MVP
 

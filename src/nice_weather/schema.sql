@@ -5,7 +5,12 @@ CREATE TABLE IF NOT EXISTS schema_meta (
 );
 INSERT INTO schema_meta(version)
 SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);
-UPDATE schema_meta SET version = 3;
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  checksum TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS raw_snapshots (
   snapshot_id TEXT PRIMARY KEY,
@@ -101,7 +106,19 @@ CREATE TABLE IF NOT EXISTS weather_observations (
   observed_at TEXT NOT NULL,
   received_at TEXT NOT NULL,
   temperature_f REAL NOT NULL,
-  raw_text TEXT NOT NULL
+  raw_text TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'aviationweather',
+  temperature_c REAL,
+  raw_unit TEXT,
+  quality_control_json TEXT NOT NULL DEFAULT '{}',
+  source_version TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  local_date TEXT,
+  provider_received_at TEXT,
+  report_time TEXT,
+  revision_type TEXT NOT NULL DEFAULT 'initial',
+  parser_version TEXT NOT NULL DEFAULT 'legacy-v1',
+  weather_metadata_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS forecast_points (
@@ -307,6 +324,11 @@ CREATE TABLE IF NOT EXISTS settlement_evidence (
   finalized INTEGER NOT NULL DEFAULT 0,
   screenshot_png BLOB,
   screenshot_sha256 TEXT,
+  parser_version TEXT NOT NULL DEFAULT 'legacy-v1',
+  page_url TEXT,
+  content_hash TEXT,
+  screenshot_trigger TEXT,
+  response_metadata_json TEXT NOT NULL DEFAULT '{}',
   UNIQUE(capture_id)
 );
 CREATE INDEX IF NOT EXISTS idx_settlement_evidence_day
@@ -336,3 +358,124 @@ CREATE TABLE IF NOT EXISTS r2_export_items (
 );
 CREATE INDEX IF NOT EXISTS idx_r2_export_items_source
   ON r2_export_items(source_id);
+
+CREATE TABLE IF NOT EXISTS poll_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  station_id TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  received_at TEXT,
+  http_status INTEGER,
+  latency_ms INTEGER,
+  succeeded INTEGER NOT NULL,
+  content_changed INTEGER NOT NULL,
+  capture_id TEXT REFERENCES source_captures(capture_id),
+  content_hash TEXT,
+  error_type TEXT,
+  error_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_poll_attempts_source_time
+  ON poll_attempts(source, kind, requested_at DESC);
+
+CREATE TABLE IF NOT EXISTS settlement_rows (
+  row_id TEXT PRIMARY KEY,
+  evidence_id TEXT NOT NULL REFERENCES settlement_evidence(evidence_id),
+  capture_id TEXT NOT NULL REFERENCES source_captures(capture_id),
+  station_id TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  temperature_f REAL NOT NULL,
+  row_index INTEGER NOT NULL,
+  row_hash TEXT NOT NULL,
+  UNIQUE(evidence_id, row_index)
+);
+
+CREATE TABLE IF NOT EXISTS weather_feature_snapshots (
+  feature_snapshot_id TEXT PRIMARY KEY,
+  station_id TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  decision_time TEXT NOT NULL,
+  feature_schema_version TEXT NOT NULL,
+  input_capture_ids_json TEXT NOT NULL,
+  input_set_hash TEXT NOT NULL,
+  forecast_tmax_f REAL,
+  official_hourly_tmax_f REAL,
+  nws_observed_tmax_f REAL,
+  metar_observed_tmax_f REAL,
+  features_json TEXT NOT NULL,
+  missing_flags_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS weather_daily_labels (
+  label_id TEXT PRIMARY KEY,
+  station_id TEXT NOT NULL,
+  local_date TEXT NOT NULL,
+  official_tmax_f REAL NOT NULL,
+  evidence_id TEXT NOT NULL REFERENCES settlement_evidence(evidence_id),
+  finalized_at TEXT NOT NULL,
+  label_version TEXT NOT NULL,
+  label_hash TEXT NOT NULL,
+  UNIQUE(station_id, local_date, label_version)
+);
+
+CREATE TABLE IF NOT EXISTS model_predictions (
+  prediction_id TEXT PRIMARY KEY,
+  feature_snapshot_id TEXT NOT NULL REFERENCES weather_feature_snapshots(feature_snapshot_id),
+  decision_id TEXT,
+  model_version TEXT NOT NULL,
+  generated_at TEXT NOT NULL,
+  mean_tmax_f REAL NOT NULL,
+  probability_sum REAL NOT NULL,
+  probabilities_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  no_trade_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS decision_weather_inputs (
+  decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+  capture_id TEXT NOT NULL REFERENCES source_captures(capture_id),
+  role TEXT NOT NULL,
+  PRIMARY KEY(decision_id, capture_id, role)
+);
+
+CREATE TABLE IF NOT EXISTS market_captures (
+  capture_id TEXT PRIMARY KEY,
+  source TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  event_id TEXT,
+  market_id TEXT,
+  requested_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  UNIQUE(source, kind, content_hash)
+);
+
+CREATE TABLE IF NOT EXISTS execution_quotes (
+  quote_id TEXT PRIMARY KEY,
+  snapshot_id TEXT NOT NULL REFERENCES raw_snapshots(snapshot_id),
+  decision_id TEXT,
+  market_id TEXT NOT NULL,
+  token_id TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  book_hash TEXT NOT NULL,
+  best_bid REAL,
+  best_ask REAL,
+  spread REAL,
+  target_quantity REAL NOT NULL,
+  bid_vwap REAL,
+  ask_vwap REAL,
+  bid_depth REAL NOT NULL,
+  ask_depth REAL NOT NULL,
+  top_levels_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error_reason TEXT,
+  UNIQUE(snapshot_id)
+);
+CREATE INDEX IF NOT EXISTS idx_execution_quotes_token_time
+  ON execution_quotes(token_id, received_at DESC);

@@ -28,6 +28,7 @@ class FixtureBundle:
     books: dict[str, OrderBook]
     observations: tuple[WeatherObservation, ...]
     forecasts: tuple[ForecastPoint, ...]
+    extra_input_snapshot_ids: tuple[str, ...] = ()
 
 
 def _parse_time(value: str) -> datetime:

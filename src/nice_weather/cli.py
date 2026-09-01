@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import sqlite3
+import subprocess
 import time
+from contextlib import closing
 from datetime import date, datetime
+from importlib.metadata import version
 from pathlib import Path
 
 from nice_weather.adapters.polymarket import PolymarketReadOnlyAdapter
 from nice_weather.adapters.weather import WeatherReadOnlyAdapter
 from nice_weather.collector import WeatherCollector
 from nice_weather.config import load_city_config
-from nice_weather.domain import RunMode, utc_now
+from nice_weather.domain import RunMode, stable_id, utc_now
 from nice_weather.queries import DashboardQuery
 from nice_weather.r2_archive import R2Archive
 from nice_weather.runner import run_fixture_once, run_live_once
@@ -27,6 +32,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     summary_parser = subparsers.add_parser("db-summary", help="Show database table counts")
     summary_parser.add_argument("--db", type=Path, required=True)
+
+    database = subparsers.add_parser("db", help="Migrate or verify a SQLite database")
+    database_commands = database.add_subparsers(dest="db_command", required=True)
+    migrate = database_commands.add_parser("migrate")
+    migrate.add_argument("--db", type=Path, required=True)
+    verify = database_commands.add_parser("verify")
+    verify.add_argument("--db", type=Path, required=True)
+    clone = database_commands.add_parser("clone-migrate")
+    clone.add_argument("--source", type=Path, required=True)
+    clone.add_argument("--db", type=Path, required=True)
+
+    repair = subparsers.add_parser(
+        "repair-metar-time", help="Append corrected METAR observation timestamps"
+    )
+    repair.add_argument("--db", type=Path, required=True)
+    repair.add_argument("--config", type=Path)
+
+    version_parser = subparsers.add_parser("version", help="Show deployed build metadata")
+    version_parser.add_argument("--json", action="store_true")
+    version_parser.add_argument("--db", type=Path)
+    version_parser.add_argument("--config", type=Path)
 
     config_parser = subparsers.add_parser("config-check", help="Validate NYC/KLGA config")
     config_parser.add_argument("--config", type=Path)
@@ -91,6 +117,106 @@ def _decision_json(decision: object) -> str:
         ensure_ascii=False,
         sort_keys=True,
     )
+
+
+def _git_sha() -> str:
+    configured = os.environ.get("NICE_WEATHER_GIT_SHA")
+    if configured:
+        return configured
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+
+
+def _repair_metar_times(database: Path, config_path: Path | None) -> dict[str, int]:
+    from nice_weather.collector import parse_metar_observed_at
+
+    config = load_city_config(config_path)
+    inserted = skipped = 0
+    with WeatherStore(database) as store:
+        store.init_schema()
+        rows = store.connection.execute(
+            """
+            SELECT * FROM weather_observations
+            WHERE source='aviationweather' AND parser_version!='metar-ddhhmmz-v2'
+            ORDER BY received_at
+            """
+        ).fetchall()
+        with store.transaction() as connection:
+            for row in rows:
+                reference_text = (
+                    row["provider_received_at"] or row["report_time"] or row["received_at"]
+                )
+                try:
+                    corrected = parse_metar_observed_at(
+                        str(row["raw_text"]), datetime.fromisoformat(reference_text)
+                    )
+                except ValueError:
+                    skipped += 1
+                    continue
+                observation_id = stable_id(
+                    "observation", "aviationweather", corrected, row["raw_text"], "repair-v2"
+                )
+                changed = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO weather_observations(
+                      observation_id,snapshot_id,station_id,observed_at,received_at,
+                      temperature_f,raw_text,source,temperature_c,raw_unit,
+                      quality_control_json,source_version,revision,local_date,
+                      provider_received_at,report_time,revision_type,parser_version,
+                      weather_metadata_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        observation_id,
+                        row["snapshot_id"],
+                        row["station_id"],
+                        corrected.isoformat(),
+                        row["received_at"],
+                        row["temperature_f"],
+                        row["raw_text"],
+                        row["source"],
+                        row["temperature_c"],
+                        row["raw_unit"],
+                        row["quality_control_json"],
+                        row["source_version"],
+                        1,
+                        corrected.astimezone(config.zone).date().isoformat(),
+                        row["provider_received_at"],
+                        row["report_time"],
+                        "timestamp_repair",
+                        "metar-ddhhmmz-v2",
+                        row["weather_metadata_json"],
+                    ),
+                ).rowcount
+                inserted += int(changed)
+    return {"inserted": inserted, "skipped": skipped}
+
+
+def _clone_migrate(source: Path, target: Path) -> dict[str, object]:
+    source = source.resolve()
+    target = target.resolve()
+    temporary = target.with_suffix(target.suffix + ".migrating")
+    if target.exists() or temporary.exists():
+        raise RuntimeError("Target and temporary migration paths must not already exist")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    source_uri = f"file:{source.as_posix()}?mode=ro"
+    with closing(sqlite3.connect(source_uri, uri=True, timeout=30.0)) as source_connection:
+        with closing(sqlite3.connect(temporary, timeout=30.0)) as target_connection:
+            source_connection.backup(target_connection)
+    with WeatherStore(temporary) as store:
+        store.init_schema()
+        result = store.verify_schema()
+        result["tables"] = store.table_counts()
+    if not result["ok"]:
+        raise RuntimeError(f"Migrated database verification failed; retained at {temporary}")
+    temporary.replace(target)
+    result["source"] = str(source)
+    result["database"] = str(target)
+    return result
 
 
 def _run_smoke(args: argparse.Namespace) -> dict[str, object]:
@@ -224,6 +350,40 @@ def main(argv: list[str] | None = None) -> int:
             collector.run_forever()
         except KeyboardInterrupt:
             print(json.dumps({"status": "stopped"}))
+        return 0
+    if args.command == "db":
+        if args.db_command == "clone-migrate":
+            result = _clone_migrate(args.source, args.db)
+        elif args.db_command == "migrate":
+            with WeatherStore(args.db) as store:
+                store.init_schema()
+                result = store.verify_schema()
+        else:
+            with WeatherStore(args.db, read_only=True) as store:
+                result = store.verify_schema()
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0 if result["ok"] else 1
+    if args.command == "repair-metar-time":
+        print(json.dumps(_repair_metar_times(args.db, args.config), sort_keys=True))
+        return 0
+    if args.command == "version":
+        config = load_city_config(args.config)
+        result: dict[str, object] = {
+            "package_version": version("nice-weather"),
+            "git_sha": _git_sha(),
+            "model_version": config.model.version,
+            "station_id": config.station_id,
+        }
+        if args.db:
+            with WeatherStore(args.db, read_only=True) as store:
+                result["schema_version"] = store.connection.execute(
+                    "SELECT version FROM schema_meta"
+                ).fetchone()[0]
+        print(
+            json.dumps(result, sort_keys=True)
+            if args.json
+            else " ".join(map(str, result.values()))
+        )
         return 0
     if args.command == "r2-check":
         config = load_city_config(args.config)

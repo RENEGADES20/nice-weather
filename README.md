@@ -5,20 +5,16 @@ Polymarket 纽约 KLGA 每日最高温市场的可审计研究、Live Shadow、P
 当前纵向链路为：
 
 ```text
-Gamma / CLOB + AviationWeather / NWS
-→ 原始快照
-→ KLGA 合约与规则校验
-→ decision-time UnifiedState
-→ 基线 Tmax 分布
-→ 档位概率、可成交 Edge 与风险
-→ PaperBroker
-→ SQLite WAL
-→ Streamlit / Plotly Dashboard
+官方天气源 → Collector → 统一 SQLite WAL → R2 v2
+                                  ↓
+Gamma 摘要 → Runner → decision-time WeatherRepository
+                         → 阶段 A 概率 → 候选 CLOB Quote
+                         → Shadow / Paper → Dashboard
 ```
 
 独立天气采集链持续保存 KLGA METAR（Meteorological Aerodrome Report，航空例行天气报告）、NWS（National Weather Service，美国国家气象局）逐小时预报、NWS 实况观测和 Weather.gov 结算证据。它与 Paper Trading Runner 共享 SQLite WAL（Write-Ahead Logging，预写日志），通过短事务并发写入；R2 同步进程每 15 分钟上传内容寻址的压缩批次，并在纽约时间 03:15 后生成前一日 Zstandard Parquet。
 
-项目没有钱包接入、私钥配置、真实下单客户端或自动资金操作。所有策略和 3°F 基线分布均为未校准的研究假设。
+项目没有钱包接入、私钥配置、真实下单客户端或自动资金操作。阶段 A 模型固定为 `baseline-nws-official-floor-v2`，仍属于未校准的研究基线。
 
 ## 环境
 
@@ -50,19 +46,19 @@ python -m venv .venv
 一次 Live Shadow：
 
 ```powershell
-.\.venv\Scripts\python -m nice_weather.cli run-once --mode shadow --city NYC --db var\live.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli run-once --mode shadow --city NYC --db var\nice-weather.sqlite3
 ```
 
 有限频率持续 Runner；`paper` 只启用本地 PaperBroker，不调用任何外部下单接口：
 
 ```powershell
-.\.venv\Scripts\python -m nice_weather.cli run-loop --mode shadow --city NYC --interval-seconds 60 --db var\live.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli run-loop --mode shadow --city NYC --interval-seconds 60 --db var\nice-weather.sqlite3
 ```
 
 只读交易员 Dashboard：
 
 ```powershell
-.\.venv\Scripts\streamlit run src\nice_weather\dashboard.py -- --db var\live.sqlite3 --refresh-seconds 10
+.\.venv\Scripts\streamlit run src\nice_weather\dashboard.py -- --db var\nice-weather.sqlite3 --refresh-seconds 10
 ```
 
 Dashboard 每次先选定一个 `complete decision_id`，随后所有规则、天气、订单簿、概率、信号、Paper 和审计查询均固定到该 ID。应用通过 SQLite `mode=ro` 短连接读取，不访问外部 API，也不计算概率、信号或 P&L。
@@ -74,6 +70,14 @@ Dashboard 每次先选定一个 `complete decision_id`，随后所有规则、�
 ```powershell
 .\.venv\Scripts\python -m nice_weather.cli db-init --db var\dev.sqlite3
 .\.venv\Scripts\python -m nice_weather.cli db-summary --db var\fixture.sqlite3
+```
+
+迁移、验证与部署版本：
+
+```powershell
+.\.venv\Scripts\python -m nice_weather.cli db migrate --db var\nice-weather.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli db verify --db var\nice-weather.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli version --json --db var\nice-weather.sqlite3
 ```
 
 使用系统 `sqlite3` 时可执行：
@@ -95,17 +99,17 @@ Runner 将错误写入 `system_events`，每轮写入 `runner_heartbeats`。同�
 
 ```powershell
 # 单轮采集；包含需要 Playwright Chromium 的 Weather.gov 页面证据
-.\.venv\Scripts\python -m nice_weather.cli collect-weather --once --db var\weather.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli collect-weather --once --db var\nice-weather.sqlite3
 
 # 持续采集
-.\.venv\Scripts\python -m nice_weather.cli collect-weather --db var\weather.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli collect-weather --db var\nice-weather.sqlite3
 
 # 检查来源延迟、本地磁盘与 R2 用量预测
-.\.venv\Scripts\python -m nice_weather.cli collector-status --db var\weather.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli collector-status --db var\nice-weather.sqlite3
 
 # 从环境变量读取 R2 凭证
-.\.venv\Scripts\python -m nice_weather.cli r2-check --db var\weather.sqlite3
-.\.venv\Scripts\python -m nice_weather.cli r2-sync --db var\weather.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli r2-check --db var\nice-weather.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli r2-sync --db var\nice-weather.sqlite3
 ```
 
 R2 只接受环境变量 `R2_ENDPOINT_URL`、`R2_BUCKET`、`R2_ACCESS_KEY_ID`、`R2_SECRET_ACCESS_KEY` 和 `R2_PREFIX`。仓库不会读取本地 `weather data api.txt`。完整 Ubuntu 人工部署、systemd、权限、验收和回滚步骤见 [`docs/VM_DEPLOYMENT.md`](docs/VM_DEPLOYMENT.md)。
@@ -119,7 +123,7 @@ R2 只接受环境变量 `R2_ENDPOINT_URL`、`R2_BUCKET`、`R2_ACCESS_KEY_ID`、
 .\.venv\Scripts\python -m nice_weather.cli smoke --target polymarket --city NYC
 .\.venv\Scripts\python -m nice_weather.cli smoke --target observations --city NYC
 .\.venv\Scripts\python -m nice_weather.cli smoke --target forecast --city NYC
-.\.venv\Scripts\python -m nice_weather.cli smoke --target dashboard --city NYC --db var\live.sqlite3
+.\.venv\Scripts\python -m nice_weather.cli smoke --target dashboard --city NYC --db var\nice-weather.sqlite3
 ```
 
 PR required checks 使用固定 fixture，不依赖网络。Live smoke 手动执行或单独调度。

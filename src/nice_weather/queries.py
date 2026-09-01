@@ -81,18 +81,22 @@ class DashboardQuery:
         observations = self._query(
             """
             SELECT w.* FROM weather_observations w
-            JOIN decision_inputs i USING(snapshot_id)
-            WHERE i.decision_id=? ORDER BY w.observed_at
+            WHERE w.snapshot_id IN (
+              SELECT snapshot_id FROM decision_inputs WHERE decision_id=?
+              UNION SELECT capture_id FROM decision_weather_inputs WHERE decision_id=?
+            ) ORDER BY w.observed_at
             """,
-            (decision_id,),
+            (decision_id, decision_id),
         )
         forecasts = self._query(
             """
             SELECT f.* FROM forecast_points f
-            JOIN decision_inputs i USING(snapshot_id)
-            WHERE i.decision_id=? ORDER BY f.valid_at
+            WHERE f.snapshot_id IN (
+              SELECT snapshot_id FROM decision_inputs WHERE decision_id=?
+              UNION SELECT capture_id FROM decision_weather_inputs WHERE decision_id=?
+            ) ORDER BY f.valid_at
             """,
-            (decision_id,),
+            (decision_id, decision_id),
         )
         return {"observations": observations, "forecasts": forecasts}
 
@@ -109,6 +113,21 @@ class DashboardQuery:
         )
 
     def get_order_book(self, decision_id: str, bin_id: str) -> list[dict[str, Any]]:
+        quotes = self._query(
+            """
+            SELECT q.top_levels_json FROM execution_quotes q
+            JOIN decision_outcomes o ON o.quote_id=q.quote_id
+            WHERE o.decision_id=? AND o.bin_id=? LIMIT 1
+            """,
+            (decision_id, bin_id),
+        )
+        if quotes:
+            payload = json.loads(quotes[0]["top_levels_json"])
+            return [
+                {"side": side[:-1], "level_index": index, **level}
+                for side in ("bids", "asks")
+                for index, level in enumerate(payload.get(side, []))
+            ]
         return self._query(
             """
             SELECT l.* FROM order_book_levels l
@@ -119,6 +138,32 @@ class DashboardQuery:
             """,
             (decision_id, bin_id),
         )
+
+    def get_model_context(self, decision_id: str) -> dict[str, Any]:
+        features = self._query(
+            """
+            SELECT * FROM weather_feature_snapshots
+            WHERE feature_snapshot_id=(
+              SELECT feature_snapshot_id FROM model_predictions WHERE decision_id=? LIMIT 1
+            )
+            """,
+            (decision_id,),
+        )
+        prediction = self._query(
+            "SELECT * FROM model_predictions WHERE decision_id=? LIMIT 1", (decision_id,)
+        )
+        if features:
+            features[0]["input_capture_ids"] = json.loads(
+                features[0].pop("input_capture_ids_json")
+            )
+            features[0]["features"] = json.loads(features[0].pop("features_json"))
+            features[0]["missing_flags"] = json.loads(
+                features[0].pop("missing_flags_json")
+            )
+        return {
+            "features": features[0] if features else None,
+            "prediction": prediction[0] if prediction else None,
+        }
 
     def get_paper_view(self, decision_id: str) -> dict[str, Any]:
         accounts = self._query("SELECT * FROM paper_accounts WHERE decision_id=?", (decision_id,))

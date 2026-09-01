@@ -1,6 +1,55 @@
 # Ubuntu VM 部署与人工验收
 
-本文只部署 KLGA 官方天气采集与 R2 存档。Paper Trading Runner 是否启动继续由人工单独决定。
+本文以 2026-09-01 schema v4 统一部署为 canonical 流程。后续旧 `weather.sqlite3` 双目录命令仅用于回滚参考。
+
+## 0. 统一部署摘要
+
+- checkout：`/opt/nice-weather/repo`
+- venv：`/opt/nice-weather/.venv`
+- 配置：`/etc/nice-weather/nice-weather.toml`
+- 数据库：`/var/lib/nice-weather/nice-weather.sqlite3`
+- 服务：collector、r2-sync timer、dashboard、shadow runner
+- R2 新前缀：`nyc-klga/v2`
+
+部署前记录远端合并 SHA，并写入 `/etc/nice-weather/nice-weather.env`：
+
+```dotenv
+NICE_WEATHER_GIT_SHA=<merged-main-sha>
+```
+
+停写顺序：
+
+```bash
+sudo systemctl stop nice-weather-r2-sync.timer
+sudo systemctl stop nice-weather-runner.service
+sudo systemctl stop nice-weather-collector.service
+sudo systemctl stop nice-weather-r2-sync.service
+sudo systemctl stop nice-weather-dashboard.service
+```
+
+确认无 writer 后，备份并迁移：
+
+```bash
+sudo -u nice-weather /opt/nice-weather/.venv/bin/nice-weather db clone-migrate \
+  --source /var/lib/nice-weather/weather.sqlite3 \
+  --db /var/lib/nice-weather/nice-weather.sqlite3
+sudo -u nice-weather /opt/nice-weather/.venv/bin/nice-weather db verify \
+  --db /var/lib/nice-weather/nice-weather.sqlite3
+```
+
+安装仓库内四个 unit，启动顺序固定为：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now nice-weather-collector.service
+sudo systemctl enable --now nice-weather-r2-sync.timer
+sudo systemctl enable --now nice-weather-dashboard.service
+sudo systemctl enable --now nice-weather-runner.service
+```
+
+至少观察 16 分钟并检查 `version --json`、四个 unit、collector status、R2 ledger、Dashboard health 和 SHADOW 决策。禁止把 Runner 改为任何实盘模式。
+
+旧库处置分两次人工检查：先逐一确认并移动 `/var/lib/nice-weather/live.sqlite3`、`live.sqlite3-wal`、`live.sqlite3-shm` 到固定隔离目录；24 小时后再次列出精确绝对路径并请求删除批准。不得使用 glob 或递归删除。
 
 ## 1. Cloudflare 与 GitHub 检查
 

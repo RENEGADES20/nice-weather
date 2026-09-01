@@ -52,6 +52,7 @@ class SignalConfig:
     uncertainty_buffer: float
     minimum_net_edge: float
     target_notional: float
+    quote_probability_floor: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,8 @@ def validate_city_config(config: CityConfig) -> None:
     )
     if any(value <= 0 for value in positive_values):
         raise ValueError("Freshness, runner, model and paper limits must be positive")
+    if not 0 <= config.signal.quote_probability_floor <= 1:
+        raise ValueError("quote_probability_floor must be between 0 and 1")
     if not 0 <= config.collector.daily_export_hour <= 23:
         raise ValueError("Collector daily export hour must be between 0 and 23")
     if not 0 <= config.collector.daily_export_minute <= 59:

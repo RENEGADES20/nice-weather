@@ -76,10 +76,18 @@ class RawSnapshot:
     token_id: str | None = None
     request_url: str | None = None
     http_status: int | None = None
+    requested_at: datetime | None = None
 
     def __post_init__(self) -> None:
         require_aware(self.received_at, "received_at")
-        for name in ("source_time", "observed_at", "issued_at", "valid_from", "valid_to"):
+        for name in (
+            "source_time",
+            "observed_at",
+            "issued_at",
+            "valid_from",
+            "valid_to",
+            "requested_at",
+        ):
             value = getattr(self, name)
             if value is not None:
                 require_aware(value, name)
@@ -138,6 +146,11 @@ class SettlementEvidence:
     no_trade_reason: str | None = None
     finalized: bool = False
     screenshot_png: bytes | None = None
+    parser_version: str = "weather-gov-hourly-v2"
+    page_url: str | None = None
+    content_hash: str | None = None
+    screenshot_trigger: str | None = None
+    response_metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         require_aware(self.received_at, "received_at")
@@ -234,6 +247,8 @@ class WeatherObservation:
     received_at: datetime
     temperature_f: float
     raw_text: str = ""
+    source: str = "aviationweather"
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
