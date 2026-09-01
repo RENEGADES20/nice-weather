@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已完成本地实现和验证，待 PR 合并与 VM 迁移”的阶段。
+项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，进入 24 小时 Shadow 观察”的阶段。
 
-天气采集器已通过 PR #3 合并。当前重构分支 `codex/unified-weather-store` 从远端 `main` 创建，目标为 schema v4、统一数据库、R2 v2 和按需报价。
+天气采集器已通过 PR #3 合并；统一存储与阶段 A 通过 PR #6 合并，live as-of 时钟修复通过 PR #7 合并。VM 当前部署 PR #7 merge SHA `0fba550225c8fcc6b696ffd51a9031f1a824bdae`。
 
 ## 2026-09-01 统一存储与阶段 A
 
@@ -18,8 +18,12 @@
 - Weather.gov 每轮先解析，只有首次 finalized、解析失败、非单调回落或 finalized 后变化才截图；逐行结算数据进入 `settlement_rows`。
 - R2 新数据使用 `nyc-klga/v2/`，允许项固定为天气、结算、heartbeat、天气特征和标签；市场、决策、Paper 数据继续排除。
 - Dashboard 已处理空 Quote，显示部署 Git SHA、官方/NWS/METAR Tmax、阶段 A as-of 与有限深度。
-- 本地基线 30 项测试通过；重构后 39 项完整测试（含多角色 SQLite WAL 并发验证）、Ruff 和差异格式检查均通过。
-- VM 迁移、旧 `live.sqlite3` 隔离和 24 小时观察尚未执行；删除仍需两次人工确认。
+- 本地基线 30 项测试通过；重构与 live as-of 回归修复后 40 项完整测试（含多角色 SQLite WAL 并发验证）、Ruff 和差异格式检查均通过。
+- VM 已从 `weather.sqlite3` 生成并验证 schema v4 统一库 `/var/lib/nice-weather/nice-weather.sqlite3`；天气、结算和 R2 账本保留，旧 live decisions 与订单簿未迁移。
+- Collector、R2 timer、Dashboard 和 Shadow Runner 已统一到 `/opt/nice-weather/repo`、共享虚拟环境、统一数据库和同一 Git SHA；R2 新对象已验证写入 `nyc-klga/v2/`。
+- 2026-09-01 进行了 16 分钟部署验收：服务重启数为 0，Runner 无 `DATA_AS_OF_VIOLATION`、Traceback 或 ERROR；累计完成 17 个 Shadow 决策、17 个阶段 A 预测和 118 个有限深度 Quote，`order_book_levels` 保持 0，R2 pending/failed 均为 0。
+- Dashboard 已在公网验证新 build SHA、阶段 A as-of、概率与可执行价格渲染，空 Quote 格式化崩溃未复现。当前因观测/预报陈旧与覆盖缺口输出 `NO_TRADE`，符合 fail-closed 规则。
+- 旧 `live.sqlite3`、WAL 和 SHM 尚未移动；24 小时观察正在进行。隔离移动和后续删除仍分别需要精确路径人工确认，禁止自动执行。
 
 ## 2026-08-27 独立天气采集与 R2
 
