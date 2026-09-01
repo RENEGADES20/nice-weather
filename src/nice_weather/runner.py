@@ -444,9 +444,9 @@ def _run_live_cycle(
                 ReasonCode.MARKET_NOT_FOUND,
             )
         contract = parse_gamma_contract(gamma_snapshot.payload, config)
-        decision_time = utc_now()
+        weather_as_of = utc_now()
         weather_state = WeatherRepository(database_path).get_state_as_of(
-            config.station_id, contract.local_day, decision_time
+            config.station_id, contract.local_day, weather_as_of
         )
         forecasts = tuple(
             item
@@ -465,7 +465,7 @@ def _run_live_cycle(
                 max(item.temperature_f for item in forecasts),
                 official_tmax,
                 config.model.sigma_f,
-                decision_time,
+                weather_as_of,
                 weather_state.input_capture_ids,
                 config.model.version,
             )
@@ -498,7 +498,8 @@ def _run_live_cycle(
                 if position.quantity and bin_id in by_bin:
                     candidate_tokens.append(by_bin[bin_id].yes_token_id)
         candidate_tokens = list(dict.fromkeys(candidate_tokens))
-        book_snapshots = market_adapter.fetch_candidate_quotes(candidate_tokens, decision_time)
+        book_snapshots = market_adapter.fetch_candidate_quotes(candidate_tokens, weather_as_of)
+    decision_time = utc_now()
     books = {
         book.token_id: book
         for book in (_book_from_snapshot(snapshot) for snapshot in book_snapshots)

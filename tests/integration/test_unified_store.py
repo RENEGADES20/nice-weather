@@ -1,15 +1,21 @@
 import gzip
 import json
-from datetime import UTC, date, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import nice_weather.runner as runner_module
 from nice_weather.adapters.fixture import load_fixture
 from nice_weather.cli import _clone_migrate
 from nice_weather.config import load_city_config
 from nice_weather.domain import RunMode, SourceCapture, content_hash, stable_id
-from nice_weather.runner import _run_bundle
+from nice_weather.runner import _run_bundle, _run_live_cycle
 from nice_weather.store import WeatherStore
-from nice_weather.weather_repository import OfflineWeatherRepository, WeatherRepository
+from nice_weather.weather_repository import (
+    CapturedWeatherState,
+    OfflineWeatherRepository,
+    WeatherRepository,
+)
 
 
 def _capture(payload: object, received_at: datetime) -> SourceCapture:
@@ -99,6 +105,71 @@ def test_shadow_persists_minimal_quotes_without_full_book_levels(
         assert counts["weather_observations"] == 0
         assert counts["forecast_points"] == 0
         assert counts["weather_feature_snapshots"] == 1
+
+
+def test_live_cycle_freezes_decision_time_after_quote_receipt(
+    fixture_manifest, tmp_path, monkeypatch
+) -> None:
+    config = load_city_config()
+    fixture = load_fixture(fixture_manifest, config)
+    weather_as_of = fixture.decision_time
+    quote_received_at = weather_as_of + timedelta(milliseconds=500)
+    final_decision_time = weather_as_of + timedelta(seconds=1)
+    clock = iter((weather_as_of - timedelta(seconds=1), weather_as_of, final_decision_time))
+
+    class FakeMarketAdapter:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def discover(self, _config, _request_time):
+            return fixture.gamma_snapshot
+
+        def fetch_candidate_quotes(self, token_ids, requested_at):
+            assert requested_at == weather_as_of
+            return [
+                replace(
+                    snapshot,
+                    requested_at=requested_at,
+                    received_at=quote_received_at,
+                )
+                for snapshot in fixture.snapshots
+                if snapshot.source == "polymarket_clob" and snapshot.token_id in token_ids
+            ]
+
+    class FakeWeatherRepository:
+        def __init__(self, _database_path) -> None:
+            pass
+
+        def get_state_as_of(self, station_id, local_date, decision_time):
+            assert decision_time == weather_as_of
+            return CapturedWeatherState(
+                station_id=station_id,
+                local_date=local_date,
+                decision_time=decision_time,
+                observations=fixture.observations,
+                forecasts=fixture.forecasts,
+                settlement=None,
+                input_capture_ids=(),
+            )
+
+    monkeypatch.setattr(runner_module, "PolymarketReadOnlyAdapter", FakeMarketAdapter)
+    monkeypatch.setattr(runner_module, "WeatherRepository", FakeWeatherRepository)
+    monkeypatch.setattr(runner_module, "utc_now", lambda: next(clock))
+
+    database = tmp_path / "live-as-of.sqlite3"
+    decision = _run_live_cycle(RunMode.SHADOW, database)
+
+    assert decision.decision_time == final_decision_time
+    with WeatherStore(database, read_only=True) as store:
+        assert store.table_counts()["decisions"] == 1
+        latest_quote = store.connection.execute(
+            "SELECT MAX(received_at) FROM execution_quotes"
+        ).fetchone()[0]
+    assert datetime.fromisoformat(latest_quote) == quote_received_at
+    assert quote_received_at <= decision.decision_time
 
 
 def test_offline_repository_accepts_v1_and_v2_manifests() -> None:
