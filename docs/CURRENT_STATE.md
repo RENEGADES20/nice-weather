@@ -1,12 +1,25 @@
 # 当前状态
 
-最后更新：2026-08-27
+最后更新：2026-09-01
 
 ## 当前阶段
 
-项目处于“纽约 KLGA MVP 纵向闭环已通过 PR #1 验收并合并至受保护 main，待人工批准 PAPER CANARY”的阶段。
+项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已完成本地实现和验证，待 PR 合并与 VM 迁移”的阶段。
 
-天气数据基础设施已在 `codex/weather-data-recorder-r2` 分支加入独立采集器、schema v3、Cloudflare R2 追加归档和 Ubuntu systemd 部署方案；合并与 VM 人工部署仍待完成。
+天气采集器已通过 PR #3 合并。当前重构分支 `codex/unified-weather-store` 从远端 `main` 创建，目标为 schema v4、统一数据库、R2 v2 和按需报价。
+
+## 2026-09-01 统一存储与阶段 A
+
+- 新增带校验和的 `schema_migrations`、`db migrate/verify/clone-migrate`、METAR 时间派生修复和部署版本查询。
+- Runner 的天气输入改为 SQLite `WeatherRepository` as-of 查询，不再在 live 决策周期调用天气 API。
+- 阶段 A 固定为 `baseline-nws-official-floor-v2`：NWS 预报提供未来基线，Weather.gov Hourly Tmax 提供官方下界，METAR/NWS 高频观测只作为趋势特征。
+- live Runner 先计算概率，再对 `probability >= 0.02` 的候选 token 获取 Quote；生产周期只保存有限 top-5 执行上下文，停止新增完整订单簿层级。
+- METAR 以 raw message 的 `DDHHMMZ` 为观测时间，保留 provider receipt 与 report time；NWS 修订增加 value/raw-message/QC/metadata/mixed 分类。
+- Weather.gov 每轮先解析，只有首次 finalized、解析失败、非单调回落或 finalized 后变化才截图；逐行结算数据进入 `settlement_rows`。
+- R2 新数据使用 `nyc-klga/v2/`，允许项固定为天气、结算、heartbeat、天气特征和标签；市场、决策、Paper 数据继续排除。
+- Dashboard 已处理空 Quote，显示部署 Git SHA、官方/NWS/METAR Tmax、阶段 A as-of 与有限深度。
+- 本地基线 30 项测试通过；重构后 39 项完整测试（含多角色 SQLite WAL 并发验证）、Ruff 和差异格式检查均通过。
+- VM 迁移、旧 `live.sqlite3` 隔离和 24 小时观察尚未执行；删除仍需两次人工确认。
 
 ## 2026-08-27 独立天气采集与 R2
 

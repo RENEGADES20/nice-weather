@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from nice_weather.adapters.fixture import load_fixture
 from nice_weather.config import load_city_config
@@ -52,6 +53,78 @@ def test_wal_reader_sees_last_complete_decision_during_write(fixture_manifest, t
 
     assert summary is not None
     assert summary["decision_id"] == decision.decision_id
+
+
+def test_short_transaction_roles_share_wal_without_lock_errors(tmp_path) -> None:
+    database = tmp_path / "role-soak.sqlite3"
+    started_at = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    with WeatherStore(database) as store:
+        store.init_schema()
+
+    def collector_writer() -> None:
+        with WeatherStore(database) as store:
+            for index in range(40):
+                timestamp = started_at + timedelta(milliseconds=index)
+                store.record_poll_attempt(
+                    source="nws",
+                    kind="station_observations",
+                    station_id="KLGA",
+                    requested_at=timestamp,
+                    received_at=timestamp,
+                    http_status=200,
+                    succeeded=True,
+                    content_changed=False,
+                )
+
+    def runner_writer() -> None:
+        with WeatherStore(database) as store:
+            for index in range(40):
+                store.record_system_event(
+                    started_at + timedelta(milliseconds=index),
+                    "INFO",
+                    "runner",
+                    "soak",
+                    f"cycle-{index}",
+                )
+
+    def r2_writer() -> None:
+        with WeatherStore(database) as store:
+            for index in range(40):
+                timestamp = started_at + timedelta(milliseconds=index)
+                store.record_r2_export(
+                    export_id=stable_id("r2", index),
+                    export_type="raw",
+                    source="nws",
+                    local_date="2026-09-01",
+                    object_key=f"soak/{index}.ndjson.gz",
+                    sha256=f"{index:064x}",
+                    size_bytes=index,
+                    source_ids=[],
+                    created_at=timestamp,
+                    uploaded_at=timestamp,
+                    status="uploaded",
+                )
+
+    def dashboard_reader() -> None:
+        query = DashboardQuery(database)
+        for _ in range(80):
+            query.list_decisions()
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(collector_writer),
+            executor.submit(runner_writer),
+            executor.submit(r2_writer),
+            executor.submit(dashboard_reader),
+        ]
+        for future in futures:
+            future.result(timeout=15)
+
+    with WeatherStore(database, read_only=True) as store:
+        counts = store.table_counts()
+    assert counts["poll_attempts"] == 40
+    assert counts["system_events"] == 40
+    assert counts["r2_exports"] == 40
 
 
 def test_market_not_found_is_persisted_as_no_trade(tmp_path) -> None:

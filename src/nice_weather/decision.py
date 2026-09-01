@@ -60,6 +60,7 @@ def build_outcomes(
         reasons: list[ReasonCode] = list(contract.ambiguities)
         book = books.get(item.yes_token_id)
         model_probability = probability_by_bin.get(item.bin_id, 0.0)
+        position_quantity = positions.get(item.bin_id, 0.0)
         best_bid = book.best_bid if book else None
         best_ask = book.best_ask if book else None
         mid = (best_bid + best_ask) / 2 if best_bid is not None and best_ask is not None else None
@@ -72,12 +73,16 @@ def build_outcomes(
             reasons.append(ReasonCode.DATA_STALE)
         if not item.active or item.closed or not item.accepting_orders:
             reasons.append(ReasonCode.MARKET_CLOSED)
-        if book is None or best_ask is None or best_bid is None:
-            reasons.append(ReasonCode.MARKET_ORDER_BOOK_MISSING)
+        if (
+            model_probability < config.signal.quote_probability_floor
+            and position_quantity <= 0
+        ):
+            reasons.append(ReasonCode.EDGE_BELOW_THRESHOLD)
+        elif book is None or best_ask is None or best_bid is None:
+            reasons.append(ReasonCode.MARKET_QUOTE_UNAVAILABLE)
         elif best_bid >= best_ask:
             reasons.append(ReasonCode.MARKET_ORDER_BOOK_CROSSED)
         else:
-            position_quantity = positions.get(item.bin_id, 0.0)
             exit_quote = depth_quote(book, "sell", position_quantity)
             exit_net_edge = None
             if exit_quote.vwap is not None and position_quantity >= item.minimum_order_size:
@@ -114,10 +119,14 @@ def build_outcomes(
                     notional = quote.quantity * quote.vwap
                     if net_edge < config.signal.minimum_net_edge:
                         reasons.append(ReasonCode.EDGE_BELOW_THRESHOLD)
-                    if notional > cash_available + 1e-9:
-                        reasons.append(ReasonCode.RISK_CASH_INSUFFICIENT)
-                    if used_notional + notional > config.paper.max_city_day_notional + 1e-9:
-                        reasons.append(ReasonCode.RISK_CITY_DAY_LIMIT)
+                    else:
+                        if notional > cash_available + 1e-9:
+                            reasons.append(ReasonCode.RISK_CASH_INSUFFICIENT)
+                        if (
+                            used_notional + notional
+                            > config.paper.max_city_day_notional + 1e-9
+                        ):
+                            reasons.append(ReasonCode.RISK_CITY_DAY_LIMIT)
                     if not reasons:
                         action = SignalAction.BUY_YES
                         approved = True

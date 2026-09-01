@@ -52,10 +52,12 @@ class HttpPayload:
 class PagePayload:
     html: str
     text: str
-    screenshot_png: bytes
+    screenshot_png: bytes | None
     request_url: str
     requested_at: datetime
     received_at: datetime
+    status_code: int = 200
+    response_headers: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,23 @@ class ParsedSettlementPage:
     parse_status: str
     no_trade_reason: str | None
     finalized: bool
+    rows: tuple[tuple[datetime, float], ...]
+
+
+def settlement_screenshot_trigger(
+    parsed: ParsedSettlementPage,
+    previous_tmax: float | None,
+    previous_finalized: bool,
+) -> str | None:
+    if parsed.parse_status != "parsed":
+        return "parse_failure"
+    if parsed.finalized and not previous_finalized:
+        return "first_finalized"
+    if previous_tmax is not None and parsed.tmax_f is not None and parsed.tmax_f < previous_tmax:
+        return "non_monotonic_tmax"
+    if previous_finalized and parsed.tmax_f != previous_tmax:
+        return "post_final_change"
+    return None
 
 
 class OfficialWeatherClient:
@@ -150,7 +169,7 @@ class OfficialWeatherClient:
 class SettlementPageClient:
     """Render the public Weather.gov page; browser dependency stays optional at import time."""
 
-    def fetch(self, url: str) -> PagePayload:
+    def fetch(self, url: str, *, screenshot: bool = False) -> PagePayload:
         try:
             from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
             from playwright.sync_api import sync_playwright
@@ -162,7 +181,7 @@ class SettlementPageClient:
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 1200})
-            page.goto(url, wait_until="domcontentloaded", timeout=45_000)
+            response = page.goto(url, wait_until="domcontentloaded", timeout=45_000)
             try:
                 page.wait_for_function(
                     """
@@ -179,15 +198,24 @@ class SettlementPageClient:
                     page.wait_for_timeout(1_500)
                 observation_table = page.locator("#OBS")
                 text = observation_table.inner_text()
-                screenshot = observation_table.screenshot(type="png")
+                screenshot_png = observation_table.screenshot(type="png") if screenshot else None
             except PlaywrightTimeoutError:
                 page.wait_for_timeout(2_000)
                 text = page.locator("body").inner_text()
-                screenshot = page.screenshot(full_page=True, type="png")
+                screenshot_png = page.screenshot(full_page=True, type="png") if screenshot else None
             html = page.content()
             final_url = page.url
             browser.close()
-        return PagePayload(html, text, screenshot, final_url, requested_at, utc_now())
+        return PagePayload(
+            html,
+            text,
+            screenshot_png,
+            final_url,
+            requested_at,
+            utc_now(),
+            response.status if response else 200,
+            response.headers if response else {},
+        )
 
 
 _TMAX_PATTERNS = (
@@ -287,6 +315,7 @@ def parse_settlement_page(text: str, local_day: date, zone: ZoneInfo) -> ParsedS
             parse_status="ambiguous",
             no_trade_reason="SETTLEMENT_PAGE_UNPARSEABLE",
             finalized=False,
+            rows=tuple(rows),
         )
     return ParsedSettlementPage(
         table_text=table_text[:100_000],
@@ -297,7 +326,41 @@ def parse_settlement_page(text: str, local_day: date, zone: ZoneInfo) -> ParsedS
         parse_status="parsed",
         no_trade_reason=None,
         finalized=next_day is not None,
+        rows=tuple(rows),
     )
+
+
+_METAR_TIME_RE = re.compile(r"\b(?P<day>\d{2})(?P<hour>\d{2})(?P<minute>\d{2})Z\b")
+
+
+def parse_metar_observed_at(raw_message: str, reference: datetime) -> datetime:
+    match = _METAR_TIME_RE.search(raw_message)
+    if match is None:
+        raise ValueError("METAR raw message does not contain DDHHMMZ")
+    reference = reference.astimezone(UTC)
+    candidates = []
+    for month_offset in (-1, 0, 1):
+        month_index = reference.year * 12 + reference.month - 1 + month_offset
+        year, month_zero = divmod(month_index, 12)
+        try:
+            candidates.append(
+                datetime(
+                    year,
+                    month_zero + 1,
+                    int(match.group("day")),
+                    int(match.group("hour")),
+                    int(match.group("minute")),
+                    tzinfo=UTC,
+                )
+            )
+        except ValueError:
+            continue
+    if not candidates:
+        raise ValueError("METAR DDHHMMZ cannot be mapped to a valid calendar date")
+    observed_at = min(candidates, key=lambda value: abs(value - reference))
+    if abs(observed_at - reference) > timedelta(days=20):
+        raise ValueError("METAR DDHHMMZ is ambiguous relative to provider receipt time")
+    return observed_at
 
 
 def _json_capture(
@@ -348,8 +411,16 @@ class WeatherCollector:
 
     def _save_metar(self, client: OfficialWeatherClient) -> bool:
         result = client.fetch_metar(self.config.station_id)
-        report_times = [parse_time(item.get("reportTime")) for item in result.payload]
-        latest = max((value for value in report_times if value is not None), default=None)
+        observed_times = []
+        for item in result.payload:
+            reference = parse_time(item.get("receiptTime")) or result.received_at
+            try:
+                observed_times.append(
+                    parse_metar_observed_at(str(item.get("rawOb", "")), reference)
+                )
+            except ValueError:
+                continue
+        latest = max(observed_times, default=None)
         capture = _json_capture(
             result,
             source="aviationweather",
@@ -360,8 +431,16 @@ class WeatherCollector:
             source_version=str(latest.isoformat() if latest else content_hash(result.payload)),
         )
         observations = []
+        parse_error_count = 0
         for item in result.payload:
-            observed_at = parse_time(item.get("reportTime"))
+            provider_received_at = parse_time(item.get("receiptTime"))
+            report_time = parse_time(item.get("reportTime"))
+            reference = provider_received_at or report_time or result.received_at
+            try:
+                observed_at = parse_metar_observed_at(str(item.get("rawOb", "")), reference)
+            except ValueError:
+                parse_error_count += 1
+                continue
             temperature_c = item.get("temp")
             if observed_at is None or temperature_c is None:
                 continue
@@ -374,13 +453,48 @@ class WeatherCollector:
                     "raw_text": str(item.get("rawOb", "")),
                     "quality_control": {},
                     "zone": self.config.zone,
+                    "provider_received_at": provider_received_at,
+                    "report_time": report_time,
+                    "parser_version": "metar-ddhhmmz-v2",
+                    "weather_metadata": {
+                        "dewpoint_c": item.get("dewp"),
+                        "wind_direction_deg": item.get("wdir"),
+                        "wind_speed_kt": item.get("wspd"),
+                        "wind_gust_kt": item.get("wgst"),
+                        "visibility_sm": item.get("visib"),
+                        "precip_in": item.get("precip"),
+                        "cloud_layers": item.get("clouds") or [],
+                    },
                 }
             )
         with WeatherStore(self.database_path) as store:
             store.init_schema()
-            return store.save_source_capture(
+            changed = store.save_source_capture(
                 capture, payload=result.payload, observations=observations
             )
+            store.record_poll_attempt(
+                source=capture.source,
+                kind=capture.kind,
+                station_id=capture.station_id,
+                requested_at=capture.requested_at,
+                received_at=capture.received_at,
+                http_status=capture.http_status,
+                succeeded=True,
+                content_changed=changed,
+                capture_id=capture.capture_id if changed else None,
+                content_hash_value=capture.content_hash,
+                local_date=capture.local_date.isoformat(),
+            )
+            if parse_error_count:
+                store.record_system_event(
+                    capture.received_at,
+                    "WARN",
+                    "aviationweather",
+                    "METAR_TIMESTAMP_PARSE_SKIPPED",
+                    f"Skipped {parse_error_count} METAR rows with ambiguous DDHHMMZ",
+                    {"capture_id": capture.capture_id, "collector": True},
+                )
+            return changed
 
     def _save_forecast(self, client: OfficialWeatherClient) -> bool:
         result = client.fetch_hourly_forecast(self.config)
@@ -406,9 +520,18 @@ class WeatherCollector:
         )
         with WeatherStore(self.database_path) as store:
             store.init_schema()
-            return store.save_source_capture(
+            changed = store.save_source_capture(
                 capture, payload=result.payload, forecast_periods=periods
             )
+            store.record_poll_attempt(
+                source=capture.source, kind=capture.kind, station_id=capture.station_id,
+                requested_at=capture.requested_at, received_at=capture.received_at,
+                http_status=capture.http_status, succeeded=True, content_changed=changed,
+                capture_id=capture.capture_id if changed else None,
+                content_hash_value=capture.content_hash,
+                local_date=capture.local_date.isoformat(),
+            )
+            return changed
 
     def _save_nws_observations(self, client: OfficialWeatherClient) -> bool:
         result = client.fetch_nws_observations(self.config, utc_now())
@@ -448,16 +571,35 @@ class WeatherCollector:
                         "temperature": temperature.get("qualityControl"),
                     },
                     "zone": self.config.zone,
+                    "parser_version": "nws-observation-v2",
+                    "weather_metadata": {
+                        "dewpoint": item.get("dewpoint"),
+                        "wind_direction": item.get("windDirection"),
+                        "wind_speed": item.get("windSpeed"),
+                        "wind_gust": item.get("windGust"),
+                        "precipitation_last_hour": item.get("precipitationLastHour"),
+                        "cloud_layers": item.get("cloudLayers") or [],
+                    },
                 }
             )
         with WeatherStore(self.database_path) as store:
             store.init_schema()
-            return store.save_source_capture(
+            changed = store.save_source_capture(
                 capture, payload=result.payload, observations=observations
             )
+            store.record_poll_attempt(
+                source=capture.source, kind=capture.kind, station_id=capture.station_id,
+                requested_at=capture.requested_at, received_at=capture.received_at,
+                http_status=capture.http_status, succeeded=True, content_changed=changed,
+                capture_id=capture.capture_id if changed else None,
+                content_hash_value=capture.content_hash,
+                local_date=capture.local_date.isoformat(),
+            )
+            return changed
 
     def _save_settlement(self) -> bool:
-        page = self.page_client_factory().fetch(self.config.collector.settlement_url)
+        page_client = self.page_client_factory()
+        page = page_client.fetch(self.config.collector.settlement_url)
         local_day = page.received_at.astimezone(self.config.zone).date()
         if page.received_at.astimezone(self.config.zone).time() <= datetime_time(1, 10):
             local_day -= timedelta(days=1)
@@ -480,7 +622,7 @@ class WeatherCollector:
             source_version=page_hash,
             content_hash=page_hash,
             request_url=page.request_url,
-            http_status=200,
+            http_status=page.status_code,
             content_type="text/html",
             raw_bytes=gzip.compress(page.html.encode("utf-8"), compresslevel=6),
             source_time=parsed.page_updated_at,
@@ -490,16 +632,30 @@ class WeatherCollector:
             previous = store.latest_settlement_evidence(local_day)
             inserted = store.save_source_capture(capture, payload=canonical)
             if not inserted:
+                store.record_poll_attempt(
+                    source=capture.source,
+                    kind=capture.kind,
+                    station_id=capture.station_id,
+                    requested_at=capture.requested_at,
+                    received_at=capture.received_at,
+                    http_status=capture.http_status,
+                    succeeded=True,
+                    content_changed=False,
+                    content_hash_value=capture.content_hash,
+                    local_date=capture.local_date.isoformat(),
+                )
                 return False
             previous_tmax = previous["tmax_f"] if previous is not None else None
             previous_finalized = bool(previous["finalized"]) if previous is not None else False
-            keep_screenshot = (
-                parsed.tmax_f is not None
-                and (
-                    parsed.tmax_f != previous_tmax
-                    or (parsed.finalized and not previous_finalized)
-                )
+            screenshot_trigger = settlement_screenshot_trigger(
+                parsed, previous_tmax, previous_finalized
             )
+            screenshot_png = None
+            if screenshot_trigger:
+                screenshot_page = page_client.fetch(
+                    self.config.collector.settlement_url, screenshot=True
+                )
+                screenshot_png = screenshot_page.screenshot_png
             evidence = SettlementEvidence(
                 evidence_id=stable_id("settlement", capture.capture_id),
                 capture_id=capture.capture_id,
@@ -514,18 +670,52 @@ class WeatherCollector:
                 first_next_day_temperature_f=parsed.first_next_day_temperature_f,
                 no_trade_reason=parsed.no_trade_reason,
                 finalized=parsed.finalized,
-                screenshot_png=page.screenshot_png if keep_screenshot else None,
+                screenshot_png=screenshot_png,
+                page_url=page.request_url,
+                content_hash=page_hash,
+                screenshot_trigger=screenshot_trigger,
+                response_metadata={
+                    "http_status": page.status_code,
+                    "date": (page.response_headers or {}).get("date"),
+                    "cache_control": (page.response_headers or {}).get("cache-control"),
+                    "expires": (page.response_headers or {}).get("expires"),
+                },
             )
-            store.save_settlement_evidence(evidence)
+            store.save_settlement_evidence(evidence, parsed.rows)
+            store.record_poll_attempt(
+                source=capture.source, kind=capture.kind, station_id=capture.station_id,
+                requested_at=capture.requested_at, received_at=capture.received_at,
+                http_status=capture.http_status, succeeded=True, content_changed=True,
+                capture_id=capture.capture_id, content_hash_value=capture.content_hash,
+                local_date=capture.local_date.isoformat(),
+            )
         return True
 
     def _run_source(self, name: str, action: Callable[[], bool]) -> dict[str, Any]:
+        requested_at = utc_now()
         try:
             changed = action()
             return {"source": name, "ok": True, "changed": changed}
         except Exception as exc:
             with WeatherStore(self.database_path) as store:
                 store.init_schema()
+                store.record_poll_attempt(
+                    source=name,
+                    kind={
+                        "aviationweather": "metar",
+                        "nws_forecast": "hourly_forecast",
+                        "nws_observations": "station_observations",
+                        "weather_gov": "settlement_page",
+                    }.get(name, name),
+                    station_id=self.config.station_id,
+                    requested_at=requested_at,
+                    received_at=utc_now(),
+                    http_status=None,
+                    succeeded=False,
+                    content_changed=False,
+                    error=exc,
+                    local_date=requested_at.astimezone(self.config.zone).date().isoformat(),
+                )
                 store.record_system_event(
                     utc_now(),
                     "ERROR",

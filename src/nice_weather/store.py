@@ -15,12 +15,14 @@ from nice_weather.domain import (
     PaperOrderStatus,
     ProbabilityEstimate,
     RawSnapshot,
+    RunMode,
     SettlementEvidence,
     SourceCapture,
     UnifiedState,
     content_hash,
     stable_id,
 )
+from nice_weather.migrations import apply_migrations, verify_database
 from nice_weather.paper import (
     PaperAccountSnapshot,
     PaperBroker,
@@ -62,7 +64,7 @@ class WeatherStore:
             raise RuntimeError("Cannot initialize schema through a read-only connection")
         schema = files("nice_weather").joinpath("schema.sql").read_text(encoding="utf-8")
         self.connection.executescript(schema)
-        self._migrate_v3_columns()
+        apply_migrations(self.connection)
         self.connection.commit()
 
     def _migrate_v3_columns(self) -> None:
@@ -84,6 +86,9 @@ class WeatherStore:
                 self.connection.execute(
                     f'ALTER TABLE weather_observations ADD COLUMN "{name}" {definition}'
                 )
+
+    def verify_schema(self) -> dict[str, Any]:
+        return verify_database(self.connection)
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -232,6 +237,61 @@ class WeatherStore:
                 ),
             )
 
+    def record_poll_attempt(
+        self,
+        *,
+        source: str,
+        kind: str,
+        station_id: str,
+        requested_at: datetime,
+        received_at: datetime | None,
+        http_status: int | None,
+        succeeded: bool,
+        content_changed: bool,
+        capture_id: str | None = None,
+        content_hash_value: str | None = None,
+        error: Exception | None = None,
+        local_date: str | None = None,
+    ) -> None:
+        latency_ms = None
+        if received_at is not None:
+            latency_ms = max(0, round((received_at - requested_at).total_seconds() * 1000))
+        attempt_id = stable_id(
+            "poll",
+            source,
+            kind,
+            requested_at,
+            received_at,
+            capture_id,
+            type(error).__name__ if error else "ok",
+        )
+        with self.transaction() as connection:
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO poll_attempts(
+                  attempt_id,source,kind,station_id,local_date,requested_at,received_at,http_status,
+                  latency_ms,succeeded,content_changed,capture_id,content_hash,error_type,error_reason
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    attempt_id,
+                    source,
+                    kind,
+                    station_id,
+                    local_date or (received_at or requested_at).date().isoformat(),
+                    self._iso(requested_at),
+                    self._iso(received_at),
+                    http_status,
+                    latency_ms,
+                    int(succeeded),
+                    int(content_changed),
+                    capture_id,
+                    content_hash_value,
+                    type(error).__name__ if error else None,
+                    str(error) if error else None,
+                ),
+            )
+
     def save_source_capture(
         self,
         capture: SourceCapture,
@@ -314,6 +374,7 @@ class WeatherStore:
                         "raw_unit": item.get("raw_unit"),
                         "raw_text": item.get("raw_text", ""),
                         "quality_control": item.get("quality_control", {}),
+                        "weather_metadata": item.get("weather_metadata", {}),
                     }
                 )
                 revision = int(
@@ -325,13 +386,45 @@ class WeatherStore:
                         (capture.station_id, self._iso(observed_at), capture.source),
                     ).fetchone()[0]
                 ) + 1
+                previous = connection.execute(
+                    """
+                    SELECT temperature_f,raw_text,quality_control_json,raw_unit,
+                           weather_metadata_json
+                    FROM weather_observations
+                    WHERE station_id=? AND observed_at=? AND source=?
+                    ORDER BY revision DESC LIMIT 1
+                    """,
+                    (capture.station_id, self._iso(observed_at), capture.source),
+                ).fetchone()
+                revision_type = "initial"
+                if previous is not None:
+                    changes = []
+                    if float(previous["temperature_f"]) != float(item.get("temperature_f")):
+                        changes.append("value")
+                    if str(previous["raw_text"]) != str(item.get("raw_text", "")):
+                        changes.append("raw_message")
+                    if str(previous["quality_control_json"]) != self.dumps(
+                        item.get("quality_control", {})
+                    ):
+                        changes.append("qc")
+                    if str(previous["raw_unit"] or "") != str(item.get("raw_unit") or ""):
+                        changes.append("metadata")
+                    if str(previous["weather_metadata_json"]) != self.dumps(
+                        item.get("weather_metadata", {})
+                    ):
+                        changes.append("metadata")
+                    revision_type = (
+                        f"{changes[0]}_change" if len(changes) == 1 else "mixed"
+                    )
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO weather_observations(
                       observation_id, snapshot_id, station_id, observed_at, received_at,
                       temperature_f, raw_text, source, temperature_c, raw_unit,
-                      quality_control_json, source_version, revision, local_date
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      quality_control_json, source_version, revision, local_date,
+                      provider_received_at, report_time, revision_type, parser_version,
+                      weather_metadata_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stable_id(
@@ -353,6 +446,11 @@ class WeatherStore:
                         capture.source_version,
                         revision,
                         observed_at.astimezone(item["zone"]).date().isoformat(),
+                        self._iso(item.get("provider_received_at")),
+                        self._iso(item.get("report_time")),
+                        revision_type,
+                        item.get("parser_version", "official-weather-v2"),
+                        self.dumps(item.get("weather_metadata", {})),
                     ),
                 )
             if forecast_periods is not None:
@@ -397,19 +495,24 @@ class WeatherStore:
                     )
         return True
 
-    def save_settlement_evidence(self, evidence: SettlementEvidence) -> bool:
+    def save_settlement_evidence(
+        self, evidence: SettlementEvidence, rows: tuple[tuple[datetime, float], ...] = ()
+    ) -> bool:
         screenshot_hash = None
         if evidence.screenshot_png is not None:
             import hashlib
 
             screenshot_hash = hashlib.sha256(evidence.screenshot_png).hexdigest()
         with self.transaction() as connection:
-            return bool(
+            inserted = bool(
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO settlement_evidence VALUES(
-                      ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
-                    )
+                    INSERT OR IGNORE INTO settlement_evidence(
+                      evidence_id,capture_id,station_id,local_date,received_at,page_updated_at,
+                      tmax_f,first_next_day_observed_at,first_next_day_temperature_f,table_text,
+                      parse_status,no_trade_reason,finalized,screenshot_png,screenshot_sha256,
+                      parser_version,page_url,content_hash,screenshot_trigger,response_metadata_json
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         evidence.evidence_id,
@@ -427,9 +530,68 @@ class WeatherStore:
                         int(evidence.finalized),
                         evidence.screenshot_png,
                         screenshot_hash,
+                        evidence.parser_version,
+                        evidence.page_url,
+                        evidence.content_hash,
+                        evidence.screenshot_trigger,
+                        self.dumps(evidence.response_metadata),
                     ),
                 ).rowcount
             )
+            if not inserted:
+                return False
+            for index, (observed_at, temperature_f) in enumerate(rows):
+                row_hash = content_hash(
+                    {"observed_at": self._iso(observed_at), "temperature_f": temperature_f}
+                )
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO settlement_rows(
+                      row_id,evidence_id,capture_id,station_id,local_date,observed_at,
+                      received_at,temperature_f,row_index,row_hash
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        stable_id("settlement_row", evidence.evidence_id, index, row_hash),
+                        evidence.evidence_id,
+                        evidence.capture_id,
+                        evidence.station_id,
+                        evidence.local_date.isoformat(),
+                        self._iso(observed_at),
+                        self._iso(evidence.received_at),
+                        temperature_f,
+                        index,
+                        row_hash,
+                    ),
+                )
+            if evidence.finalized and evidence.tmax_f is not None:
+                label_hash = content_hash(
+                    {
+                        "station_id": evidence.station_id,
+                        "local_date": evidence.local_date.isoformat(),
+                        "official_tmax_f": evidence.tmax_f,
+                        "evidence_id": evidence.evidence_id,
+                    }
+                )
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO weather_daily_labels(
+                      label_id,station_id,local_date,official_tmax_f,evidence_id,
+                      finalized_at,label_version,label_hash
+                    ) VALUES(?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        stable_id("weather_label", evidence.station_id, evidence.local_date),
+                        evidence.station_id,
+                        evidence.local_date.isoformat(),
+                        evidence.tmax_f,
+                        evidence.evidence_id,
+                        self._iso(evidence.received_at),
+                        evidence.parser_version,
+                        label_hash,
+                    ),
+                )
+            return True
 
     def latest_settlement_evidence(self, local_date: Any) -> sqlite3.Row | None:
         value = local_date.isoformat() if hasattr(local_date, "isoformat") else str(local_date)
@@ -528,9 +690,13 @@ class WeatherStore:
             return [dict(row) for row in rows]
         allowed = {
             "source_captures": "local_date",
+            "poll_attempts": "local_date",
             "weather_observations": "local_date",
             "weather_forecasts": "local_date",
             "settlement_evidence": "local_date",
+            "settlement_rows": "local_date",
+            "weather_feature_snapshots": "local_date",
+            "weather_daily_labels": "local_date",
         }
         if table not in allowed:
             raise ValueError(f"Unsupported export table: {table}")
@@ -666,6 +832,17 @@ class WeatherStore:
     ) -> None:
         with self.transaction() as connection:
             for snapshot in snapshots:
+                persisted_payload = snapshot.payload
+                if snapshot.source == "polymarket_clob" and state.mode is not RunMode.FIXTURE:
+                    persisted_payload = {
+                        "asset_id": snapshot.payload.get("asset_id"),
+                        "market": snapshot.payload.get("market"),
+                        "timestamp": snapshot.payload.get("timestamp"),
+                        "hash": snapshot.payload.get("hash"),
+                        "bids": snapshot.payload.get("bids", [])[:5],
+                        "asks": snapshot.payload.get("asks", [])[:5],
+                        "storage_policy": "candidate-top5-v1",
+                    }
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO raw_snapshots(
@@ -691,61 +868,155 @@ class WeatherStore:
                         snapshot.token_id,
                         snapshot.request_url,
                         snapshot.http_status,
-                        self.dumps(snapshot.payload),
+                        self.dumps(persisted_payload),
                     ),
                 )
             self._save_contract(connection, state.contract, source_snapshot_id, state.decision_time)
+            for snapshot in snapshots:
+                if snapshot.source == "polymarket_gamma":
+                    connection.execute(
+                        """
+                        INSERT OR IGNORE INTO market_captures(
+                          capture_id,source,kind,event_id,market_id,requested_at,
+                          received_at,content_hash,payload_json
+                        ) VALUES(?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            snapshot.snapshot_id,
+                            snapshot.source,
+                            snapshot.kind,
+                            snapshot.event_id,
+                            snapshot.market_id,
+                            self._iso(snapshot.requested_at or snapshot.received_at),
+                            self._iso(snapshot.received_at),
+                            snapshot.hash,
+                            self.dumps(snapshot.payload),
+                        ),
+                    )
+            quote_ids: dict[str, str] = {}
             for book in state.order_books.values():
-                for side, levels in (("bid", book.bids), ("ask", book.asks)):
-                    for index, level in enumerate(levels):
-                        connection.execute(
-                            """
-                            INSERT OR REPLACE INTO order_book_levels VALUES(?,?,?,?,?,?,?,?,?,?)
-                            """,
-                            (
-                                book.snapshot_id,
-                                book.token_id,
-                                book.market_id,
-                                book.book_hash,
-                                self._iso(book.exchange_time),
-                                self._iso(book.received_at),
-                                side,
-                                index,
-                                level.price,
-                                level.size,
-                            ),
-                        )
-            for item in state.observations:
+                if state.mode is RunMode.FIXTURE:
+                    for side, levels in (("bid", book.bids), ("ask", book.asks)):
+                        for index, level in enumerate(levels):
+                            connection.execute(
+                                """
+                                INSERT OR REPLACE INTO order_book_levels
+                                VALUES(?,?,?,?,?,?,?,?,?,?)
+                                """,
+                                (
+                                    book.snapshot_id,
+                                    book.token_id,
+                                    book.market_id,
+                                    book.book_hash,
+                                    self._iso(book.exchange_time),
+                                    self._iso(book.received_at),
+                                    side,
+                                    index,
+                                    level.price,
+                                    level.size,
+                                ),
+                            )
+                contract_bin = next(
+                    (item for item in state.contract.bins if item.yes_token_id == book.token_id),
+                    None,
+                )
+                outcome = next(
+                    (
+                        item
+                        for item in decision.outcomes
+                        if contract_bin is not None and item.bin_id == contract_bin.bin_id
+                    ),
+                    None,
+                )
+                target_quantity = outcome.executable_quantity if outcome is not None else 0.0
+                quote_id = stable_id("quote", decision.decision_id, book.snapshot_id)
+                if contract_bin is not None:
+                    quote_ids[contract_bin.bin_id] = quote_id
                 connection.execute(
                     """
-                    INSERT OR REPLACE INTO weather_observations(
-                      observation_id, snapshot_id, station_id, observed_at, received_at,
-                      temperature_f, raw_text
-                    ) VALUES(?,?,?,?,?,?,?)
+                    INSERT OR REPLACE INTO execution_quotes(
+                      quote_id,snapshot_id,decision_id,market_id,token_id,requested_at,
+                      received_at,book_hash,best_bid,best_ask,spread,target_quantity,
+                      bid_vwap,ask_vwap,bid_depth,ask_depth,top_levels_json,status,error_reason
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
-                        stable_id("observation", item.snapshot_id, item.observed_at),
-                        item.snapshot_id,
-                        item.station_id,
-                        self._iso(item.observed_at),
-                        self._iso(item.received_at),
-                        item.temperature_f,
-                        item.raw_text,
+                        quote_id,
+                        book.snapshot_id,
+                        decision.decision_id,
+                        book.market_id,
+                        book.token_id,
+                        self._iso(
+                            next(
+                                (
+                                    snapshot.requested_at
+                                    for snapshot in snapshots
+                                    if snapshot.snapshot_id == book.snapshot_id
+                                ),
+                                None,
+                            )
+                            or book.received_at
+                        ),
+                        self._iso(book.received_at),
+                        book.book_hash,
+                        book.best_bid,
+                        book.best_ask,
+                        (
+                            book.best_ask - book.best_bid
+                            if book.best_bid is not None and book.best_ask is not None
+                            else None
+                        ),
+                        target_quantity,
+                        self._levels_vwap(book.bids, target_quantity),
+                        self._levels_vwap(book.asks, target_quantity),
+                        sum(level.size for level in book.bids),
+                        sum(level.size for level in book.asks),
+                        self.dumps(
+                            {
+                                "bids": [vars(level) for level in book.bids[:5]],
+                                "asks": [vars(level) for level in book.asks[:5]],
+                            }
+                        ),
+                        (
+                            "available"
+                            if book.best_bid is not None or book.best_ask is not None
+                            else "empty"
+                        ),
+                        None,
                     ),
                 )
-            for item in state.forecasts:
-                connection.execute(
-                    "INSERT OR REPLACE INTO forecast_points VALUES(?,?,?,?,?,?,?)",
-                    (
-                        stable_id("forecast", item.snapshot_id, item.valid_at),
-                        item.snapshot_id,
-                        item.source,
-                        self._iso(item.issued_at),
-                        self._iso(item.valid_at),
-                        self._iso(item.received_at),
-                        item.temperature_f,
-                    ),
-                )
+            if state.mode is RunMode.FIXTURE:
+                for item in state.observations:
+                    connection.execute(
+                        """
+                        INSERT OR REPLACE INTO weather_observations(
+                          observation_id, snapshot_id, station_id, observed_at, received_at,
+                          temperature_f, raw_text
+                        ) VALUES(?,?,?,?,?,?,?)
+                        """,
+                        (
+                            stable_id("observation", item.snapshot_id, item.observed_at),
+                            item.snapshot_id,
+                            item.station_id,
+                            self._iso(item.observed_at),
+                            self._iso(item.received_at),
+                            item.temperature_f,
+                            item.raw_text,
+                        ),
+                    )
+                for item in state.forecasts:
+                    connection.execute(
+                        "INSERT OR REPLACE INTO forecast_points VALUES(?,?,?,?,?,?,?)",
+                        (
+                            stable_id("forecast", item.snapshot_id, item.valid_at),
+                            item.snapshot_id,
+                            item.source,
+                            self._iso(item.issued_at),
+                            self._iso(item.valid_at),
+                            self._iso(item.received_at),
+                            item.temperature_f,
+                        ),
+                    )
             probability_summary = {
                 "model_version": estimate.model_version,
                 "baseline_tmax_f": estimate.baseline_tmax_f,
@@ -783,15 +1054,29 @@ class WeatherStore:
                 "DELETE FROM decision_inputs WHERE decision_id=?", (decision.decision_id,)
             )
             for snapshot_id in state.input_snapshot_ids:
-                connection.execute(
-                    "INSERT INTO decision_inputs VALUES(?,?,?)",
-                    (decision.decision_id, snapshot_id, "decision_state"),
-                )
+                if connection.execute(
+                    "SELECT 1 FROM raw_snapshots WHERE snapshot_id=?", (snapshot_id,)
+                ).fetchone():
+                    connection.execute(
+                        "INSERT INTO decision_inputs VALUES(?,?,?)",
+                        (decision.decision_id, snapshot_id, "decision_state"),
+                    )
+                elif connection.execute(
+                    "SELECT 1 FROM source_captures WHERE capture_id=?", (snapshot_id,)
+                ).fetchone():
+                    connection.execute(
+                        "INSERT OR IGNORE INTO decision_weather_inputs VALUES(?,?,?)",
+                        (decision.decision_id, snapshot_id, "weather_as_of"),
+                    )
             for outcome in decision.outcomes:
                 connection.execute(
                     """
-                    INSERT OR REPLACE INTO decision_outcomes
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    INSERT OR REPLACE INTO decision_outcomes(
+                      decision_id,bin_id,label,model_probability,best_bid,best_ask,mid,
+                      executable_quantity,executable_price,executable_depth,gross_edge,fee,
+                      slippage,uncertainty_buffer,net_edge,action,risk_approved,
+                      reason_codes_json,paper_position,quote_id
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         outcome.decision_id,
@@ -813,8 +1098,109 @@ class WeatherStore:
                         int(outcome.risk_approved),
                         self.dumps([code.value for code in outcome.reason_codes]),
                         outcome.paper_position,
+                        quote_ids.get(outcome.bin_id),
                     ),
                 )
+            feature_snapshot_id = stable_id(
+                "weather_features", decision.decision_id, state.input_set_hash
+            )
+            metar_tmax = max(
+                (
+                    item.temperature_f
+                    for item in state.observations
+                    if item.source == "aviationweather"
+                ),
+                default=None,
+            )
+            nws_tmax = max(
+                (item.temperature_f for item in state.observations if item.source == "nws"),
+                default=None,
+            )
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO weather_feature_snapshots(
+                  feature_snapshot_id,station_id,local_date,decision_time,
+                  feature_schema_version,input_capture_ids_json,input_set_hash,
+                  forecast_tmax_f,official_hourly_tmax_f,nws_observed_tmax_f,
+                  metar_observed_tmax_f,features_json,missing_flags_json,created_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    feature_snapshot_id,
+                    state.contract.station_id,
+                    state.contract.local_day.isoformat(),
+                    self._iso(state.decision_time),
+                    "klga-stage-a-v1",
+                    self.dumps(state.input_snapshot_ids),
+                    state.input_set_hash,
+                    estimate.baseline_tmax_f,
+                    estimate.observed_tmax_f,
+                    nws_tmax,
+                    metar_tmax,
+                    self.dumps(
+                        {
+                            "mean_tmax_f": estimate.mean_tmax_f,
+                            "metar_trend_f_per_hour_30": self._temperature_trend(
+                                state.observations,
+                                "aviationweather",
+                                state.decision_time,
+                                30,
+                            ),
+                            "metar_trend_f_per_hour_60": self._temperature_trend(
+                                state.observations,
+                                "aviationweather",
+                                state.decision_time,
+                                60,
+                            ),
+                            "metar_trend_f_per_hour_120": self._temperature_trend(
+                                state.observations,
+                                "aviationweather",
+                                state.decision_time,
+                                120,
+                            ),
+                            "nws_trend_f_per_hour_60": self._temperature_trend(
+                                state.observations, "nws", state.decision_time, 60
+                            ),
+                            "latest_metar_metadata": self._latest_weather_metadata(
+                                state.observations, "aviationweather"
+                            ),
+                            "latest_nws_metadata": self._latest_weather_metadata(
+                                state.observations, "nws"
+                            ),
+                        }
+                    ),
+                    self.dumps(
+                        {
+                            "official_hourly_tmax": estimate.observed_tmax_f is None,
+                            "nws_observations": nws_tmax is None,
+                            "metar_observations": metar_tmax is None,
+                        }
+                    ),
+                    self._iso(state.decision_time),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO model_predictions(
+                  prediction_id,feature_snapshot_id,decision_id,model_version,generated_at,
+                  mean_tmax_f,probability_sum,probabilities_json,status,no_trade_reason
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    stable_id("prediction", decision.decision_id, estimate.model_version),
+                    feature_snapshot_id,
+                    decision.decision_id,
+                    estimate.model_version,
+                    self._iso(estimate.generated_at),
+                    estimate.mean_tmax_f,
+                    estimate.probability_sum,
+                    self.dumps(
+                        {item.bin_id: item.probability for item in estimate.probabilities}
+                    ),
+                    "ok" if abs(estimate.probability_sum - 1.0) <= 1e-6 else "blocked",
+                    None,
+                ),
+            )
             for check in state.health.checks:
                 connection.execute(
                     "INSERT OR REPLACE INTO data_health VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -851,6 +1237,51 @@ class WeatherStore:
                 "UPDATE decisions SET status='complete' WHERE decision_id=?",
                 (decision.decision_id,),
             )
+
+    @staticmethod
+    def _levels_vwap(levels: tuple[Any, ...], quantity: float) -> float | None:
+        if quantity <= 0:
+            return levels[0].price if levels else None
+        remaining = quantity
+        cost = 0.0
+        filled = 0.0
+        for level in levels:
+            take = min(remaining, level.size)
+            cost += take * level.price
+            filled += take
+            remaining -= take
+            if remaining <= 1e-12:
+                break
+        return cost / filled if filled else None
+
+    @staticmethod
+    def _temperature_trend(
+        observations: tuple[Any, ...], source: str, decision_time: datetime, minutes: int
+    ) -> float | None:
+        cutoff = decision_time - timedelta(minutes=minutes)
+        selected = sorted(
+            (
+                item
+                for item in observations
+                if item.source == source and cutoff <= item.observed_at <= decision_time
+            ),
+            key=lambda item: item.observed_at,
+        )
+        if len(selected) < 2:
+            return None
+        hours = (selected[-1].observed_at - selected[0].observed_at).total_seconds() / 3600
+        if hours <= 0:
+            return None
+        return (selected[-1].temperature_f - selected[0].temperature_f) / hours
+
+    @staticmethod
+    def _latest_weather_metadata(
+        observations: tuple[Any, ...], source: str
+    ) -> dict[str, Any]:
+        selected = [item for item in observations if item.source == source]
+        if not selected:
+            return {}
+        return max(selected, key=lambda item: item.observed_at).metadata
 
     def _save_contract(
         self,
@@ -949,7 +1380,12 @@ class WeatherStore:
             )
         for fill in broker.fills:
             connection.execute(
-                "INSERT OR IGNORE INTO paper_fills VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                """
+                INSERT OR IGNORE INTO paper_fills(
+                  fill_id,order_id,decision_id,bin_id,book_snapshot_id,book_hash,side,
+                  price,quantity,fee,filled_at,level_index,quote_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
                 (
                     fill.fill_id,
                     fill.order_id,
@@ -963,6 +1399,12 @@ class WeatherStore:
                     fill.fee,
                     self._iso(fill.filled_at),
                     fill.level_index,
+                    (
+                        connection.execute(
+                            "SELECT quote_id FROM execution_quotes WHERE snapshot_id=?",
+                            (fill.book_snapshot_id,),
+                        ).fetchone() or [None]
+                    )[0],
                 ),
             )
         connection.execute(

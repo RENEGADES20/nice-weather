@@ -38,7 +38,7 @@ storage_warning_bytes = 7516192768
 settlement_url = "https://www.weather.gov/wrh/timeseries?site=KLGA"
 
 [model]
-version = "baseline-nws-normal-v1"
+version = "baseline-nws-official-floor-v2"
 sigma_f = 3.0
 uncertainty_interval = 0.80
 
@@ -46,6 +46,7 @@ uncertainty_interval = 0.80
 uncertainty_buffer = 0.02
 minimum_net_edge = 0.03
 target_notional = 5.0
+quote_probability_floor = 0.02
 
 [paper]
 starting_cash = 100.0

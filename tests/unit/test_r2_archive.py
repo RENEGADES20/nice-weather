@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 from nice_weather.config import load_city_config
 from nice_weather.domain import SourceCapture, content_hash, stable_id
-from nice_weather.r2_archive import R2Archive, R2Config
+from nice_weather.r2_archive import WEATHER_EXPORT_TABLES, R2Archive, R2Config
 from nice_weather.store import WeatherStore
 
 
@@ -36,6 +36,12 @@ def _r2() -> R2Config:
         access_key_id="test-access",
         secret_access_key="test-secret",
     )
+
+
+def test_r2_allowlist_contains_weather_only() -> None:
+    forbidden = {"decisions", "decision_outcomes", "execution_quotes", "paper_fills"}
+    assert forbidden.isdisjoint(WEATHER_EXPORT_TABLES)
+    assert {"poll_attempts", "settlement_rows"}.issubset(WEATHER_EXPORT_TABLES)
 
 
 def test_raw_sync_is_content_addressed_and_idempotent(tmp_path) -> None:

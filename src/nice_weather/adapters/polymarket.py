@@ -65,6 +65,7 @@ class PolymarketReadOnlyAdapter:
                     payload=ambiguous_payload,
                     request_url=str(response.request.url),
                     http_status=response.status_code,
+                    requested_at=decision_time,
                 )
             target = closest[0]
             detail = self.client.get(f"{self.gamma_url}/events", params={"slug": target["slug"]})
@@ -83,6 +84,7 @@ class PolymarketReadOnlyAdapter:
             payload=event_payload,
             request_url=str(response.request.url),
             http_status=response.status_code,
+            requested_at=decision_time,
         )
 
     def fetch_books(self, token_ids: list[str], decision_time: datetime) -> list[RawSnapshot]:
@@ -105,6 +107,12 @@ class PolymarketReadOnlyAdapter:
                     token_id=token_id,
                     request_url=str(response.request.url),
                     http_status=response.status_code,
+                    requested_at=decision_time,
                 )
             )
         return snapshots
+
+    def fetch_candidate_quotes(
+        self, token_ids: list[str], decision_time: datetime
+    ) -> list[RawSnapshot]:
+        return self.fetch_books(token_ids, decision_time)

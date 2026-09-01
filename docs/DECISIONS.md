@@ -402,6 +402,46 @@ SQLite 从“决策 Runner 唯一 writer”调整为“决策 Runner lease 唯�
 
 ## 新决策模板
 
+## D-026：统一 SQLite 以采集库为迁移源
+
+日期：2026-09-01
+
+决定：
+
+以 `/var/lib/nice-weather/weather.sqlite3` 的 SQLite backup 副本生成 schema v4 统一库 `/var/lib/nice-weather/nice-weather.sqlite3`。保留全部天气、结算和 R2 账本；旧 `live.sqlite3` 的 decisions、订单簿和账户快照不迁移。Collector、R2、Shadow Runner 和 Dashboard 使用同一 WAL 数据库与同一部署提交。
+
+原因：
+
+采集库包含完整的官方天气版本且 R2 账本已追平。旧交易库没有 Paper orders/fills，存储增长主要来自每分钟完整订单簿。
+
+影响：
+
+新增 migration ledger、as-of Repository、有限 execution quote 和统一 systemd。旧库先隔离 24 小时，删除需要再次人工确认。
+
+重新评估条件：
+
+并发写锁、WAL 或日增长超过验收阈值时，重新评估单库写入拓扑。
+
+## D-027：当前只实施阶段 A 与候选按需报价
+
+日期：2026-09-01
+
+决定：
+
+模型固定为 `baseline-nws-official-floor-v2`。NWS hourly forecast 提供未来 Tmax，Weather.gov Hourly Data 已实现 Tmax 提供官方下界，METAR 与 NWS 高频数据只形成趋势特征。概率生成后，仅为概率不低于 0.02 的候选及已有 Paper 暴露获取 CLOB Quote。Ridge、boosting、训练、注册和晋升机制均不进入当前版本。
+
+原因：
+
+透明基线可以用现有 as-of 数据逐次审计，同时显著减少网络请求和 SQLite 写入。
+
+影响：
+
+生产运行停止新增完整 `order_book_levels`，保存 best bid/ask、目标数量 VWAP、深度和 top-5 levels。R2 v2 继续只归档天气数据。
+
+重新评估条件：
+
+阶段 A 完成足够长的 Shadow/Paper 运行并形成独立评审决策后，再讨论其他模型。
+
 ```markdown
 ## D-XXX：决策标题
 

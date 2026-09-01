@@ -3,9 +3,14 @@ import json
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
-from nice_weather.collector import next_settlement_due, parse_settlement_page
+from nice_weather.collector import (
+    next_settlement_due,
+    parse_metar_observed_at,
+    parse_settlement_page,
+    settlement_screenshot_trigger,
+)
 from nice_weather.config import load_city_config
-from nice_weather.domain import SourceCapture, content_hash, stable_id
+from nice_weather.domain import SettlementEvidence, SourceCapture, content_hash, stable_id
 from nice_weather.store import WeatherStore
 
 
@@ -126,4 +131,63 @@ def test_capture_dedup_and_observation_revisions(tmp_path) -> None:
             "SELECT revision FROM weather_observations ORDER BY revision"
         ).fetchall()
         assert [item[0] for item in revisions] == [1, 2]
-        assert store.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 3
+        assert store.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 4
+
+
+def test_metar_ddhhmmz_uses_provider_receipt_month() -> None:
+    reference = datetime(2026, 9, 1, 5, 54, tzinfo=UTC)
+    assert parse_metar_observed_at("METAR KLGA 010551Z 17006KT", reference) == datetime(
+        2026, 9, 1, 5, 51, tzinfo=UTC
+    )
+    month_boundary = datetime(2026, 9, 1, 0, 5, tzinfo=UTC)
+    assert parse_metar_observed_at("METAR KLGA 312351Z 00000KT", month_boundary) == datetime(
+        2026, 8, 31, 23, 51, tzinfo=UTC
+    )
+
+
+def test_settlement_screenshot_policy_ignores_normal_tmax_increase() -> None:
+    parsed = parse_settlement_page(
+        "Hourly Data\n2026-08-26 12:00 83 F",
+        date(2026, 8, 26),
+        ZoneInfo("America/New_York"),
+    )
+    assert settlement_screenshot_trigger(parsed, 82.0, False) is None
+    assert settlement_screenshot_trigger(parsed, 84.0, False) == "non_monotonic_tmax"
+
+
+def test_finalized_settlement_saves_rows_and_official_label(tmp_path) -> None:
+    database = tmp_path / "settlement.sqlite3"
+    received_at = datetime(2026, 8, 28, 4, 10, tzinfo=UTC)
+    capture = SourceCapture(
+        capture_id="capture_settlement",
+        source="weather_gov",
+        kind="settlement_page",
+        station_id="KLGA",
+        requested_at=received_at,
+        received_at=received_at,
+        local_date=date(2026, 8, 27),
+        source_version="v1",
+        content_hash="hash",
+        request_url="https://www.weather.gov/wrh/timeseries?site=KLGA",
+        http_status=200,
+        content_type="text/html",
+        raw_bytes=gzip.compress(b"<html></html>"),
+    )
+    evidence = SettlementEvidence(
+        evidence_id="evidence_settlement",
+        capture_id=capture.capture_id,
+        station_id="KLGA",
+        local_date=date(2026, 8, 27),
+        received_at=received_at,
+        table_text="Hourly Data",
+        parse_status="parsed",
+        tmax_f=82.0,
+        finalized=True,
+    )
+    rows = ((datetime(2026, 8, 27, 20, 0, tzinfo=UTC), 82.0),)
+    with WeatherStore(database) as store:
+        store.init_schema()
+        store.save_source_capture(capture, payload={})
+        assert store.save_settlement_evidence(evidence, rows)
+        assert store.table_counts()["settlement_rows"] == 1
+        assert store.table_counts()["weather_daily_labels"] == 1

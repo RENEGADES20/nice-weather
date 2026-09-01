@@ -109,6 +109,10 @@ def depth_figure(levels: list[dict[str, object]]) -> go.Figure:
     return figure
 
 
+def _money(value: object, decimals: int = 3) -> str:
+    return f"${float(value):.{decimals}f}" if value is not None else "Unavailable"
+
+
 def _render(db: Path) -> None:
     query = DashboardQuery(db)
     try:
@@ -127,8 +131,10 @@ def _render(db: Path) -> None:
     weather = query.get_weather_path(decision_id)
     health = query.get_health_view(decision_id)
     paper = query.get_paper_view(decision_id)
+    model_context = query.get_model_context(decision_id)
 
-    st.caption(f"Decision {decision_id} · database {db.resolve()}")
+    git_sha = os.environ.get("NICE_WEATHER_GIT_SHA", "unknown")
+    st.caption(f"Decision {decision_id} · build {git_sha} · database {db.resolve()}")
     top = st.columns(9)
     values = (
         ("Mode", summary["mode"]),
@@ -155,28 +161,45 @@ def _render(db: Path) -> None:
     with overview:
         with st.expander("Contract and settlement rules", expanded=False):
             st.markdown(f"[{summary['event_title']}]({summary['market_url']})")
-            st.dataframe(pd.DataFrame([contract["contract"]]), use_container_width=True)
-            st.dataframe(pd.DataFrame(contract["bins"]), use_container_width=True)
+            st.dataframe(pd.DataFrame([contract["contract"]]), width="stretch")
+            st.dataframe(pd.DataFrame(contract["bins"]), width="stretch")
         st.subheader("Model probability and executable market prices")
         probability_sum = float(summary["probability_summary"]["probability_sum"])
         if abs(probability_sum - 1.0) > 1e-6:
             st.error(f"Probability sum invalid: {probability_sum:.9f}; candidates are blocked.")
-        st.plotly_chart(probability_figure(outcomes), use_container_width=True)
-        st.dataframe(pd.DataFrame(outcomes), use_container_width=True)
+        st.plotly_chart(probability_figure(outcomes), width="stretch")
+        st.dataframe(pd.DataFrame(outcomes), width="stretch")
         st.subheader("KLGA observations and baseline Tmax")
         probability = summary["probability_summary"]
-        weather_metrics = st.columns(4)
+        weather_metrics = st.columns(6)
         observed = probability["observed_tmax_f"]
         weather_metrics[0].metric(
-            "Observed Tmax", f"{observed:.1f} °F" if observed is not None else "N/A"
+            "Official Hourly Tmax",
+            f"{observed:.1f} °F" if observed is not None else "Unavailable",
         )
         weather_metrics[1].metric("NWS baseline Tmax", f"{probability['baseline_tmax_f']:.1f} °F")
-        weather_metrics[2].metric("Model mean / median", f"{probability['mean_tmax_f']:.1f} °F")
+        features = model_context["features"] or {}
+        nws_tmax = features.get("nws_observed_tmax_f")
+        metar_tmax = features.get("metar_observed_tmax_f")
+        weather_metrics[2].metric(
+            "NWS observed Tmax",
+            f"{nws_tmax:.1f} °F" if nws_tmax is not None else "Unavailable",
+        )
         weather_metrics[3].metric(
+            "METAR Tmax",
+            f"{metar_tmax:.1f} °F" if metar_tmax is not None else "Unavailable",
+        )
+        weather_metrics[4].metric("Model mean", f"{probability['mean_tmax_f']:.1f} °F")
+        weather_metrics[5].metric(
             "80% interval",
             f"{probability['interval_low_f']:.1f}–{probability['interval_high_f']:.1f} °F",
         )
-        st.plotly_chart(weather_figure(weather, summary), use_container_width=True)
+        st.plotly_chart(weather_figure(weather, summary), width="stretch")
+        if features:
+            st.caption(
+                f"Feature schema {features['feature_schema_version']} · "
+                f"as-of {features['decision_time']} · input {features['input_set_hash']}"
+            )
 
     with market_tab:
         labels = {str(item["label"]): str(item["bin_id"]) for item in outcomes}
@@ -212,18 +235,18 @@ def _render(db: Path) -> None:
                         mode="markers",
                         marker={"symbol": "x", "size": 11},
                     )
-                st.plotly_chart(history_figure, use_container_width=True)
+                st.plotly_chart(history_figure, width="stretch")
             else:
                 st.info("No decision history for this bin.")
             levels = query.get_order_book(decision_id, selected_bin)
             if levels:
                 selected = next(item for item in outcomes if item["bin_id"] == selected_bin)
                 metrics = st.columns(4)
-                metrics[0].metric("Best Bid", f"${selected['best_bid']:.3f}")
-                metrics[1].metric("Best Ask", f"${selected['best_ask']:.3f}")
-                metrics[2].metric("Executable VWAP", f"${selected['executable_price']:.3f}")
+                metrics[0].metric("Best Bid", _money(selected["best_bid"]))
+                metrics[1].metric("Best Ask", _money(selected["best_ask"]))
+                metrics[2].metric("Executable VWAP", _money(selected["executable_price"]))
                 metrics[3].metric("Executable qty", f"{selected['executable_quantity']:.2f}")
-                st.plotly_chart(depth_figure(levels), use_container_width=True)
+                st.plotly_chart(depth_figure(levels), width="stretch")
             else:
                 st.warning("Order book is empty or unavailable for the selected decision.")
 
@@ -238,7 +261,7 @@ def _render(db: Path) -> None:
             ):
                 column.metric(key.replace("_", " ").title(), f"${account[key]:.2f}")
             st.dataframe(
-                pd.DataFrame(list(account["positions"].values())), use_container_width=True
+                pd.DataFrame(list(account["positions"].values())), width="stretch"
             )
             scenario = account["scenario_pnl"]
             scenario_labels = {str(item["bin_id"]): str(item["label"]) for item in outcomes}
@@ -276,34 +299,34 @@ def _render(db: Path) -> None:
                 figure.update_layout(
                     xaxis_title="Final settlement bin", yaxis_title="Final portfolio P&L ($)"
                 )
-                st.plotly_chart(figure, use_container_width=True)
+                st.plotly_chart(figure, width="stretch")
             else:
                 st.info("Scenario P&L is unavailable until contract bins are parsed.")
         else:
             st.info("Paper account snapshot is unavailable.")
         st.subheader("Orders")
-        st.dataframe(pd.DataFrame(paper["orders"]), use_container_width=True)
+        st.dataframe(pd.DataFrame(paper["orders"]), width="stretch")
         st.subheader("Fills")
-        st.dataframe(pd.DataFrame(paper["fills"]), use_container_width=True)
+        st.dataframe(pd.DataFrame(paper["fills"]), width="stretch")
 
     with system_tab:
         st.subheader("Data health and runner heartbeat")
         st.caption(
             f"Model version: {summary['model_version']} · Rule version: {summary['rule_version']}"
         )
-        st.dataframe(pd.DataFrame(health["checks"]), use_container_width=True)
+        st.dataframe(pd.DataFrame(health["checks"]), width="stretch")
         st.json(health["heartbeat"] or {"status": "missing"})
         st.subheader("Decision log")
         decisions = query.list_decisions()
-        st.dataframe(pd.DataFrame(decisions), use_container_width=True)
+        st.dataframe(pd.DataFrame(decisions), width="stretch")
         selected_decision = st.selectbox(
             "Decision trace", [item["decision_id"] for item in decisions], key="trace-decision"
         )
         st.dataframe(
-            pd.DataFrame(query.get_decision_trace(selected_decision)), use_container_width=True
+            pd.DataFrame(query.get_decision_trace(selected_decision)), width="stretch"
         )
         st.subheader("Recent system events")
-        st.dataframe(pd.DataFrame(health["events"]), use_container_width=True)
+        st.dataframe(pd.DataFrame(health["events"]), width="stretch")
 
 
 def main() -> None:
