@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from streamlit.testing.v1 import AppTest
 
 from nice_weather.adapters.fixture import load_fixture
 from nice_weather.config import load_city_config
+from nice_weather.dashboard import _display_timezone, _format_timestamp, _localize_record
 from nice_weather.domain import RunMode
 from nice_weather.runner import _run_bundle, run_fixture_once
 from nice_weather.store import WeatherStore
@@ -25,6 +27,7 @@ def test_dashboard_renders_fixture(fixture_manifest, tmp_path, monkeypatch) -> N
     assert app.title[0].value == "Polymarket NYC / KLGA Trader Dashboard"
     assert len(app.tabs) == 4
     assert any("Decision" in caption.value for caption in app.caption)
+    assert any(metric.label == "Local time" for metric in app.metric)
 
 
 def test_dashboard_handles_empty_database(tmp_path, monkeypatch) -> None:
@@ -50,3 +53,27 @@ def test_dashboard_renders_no_trade_coverage_gap(fixture_manifest, tmp_path, mon
 
     assert not app.exception
     assert any("DATA_FORECAST_COVERAGE_GAP" in item.value for item in app.warning)
+
+
+def test_dashboard_formats_utc_in_browser_timezone() -> None:
+    zone, timezone_name = _display_timezone("America/Chicago")
+
+    assert timezone_name == "America/Chicago"
+    assert _format_timestamp("2026-09-02T15:30:00+00:00", zone) == "2026-09-02 10:30:00 CDT"
+    assert _format_timestamp("2026-01-02T15:30:00Z", zone) == "2026-01-02 09:30:00 CST"
+
+
+def test_dashboard_localizes_timestamp_fields_without_changing_market_day() -> None:
+    record = {
+        "decision_time": "2026-09-02T15:30:00+00:00",
+        "received_at": "2026-09-02T15:31:00+00:00",
+        "local_date": "2026-09-02",
+        "nested": {"valid_from": "2026-09-02T16:00:00+00:00"},
+    }
+
+    localized = _localize_record(record, ZoneInfo("America/Los_Angeles"))
+
+    assert localized["decision_time"] == "2026-09-02 08:30:00 PDT"
+    assert localized["received_at"] == "2026-09-02 08:31:00 PDT"
+    assert localized["local_date"] == "2026-09-02"
+    assert localized["nested"]["valid_from"] == "2026-09-02 09:00:00 PDT"

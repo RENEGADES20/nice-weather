@@ -1,12 +1,18 @@
 # 当前状态
 
-最后更新：2026-09-01
+最后更新：2026-09-02
 
 ## 当前阶段
 
 项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，进入 24 小时 Shadow 观察”的阶段。
 
-天气采集器已通过 PR #3 合并；统一存储与阶段 A 通过 PR #6 合并，live as-of 时钟修复通过 PR #7 合并，部署状态通过 PR #8 合并。VM 当前部署 PR #8 merge SHA `01a23ecbff2a80e0ebdc2703cff6e8d7865e4f71`。
+天气采集器已通过 PR #3 合并；统一存储与阶段 A 通过 PR #6 合并，live as-of 时钟修复通过 PR #7 合并，隔离状态通过 PR #9 合并。Dashboard 时区改造前的 VM 审计 SHA 为 `69b89f69d0104e57abd7dd8da7155fee147f0c11`；当前运行 SHA 以 Dashboard build 标识和 VM `git rev-parse HEAD` 为准。
+
+## 2026-09-02 Dashboard 时区
+
+- Dashboard 顶部时间、阶段 A as-of、天气与决策图表、Paper 订单/成交、heartbeat 和审计表格统一使用访问者浏览器时区展示；无浏览器时区时回退为 Dashboard 主机系统时区。
+- SQLite 和 as-of 计算仍使用 UTC；合约 `local_day` 仍固定为市场结算时区，不随访问者改变。Streamlit 依赖下限提高到 1.43，以保证 `st.context.timezone` 可用。
+- 新增夏令时、标准时、递归时间字段转换和市场日保持不变的 Dashboard 回归测试；本地 Ruff 和 42 项完整 pytest 通过。
 
 ## 2026-09-01 统一存储与阶段 A
 

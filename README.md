@@ -61,7 +61,7 @@ python -m venv .venv
 .\.venv\Scripts\streamlit run src\nice_weather\dashboard.py -- --db var\nice-weather.sqlite3 --refresh-seconds 10
 ```
 
-Dashboard 每次先选定一个 `complete decision_id`，随后所有规则、天气、订单簿、概率、信号、Paper 和审计查询均固定到该 ID。应用通过 SQLite `mode=ro` 短连接读取，不访问外部 API，也不计算概率、信号或 P&L。
+Dashboard 每次先选定一个 `complete decision_id`，随后所有规则、天气、订单簿、概率、信号、Paper 和审计查询均固定到该 ID。应用通过 SQLite `mode=ro` 短连接读取，不访问外部 API，也不计算概率、信号或 P&L。时间在库内继续保存为 UTC；展示时使用访问者浏览器的 IANA 时区，浏览器未提供时回退到 Dashboard 主机系统时区。合约的 `local_day` 仍使用市场结算时区，不随访问者时区改变。
 
 ## 数据库与诊断
 
