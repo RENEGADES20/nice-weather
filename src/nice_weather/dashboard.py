@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from nice_weather.queries import DashboardQuery
+
+_TIMESTAMP_KEYS = frozenset({"decision_time", "source_time", "valid_from", "valid_to"})
 
 
 def _arguments() -> argparse.Namespace:
@@ -55,7 +58,10 @@ def probability_figure(outcomes: list[dict[str, object]]) -> go.Figure:
 
 
 def weather_figure(
-    weather: dict[str, list[dict[str, object]]], summary: dict[str, object]
+    weather: dict[str, list[dict[str, object]]],
+    summary: dict[str, object],
+    display_zone: tzinfo,
+    timezone_name: str,
 ) -> go.Figure:
     figure = go.Figure()
     observations = weather["observations"]
@@ -63,18 +69,27 @@ def weather_figure(
     if observations:
         figure.add_scatter(
             name="KLGA METAR observed",
-            x=[item["observed_at"] for item in observations],
+            x=[_display_datetime(item["observed_at"], display_zone) for item in observations],
             y=[item["temperature_f"] for item in observations],
-            customdata=[[item["received_at"], item["snapshot_id"]] for item in observations],
+            customdata=[
+                [_format_timestamp(item["received_at"], display_zone), item["snapshot_id"]]
+                for item in observations
+            ],
             hovertemplate="%{x}<br>%{y:.1f}°F<br>received %{customdata[0]}<extra></extra>",
         )
     if forecasts:
         figure.add_scatter(
             name="NWS hourly forecast",
-            x=[item["valid_at"] for item in forecasts],
+            x=[_display_datetime(item["valid_at"], display_zone) for item in forecasts],
             y=[item["temperature_f"] for item in forecasts],
             line={"dash": "dot"},
-            customdata=[[item["issued_at"], item["received_at"]] for item in forecasts],
+            customdata=[
+                [
+                    _format_timestamp(item["issued_at"], display_zone),
+                    _format_timestamp(item["received_at"], display_zone),
+                ]
+                for item in forecasts
+            ],
             hovertemplate="%{x}<br>%{y:.1f}°F<br>issued %{customdata[0]}<extra></extra>",
         )
     probability = summary["probability_summary"]
@@ -88,7 +103,10 @@ def weather_figure(
         line_width=0,
         annotation_text="80% baseline interval",
     )
-    figure.update_layout(yaxis_title="Temperature (°F)", xaxis_title="Observation / valid time")
+    figure.update_layout(
+        yaxis_title="Temperature (°F)",
+        xaxis_title=f"Observation / valid time ({timezone_name})",
+    )
     return figure
 
 
@@ -113,6 +131,60 @@ def _money(value: object, decimals: int = 3) -> str:
     return f"${float(value):.{decimals}f}" if value is not None else "Unavailable"
 
 
+def _display_timezone(timezone_name: str | None) -> tuple[tzinfo, str]:
+    if timezone_name:
+        try:
+            return ZoneInfo(timezone_name), timezone_name
+        except ZoneInfoNotFoundError:
+            pass
+    system_zone = datetime.now().astimezone().tzinfo or UTC
+    return system_zone, getattr(system_zone, "key", None) or str(system_zone)
+
+
+def _display_datetime(value: object, zone: tzinfo) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(zone)
+
+
+def _format_timestamp(value: object, zone: tzinfo) -> str:
+    parsed = _display_datetime(value, zone)
+    return parsed.strftime("%F %T %Z") if parsed is not None else str(value)
+
+
+def _is_timestamp_key(key: str) -> bool:
+    return key.endswith("_at") or key in _TIMESTAMP_KEYS
+
+
+def _localize_record(record: dict[str, Any], zone: tzinfo) -> dict[str, Any]:
+    localized: dict[str, Any] = {}
+    for key, value in record.items():
+        if value is not None and _is_timestamp_key(key):
+            localized[key] = _format_timestamp(value, zone)
+        elif isinstance(value, dict):
+            localized[key] = _localize_record(value, zone)
+        elif isinstance(value, list):
+            localized[key] = [
+                _localize_record(item, zone) if isinstance(item, dict) else item for item in value
+            ]
+        else:
+            localized[key] = value
+    return localized
+
+
+def _localize_records(records: list[dict[str, Any]], zone: tzinfo) -> list[dict[str, Any]]:
+    return [_localize_record(record, zone) for record in records]
+
+
 def _render(db: Path) -> None:
     query = DashboardQuery(db)
     try:
@@ -132,9 +204,15 @@ def _render(db: Path) -> None:
     health = query.get_health_view(decision_id)
     paper = query.get_paper_view(decision_id)
     model_context = query.get_model_context(decision_id)
+    context = getattr(st, "context", None)
+    display_zone, timezone_name = _display_timezone(getattr(context, "timezone", None))
+    now = datetime.now(UTC)
 
     git_sha = os.environ.get("NICE_WEATHER_GIT_SHA", "unknown")
-    st.caption(f"Decision {decision_id} · build {git_sha} · database {db.resolve()}")
+    st.caption(
+        f"Decision {decision_id} · build {git_sha} · time zone {timezone_name} · "
+        f"database {db.resolve()}"
+    )
     top = st.columns(9)
     values = (
         ("Mode", summary["mode"]),
@@ -142,13 +220,13 @@ def _render(db: Path) -> None:
         ("Market day", summary["local_day"]),
         ("Market", "CLOSED" if summary["event_closed"] else "OPEN"),
         (
-            "NY time",
-            datetime.now(UTC).astimezone(ZoneInfo("America/New_York")).strftime("%F %T %Z"),
+            "Local time",
+            _format_timestamp(now, display_zone),
         ),
-        ("Decision time", summary["decision_time"]),
+        ("Decision time", _format_timestamp(summary["decision_time"], display_zone)),
         ("DataHealth", summary["health_level"]),
         ("Decision", summary["overall_action"]),
-        ("Refreshed", datetime.now(UTC).strftime("%H:%M:%S UTC")),
+        ("Refreshed", now.astimezone(display_zone).strftime("%H:%M:%S %Z")),
     )
     for column, (label, value) in zip(top, values, strict=True):
         column.metric(label, value)
@@ -161,14 +239,19 @@ def _render(db: Path) -> None:
     with overview:
         with st.expander("Contract and settlement rules", expanded=False):
             st.markdown(f"[{summary['event_title']}]({summary['market_url']})")
-            st.dataframe(pd.DataFrame([contract["contract"]]), width="stretch")
-            st.dataframe(pd.DataFrame(contract["bins"]), width="stretch")
+            st.dataframe(
+                pd.DataFrame([_localize_record(contract["contract"], display_zone)]),
+                width="stretch",
+            )
+            st.dataframe(
+                pd.DataFrame(_localize_records(contract["bins"], display_zone)), width="stretch"
+            )
         st.subheader("Model probability and executable market prices")
         probability_sum = float(summary["probability_summary"]["probability_sum"])
         if abs(probability_sum - 1.0) > 1e-6:
             st.error(f"Probability sum invalid: {probability_sum:.9f}; candidates are blocked.")
         st.plotly_chart(probability_figure(outcomes), width="stretch")
-        st.dataframe(pd.DataFrame(outcomes), width="stretch")
+        st.dataframe(pd.DataFrame(_localize_records(outcomes, display_zone)), width="stretch")
         st.subheader("KLGA observations and baseline Tmax")
         probability = summary["probability_summary"]
         weather_metrics = st.columns(6)
@@ -194,11 +277,14 @@ def _render(db: Path) -> None:
             "80% interval",
             f"{probability['interval_low_f']:.1f}–{probability['interval_high_f']:.1f} °F",
         )
-        st.plotly_chart(weather_figure(weather, summary), width="stretch")
+        st.plotly_chart(
+            weather_figure(weather, summary, display_zone, timezone_name), width="stretch"
+        )
         if features:
             st.caption(
                 f"Feature schema {features['feature_schema_version']} · "
-                f"as-of {features['decision_time']} · input {features['input_set_hash']}"
+                f"as-of {_format_timestamp(features['decision_time'], display_zone)} · "
+                f"input {features['input_set_hash']}"
             )
 
     with market_tab:
@@ -214,14 +300,20 @@ def _render(db: Path) -> None:
                 for column in ("best_bid", "best_ask", "model_probability", "net_edge"):
                     history_figure.add_scatter(
                         name=column,
-                        x=[item["decision_time"] for item in history],
+                        x=[
+                            _display_datetime(item["decision_time"], display_zone)
+                            for item in history
+                        ],
                         y=[item[column] for item in history],
                     )
                 signal_points = [item for item in history if item["risk_approved"]]
                 if signal_points:
                     history_figure.add_scatter(
                         name="Signal",
-                        x=[item["decision_time"] for item in signal_points],
+                        x=[
+                            _display_datetime(item["decision_time"], display_zone)
+                            for item in signal_points
+                        ],
                         y=[item["model_probability"] for item in signal_points],
                         mode="markers",
                         marker={"symbol": "star", "size": 12},
@@ -230,7 +322,10 @@ def _render(db: Path) -> None:
                 if fill_points:
                     history_figure.add_scatter(
                         name="Paper fill",
-                        x=[item["filled_at"] for item in fill_points],
+                        x=[
+                            _display_datetime(item["filled_at"], display_zone)
+                            for item in fill_points
+                        ],
                         y=[item["fill_price"] for item in fill_points],
                         mode="markers",
                         marker={"symbol": "x", "size": 11},
@@ -261,7 +356,8 @@ def _render(db: Path) -> None:
             ):
                 column.metric(key.replace("_", " ").title(), f"${account[key]:.2f}")
             st.dataframe(
-                pd.DataFrame(list(account["positions"].values())), width="stretch"
+                pd.DataFrame(_localize_records(list(account["positions"].values()), display_zone)),
+                width="stretch",
             )
             scenario = account["scenario_pnl"]
             scenario_labels = {str(item["bin_id"]): str(item["label"]) for item in outcomes}
@@ -305,28 +401,41 @@ def _render(db: Path) -> None:
         else:
             st.info("Paper account snapshot is unavailable.")
         st.subheader("Orders")
-        st.dataframe(pd.DataFrame(paper["orders"]), width="stretch")
+        st.dataframe(
+            pd.DataFrame(_localize_records(paper["orders"], display_zone)), width="stretch"
+        )
         st.subheader("Fills")
-        st.dataframe(pd.DataFrame(paper["fills"]), width="stretch")
+        st.dataframe(pd.DataFrame(_localize_records(paper["fills"], display_zone)), width="stretch")
 
     with system_tab:
         st.subheader("Data health and runner heartbeat")
         st.caption(
             f"Model version: {summary['model_version']} · Rule version: {summary['rule_version']}"
         )
-        st.dataframe(pd.DataFrame(health["checks"]), width="stretch")
-        st.json(health["heartbeat"] or {"status": "missing"})
+        st.dataframe(
+            pd.DataFrame(_localize_records(health["checks"], display_zone)), width="stretch"
+        )
+        st.json(
+            _localize_record(health["heartbeat"], display_zone)
+            if health["heartbeat"]
+            else {"status": "missing"}
+        )
         st.subheader("Decision log")
         decisions = query.list_decisions()
-        st.dataframe(pd.DataFrame(decisions), width="stretch")
+        st.dataframe(pd.DataFrame(_localize_records(decisions, display_zone)), width="stretch")
         selected_decision = st.selectbox(
             "Decision trace", [item["decision_id"] for item in decisions], key="trace-decision"
         )
         st.dataframe(
-            pd.DataFrame(query.get_decision_trace(selected_decision)), width="stretch"
+            pd.DataFrame(
+                _localize_records(query.get_decision_trace(selected_decision), display_zone)
+            ),
+            width="stretch",
         )
         st.subheader("Recent system events")
-        st.dataframe(pd.DataFrame(health["events"]), width="stretch")
+        st.dataframe(
+            pd.DataFrame(_localize_records(health["events"], display_zone)), width="stretch"
+        )
 
 
 def main() -> None:
