@@ -26,6 +26,8 @@ def test_migration_recomputes_object_dates_from_new_york_time(tmp_path) -> None:
     database = tmp_path / "object-dates.sqlite3"
     with WeatherStore(database) as store:
         store.init_schema()
+        store.connection.execute("ALTER TABLE forecast_points DROP COLUMN object_local_date")
+        store.connection.execute("ALTER TABLE forecast_points DROP COLUMN object_timezone")
         received = datetime(2026, 9, 4, 0, 30, tzinfo=UTC).isoformat()
         store.connection.execute(
             """
@@ -50,6 +52,10 @@ def test_migration_recomputes_object_dates_from_new_york_time(tmp_path) -> None:
 
         _migration_v6(store.connection)
 
+        forecast_point_columns = {
+            row[1] for row in store.connection.execute("PRAGMA table_info(forecast_points)")
+        }
+
         capture_date = store.connection.execute(
             "SELECT local_date,object_local_date FROM source_captures "
             "WHERE capture_id='midnight'"
@@ -60,3 +66,4 @@ def test_migration_recomputes_object_dates_from_new_york_time(tmp_path) -> None:
         ).fetchone()
         assert tuple(capture_date) == ("2026-09-03", "2026-09-03")
         assert tuple(forecast_date) == ("2026-09-03", "2026-09-03")
+        assert {"object_local_date", "object_timezone"} <= forecast_point_columns

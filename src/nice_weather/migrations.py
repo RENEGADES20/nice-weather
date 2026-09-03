@@ -328,6 +328,7 @@ def _migration_v6(connection: sqlite3.Connection) -> None:
         "source_captures",
         "weather_observations",
         "weather_forecasts",
+        "forecast_points",
         "settlement_evidence",
         "settlement_rows",
     ):
