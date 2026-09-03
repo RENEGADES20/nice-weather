@@ -1,0 +1,14 @@
+[Unit]
+Description=Nice Weather 24-hour post-deployment observer
+After=nice-weather-collector.service nice-weather-market-stream.service nice-weather-dashboard.service nice-weather-runner.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/nice-weather/deployment-observer.env
+ExecStart=/opt/nice-weather/.venv/bin/nice-weather observe-deployment --db /var/lib/nice-weather/nice-weather.sqlite3 --config /etc/nice-weather/nice-weather.toml --previous-sha ${NICE_WEATHER_PREVIOUS_SHA} --backup ${NICE_WEATHER_DATABASE_BACKUP} --hours 24 --interval-seconds 300
+Restart=no
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ReadWritePaths=/var/lib/nice-weather /opt/nice-weather/repo /opt/nice-weather/.venv /etc/systemd/system

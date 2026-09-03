@@ -1,6 +1,6 @@
 # 系统架构概览
 
-最后更新：2026-09-01
+最后更新：2026-09-03
 
 本文描述模块职责、输入、输出和主要失败方式。具体模型权重、风险比例、交易阈值、数据库字段和运行参数留给后续技术设计。
 
@@ -16,6 +16,21 @@ Polymarket Gamma -> Runner -> 阶段 A 分布 -> 候选 token -> CLOB Quote
                                         +-> Decision / Paper <-+
 Dashboard <---------------------- 统一库只读查询
 ```
+
+Tmax 重定价研究旁路：
+
+```text
+Gamma 合约发现 -> CLOB WebSocket 全部 YES token -> market_top_ticks
+                                                        |
+对象时间天气流 -> Tmax knowledge events ----------------+-> repricing report
+                                                        |
+Dashboard Lightweight Charts <- 稳定 cursor 增量查询 ---+
+```
+
+- 市场流只保存 best bid/ask、顶层数量、mid、last trade、交易所事件时间和接收时间；A→B→A 状态完整保留，完全重复消息去重。
+- 断线重连先以批量 CLOB book 恢复状态，Gamma 只作发现和 fallback，不进入可交易延迟统计。
+- 图表组件使用随 Python 包发布的静态资源；前端保持图表实例、缩放、联动十字线、跟随和图层状态，2 秒查询以 `received_at/tick_id` cursor 防止漏掉乱序事件，再按 `exchange_event_at` 插入图表。
+- 对象时间决定纽约市场日、Tmax、forecast 覆盖、日落和结算；访问者时区仅用于显示。
 
 - Collector 写 `poll_attempts` 和内容变化后的 `source_captures`；天气原文只在该表压缩保存，
   `raw_snapshots` 仅保留迁移前天气记录及市场兼容记录。各来源失败独立记录。

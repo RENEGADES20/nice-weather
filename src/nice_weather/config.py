@@ -39,6 +39,11 @@ class CollectorConfig:
     storage_warning_bytes: int
     settlement_url: str
     nws_observation_overlap_hours: int = 2
+    metar_active_interval_seconds: int = 30
+    metar_active_start_hour: int = 6
+    metar_active_end_hour: int = 23
+    market_discovery_interval_seconds: int = 300
+    market_stream_reconnect_seconds: int = 5
 
 
 @dataclass(frozen=True)
@@ -132,6 +137,7 @@ def validate_city_config(config: CityConfig) -> None:
         config.freshness.order_book_seconds,
         config.runner.poll_interval_seconds,
         config.collector.metar_interval_seconds,
+        config.collector.metar_active_interval_seconds,
         config.collector.forecast_interval_seconds,
         config.collector.nws_observation_interval_seconds,
         config.collector.nws_observation_overlap_hours,
@@ -139,6 +145,8 @@ def validate_city_config(config: CityConfig) -> None:
         config.collector.settlement_close_interval_seconds,
         config.collector.r2_sync_interval_seconds,
         config.collector.storage_warning_bytes,
+        config.collector.market_discovery_interval_seconds,
+        config.collector.market_stream_reconnect_seconds,
         config.model.sigma_f,
         config.paper.starting_cash,
     )
@@ -150,5 +158,9 @@ def validate_city_config(config: CityConfig) -> None:
         raise ValueError("Collector daily export hour must be between 0 and 23")
     if not 0 <= config.collector.daily_export_minute <= 59:
         raise ValueError("Collector daily export minute must be between 0 and 59")
+    if not 0 <= config.collector.metar_active_start_hour <= 23:
+        raise ValueError("METAR active start hour must be between 0 and 23")
+    if not 1 <= config.collector.metar_active_end_hour <= 24:
+        raise ValueError("METAR active end hour must be between 1 and 24")
     if not config.collector.settlement_url.startswith("https://www.weather.gov/"):
         raise ValueError("Settlement evidence URL must use the official weather.gov site")

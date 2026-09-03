@@ -1,6 +1,6 @@
-# Ubuntu VM 部署与人工验收
+# Ubuntu VM 部署与自动验收
 
-本文以 schema v5 统一部署为 canonical 流程。后续旧 `weather.sqlite3` 双目录命令仅用于回滚参考。
+本文以 schema v6 统一部署为 canonical 流程。后续旧 `weather.sqlite3` 双目录命令仅用于回滚参考。
 
 ## 0. 统一部署摘要
 
@@ -8,7 +8,7 @@
 - venv：`/opt/nice-weather/.venv`
 - 配置：`/etc/nice-weather/nice-weather.toml`
 - 数据库：`/var/lib/nice-weather/nice-weather.sqlite3`
-- 服务：collector、r2-sync timer、dashboard、shadow runner
+- 服务：collector、market-stream、r2-sync timer、dashboard、shadow runner
 - R2 新前缀：`nyc-klga/v2`
 
 部署前记录远端合并 SHA，并写入 `/etc/nice-weather/nice-weather.env`：
@@ -36,7 +36,7 @@ sudo -u nice-weather /opt/nice-weather/.venv/bin/nice-weather db verify \
   --db /var/lib/nice-weather/nice-weather.sqlite3
 ```
 
-验证结果必须为 schema version 5、`integrity_check=ok` 且无 foreign key error。旧天气原文不在
+验证结果必须为 schema version 6、`integrity_check=ok` 且无 foreign key error。旧天气原文不在
 本次迁移中删除，迁移后的空闲页交给 SQLite 后续写入复用。
 
 确认无 writer 后，备份并迁移：
@@ -49,17 +49,18 @@ sudo -u nice-weather /opt/nice-weather/.venv/bin/nice-weather db verify \
   --db /var/lib/nice-weather/nice-weather.sqlite3
 ```
 
-安装仓库内四个 unit，启动顺序固定为：
+安装仓库内五个 unit，启动顺序固定为：
 
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now nice-weather-collector.service
+sudo systemctl enable --now nice-weather-market-stream.service
 sudo systemctl enable --now nice-weather-r2-sync.timer
 sudo systemctl enable --now nice-weather-dashboard.service
 sudo systemctl enable --now nice-weather-runner.service
 ```
 
-至少观察 16 分钟并检查 `version --json`、四个 unit、collector status、R2 ledger、Dashboard health 和 SHADOW 决策。禁止把 Runner 改为任何实盘模式。
+部署先运行 `repair-settlement-dates --dry-run`，备份验证后执行 `--apply`。至少观察 16 分钟并检查 `version --json`、五个 unit、collector status、R2 ledger、Dashboard health、CLOB tick 和 SHADOW 决策。随后由部署观察服务持续检查 24 小时；关键日期、数据库完整性、服务或锁异常触发恢复上一精确 SHA 与数据库备份。禁止把 Runner 改为任何实盘模式。
 
 旧库处置分两次人工检查：先逐一确认并移动 `/var/lib/nice-weather/live.sqlite3`、`live.sqlite3-wal`、`live.sqlite3-shm` 到固定隔离目录；24 小时后再次列出精确绝对路径并请求删除批准。不得使用 glob 或递归删除。
 

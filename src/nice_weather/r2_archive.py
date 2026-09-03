@@ -169,6 +169,8 @@ class R2Archive:
                         "observed_at": row["observed_at"],
                         "issued_at": row["issued_at"],
                         "received_at": row["received_at"],
+                        "object_local_date": row["object_local_date"],
+                        "object_timezone": row["object_timezone"],
                         "source_version": row["source_version"],
                         "content_hash": row["content_hash"],
                         "request_url": row["request_url"],

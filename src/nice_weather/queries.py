@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from nice_weather.store import WeatherStore
 
 
 def _rows(rows: list[Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
+
+
+def object_day_bounds(
+    object_local_date: date, horizon_days: int, object_timezone: str
+) -> tuple[datetime, datetime]:
+    if horizon_days not in (1, 2, 3, 5):
+        raise ValueError("horizon_days must be one of 1, 2, 3 or 5")
+    zone = ZoneInfo(object_timezone)
+    start = datetime.combine(object_local_date, time.min, zone).astimezone(UTC)
+    end = (datetime.combine(object_local_date, time.min, zone) + timedelta(days=horizon_days))
+    return start, end.astimezone(UTC)
 
 
 class DashboardQuery:
@@ -131,6 +144,214 @@ class DashboardQuery:
             """,
             (bin_id,),
         )
+
+    def list_market_days(self, limit: int = 90) -> list[dict[str, Any]]:
+        return self._query(
+            """
+            SELECT local_day,event_id,event_title,timezone,event_closed
+            FROM contract_versions
+            GROUP BY local_day,event_id
+            ORDER BY local_day DESC,MAX(received_at) DESC LIMIT ?
+            """,
+            (limit,),
+        )
+
+    def get_event_bins(self, event_id: str) -> list[dict[str, Any]]:
+        return self._query(
+            """
+            SELECT b.* FROM contract_bins b
+            JOIN contract_versions c USING(contract_version_id)
+            WHERE c.event_id=? AND c.contract_version_id=(
+              SELECT contract_version_id FROM contract_versions
+              WHERE event_id=? ORDER BY received_at DESC LIMIT 1
+            )
+            ORDER BY b.ordinal
+            """,
+            (event_id, event_id),
+        )
+
+    def get_weather_timeline(
+        self,
+        object_local_date: date,
+        horizon_days: int,
+        as_of: datetime,
+        object_timezone: str,
+    ) -> dict[str, list[dict[str, Any]]]:
+        start, end = object_day_bounds(object_local_date, horizon_days, object_timezone)
+        as_of_text = as_of.astimezone(UTC).isoformat()
+        observations = self._query(
+            """
+            WITH ranked AS (
+              SELECT w.*,ROW_NUMBER() OVER(
+                PARTITION BY station_id,source,observed_at ORDER BY revision DESC,received_at DESC
+              ) AS rank
+              FROM weather_observations w
+              WHERE station_id='KLGA' AND observed_at>=? AND observed_at<? AND received_at<=?
+            )
+            SELECT * FROM ranked WHERE rank=1 ORDER BY observed_at,source
+            """,
+            (start.isoformat(), end.isoformat(), as_of_text),
+        )
+        captures = self._query(
+            """
+            SELECT f.capture_id FROM weather_forecasts f
+            WHERE f.source='nws' AND f.station_id='KLGA' AND f.received_at<=?
+              AND EXISTS(
+                SELECT 1 FROM forecast_points p
+                WHERE p.capture_id=f.capture_id AND p.valid_at>=? AND p.valid_at<?
+              )
+            ORDER BY f.received_at DESC LIMIT 1
+            """,
+            (as_of_text, start.isoformat(), end.isoformat()),
+        )
+        forecasts = (
+            self._query(
+                """
+                SELECT * FROM forecast_points
+                WHERE capture_id=? AND valid_at>=? AND valid_at<? AND received_at<=?
+                ORDER BY valid_at
+                """,
+                (captures[0]["capture_id"], start.isoformat(), end.isoformat(), as_of_text),
+            )
+            if captures
+            else []
+        )
+        settlement = self._query(
+            """
+            SELECT * FROM settlement_rows
+            WHERE COALESCE(object_local_date,local_date)=? AND received_at<=?
+            ORDER BY received_at,observed_at
+            """,
+            (object_local_date.isoformat(), as_of_text),
+        )
+        running = None
+        running_tmax = []
+        for item in settlement:
+            value = float(item["temperature_f"])
+            if running is None or value > running:
+                running = value
+                running_tmax.append(
+                    {
+                        "observed_at": item["observed_at"],
+                        "received_at": item["received_at"],
+                        "temperature_f": value,
+                    }
+                )
+        return {
+            "observations": observations,
+            "forecasts": forecasts,
+            "running_tmax": running_tmax,
+        }
+
+    def get_forecast_revision_events(
+        self, object_local_date: date, as_of: datetime, object_timezone: str
+    ) -> list[dict[str, Any]]:
+        zone = ZoneInfo(object_timezone)
+        start = datetime.combine(object_local_date, time.min, zone).astimezone(UTC)
+        end = (datetime.combine(object_local_date, time.min, zone) + timedelta(days=1)).astimezone(
+            UTC
+        )
+        rows = self._query(
+            """
+            SELECT f.capture_id,f.issued_at,f.received_at,f.content_hash,
+                   MAX(p.temperature_f) AS forecast_tmax_f,
+                   GROUP_CONCAT(p.valid_at || ':' || p.temperature_f,'|') AS path
+            FROM weather_forecasts f JOIN forecast_points p USING(capture_id)
+            WHERE f.station_id='KLGA' AND f.received_at<=?
+              AND p.valid_at>=? AND p.valid_at<?
+            GROUP BY f.capture_id,f.issued_at,f.received_at,f.content_hash
+            ORDER BY f.received_at
+            """,
+            (as_of.astimezone(UTC).isoformat(), start.isoformat(), end.isoformat()),
+        )
+        events = []
+        previous: tuple[float, str] | None = None
+        for row in rows:
+            current = (float(row["forecast_tmax_f"]), str(row["path"]))
+            if previous is not None and current != previous:
+                events.append({**row, "type": "forecast_revised"})
+            previous = current
+        return events
+
+    def get_market_bin_history(
+        self,
+        event_id: str,
+        bin_ids: list[str],
+        start_at: datetime,
+        end_at: datetime,
+        after_cursor: str | None = None,
+    ) -> dict[str, Any]:
+        if not bin_ids:
+            return {"ticks": [], "cursor": after_cursor}
+        placeholders = ",".join("?" for _ in bin_ids)
+        parameters: list[Any] = [
+            event_id,
+            *bin_ids,
+            start_at.astimezone(UTC).isoformat(),
+            end_at.astimezone(UTC).isoformat(),
+        ]
+        cursor_sql = ""
+        if after_cursor:
+            cursor_time, cursor_id = after_cursor.split("|", 1)
+            cursor_sql = "AND (received_at>? OR (received_at=? AND tick_id>?))"
+            parameters.extend((cursor_time, cursor_time, cursor_id))
+        rows = self._query(
+            f"""
+            SELECT * FROM market_top_ticks
+            WHERE event_id=? AND bin_id IN ({placeholders})
+              AND exchange_event_at>=? AND exchange_event_at<? {cursor_sql}
+            ORDER BY received_at,tick_id LIMIT 20000
+            """,
+            tuple(parameters),
+        )
+        cursor = after_cursor
+        if rows:
+            cursor = f"{rows[-1]['received_at']}|{rows[-1]['tick_id']}"
+        return {"ticks": rows, "cursor": cursor}
+
+    def get_tmax_knowledge_events(
+        self, object_local_date: date, as_of: datetime
+    ) -> list[dict[str, Any]]:
+        rows = self._query(
+            """
+            SELECT observed_at,received_at,temperature_f,source
+            FROM weather_observations
+            WHERE COALESCE(object_local_date,local_date)=? AND received_at<=?
+            ORDER BY received_at,observed_at
+            """,
+            (object_local_date.isoformat(), as_of.astimezone(UTC).isoformat()),
+        )
+        running = None
+        result = []
+        for row in rows:
+            value = float(row["temperature_f"])
+            if running is None or value > running:
+                running = value
+                result.append({**row, "running_tmax_f": value})
+        return result
+
+    def get_price_in_analysis(
+        self, event_id: str, threshold: float, quantity: float
+    ) -> list[dict[str, Any]]:
+        from nice_weather.config import load_city_config
+        from nice_weather.research import tmax_repricing_report
+
+        days = self._query(
+            "SELECT MIN(local_day) first_day,MAX(local_day) last_day "
+            "FROM contract_versions WHERE event_id=?",
+            (event_id,),
+        )[0]
+        if not days["first_day"]:
+            return []
+        report = tmax_repricing_report(
+            self.database_path,
+            load_city_config(),
+            start_date=date.fromisoformat(days["first_day"]),
+            end_date=date.fromisoformat(days["last_day"]),
+            quantity=quantity,
+            thresholds=(threshold,),
+        )
+        return report["events"]
 
     def get_order_book(self, decision_id: str, bin_id: str) -> list[dict[str, Any]]:
         quotes = self._query(

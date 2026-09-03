@@ -4,9 +4,11 @@ import hashlib
 import inspect
 import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
-LATEST_SCHEMA_VERSION = 5
+LATEST_SCHEMA_VERSION = 6
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -321,9 +323,120 @@ def _migration_v5(connection: sqlite3.Connection) -> None:
         )
 
 
+def _migration_v6(connection: sqlite3.Connection) -> None:
+    for table in (
+        "source_captures",
+        "weather_observations",
+        "weather_forecasts",
+        "settlement_evidence",
+        "settlement_rows",
+    ):
+        _add_column(
+            connection,
+            table,
+            "object_timezone",
+            "TEXT NOT NULL DEFAULT 'America/New_York'",
+        )
+    object_date_tables = (
+        "source_captures",
+        "weather_observations",
+        "weather_forecasts",
+        "forecast_points",
+        "settlement_evidence",
+        "settlement_rows",
+    )
+    for table in object_date_tables:
+        _add_column(connection, table, "object_local_date", "TEXT")
+        if "local_date" in _columns(connection, table):
+            connection.execute(
+                f'UPDATE "{table}" SET object_local_date=local_date '
+                "WHERE object_local_date IS NULL"
+            )
+        else:
+            timestamp_column = "valid_at" if table == "forecast_points" else "observed_at"
+            connection.execute(
+                f'UPDATE "{table}" SET object_local_date=substr({timestamp_column},1,10) '
+                "WHERE object_local_date IS NULL"
+            )
+    object_zone = ZoneInfo("America/New_York")
+    for table, identifier, timestamp_expression in (
+        (
+            "source_captures",
+            "capture_id",
+            "COALESCE(observed_at,issued_at,source_time,received_at)",
+        ),
+        ("weather_forecasts", "forecast_id", "issued_at"),
+    ):
+        for row_id, timestamp in connection.execute(
+            f'SELECT "{identifier}",{timestamp_expression} FROM "{table}"'
+        ):
+            parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            connection.execute(
+                f'UPDATE "{table}" SET local_date=?,object_local_date=?,object_timezone=? '
+                f'WHERE "{identifier}"=?',
+                (
+                    parsed.astimezone(object_zone).date().isoformat(),
+                    parsed.astimezone(object_zone).date().isoformat(),
+                    object_zone.key,
+                    row_id,
+                ),
+            )
+    for table, identifier, timestamp_column in (
+        ("weather_observations", "observation_id", "observed_at"),
+        ("forecast_points", "forecast_point_id", "valid_at"),
+    ):
+        for row_id, timestamp in connection.execute(
+            f'SELECT "{identifier}","{timestamp_column}" FROM "{table}"'
+        ):
+            parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            connection.execute(
+                f'UPDATE "{table}" SET object_local_date=?,object_timezone=? '
+                f'WHERE "{identifier}"=?',
+                (parsed.astimezone(object_zone).date().isoformat(), object_zone.key, row_id),
+            )
+    connection.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS market_top_ticks (
+          tick_id TEXT PRIMARY KEY,
+          event_id TEXT NOT NULL,
+          condition_id TEXT NOT NULL,
+          market_id TEXT NOT NULL,
+          bin_id TEXT,
+          token_id TEXT NOT NULL,
+          label TEXT NOT NULL,
+          exchange_event_at TEXT NOT NULL,
+          received_at TEXT NOT NULL,
+          object_timezone TEXT NOT NULL,
+          object_local_date TEXT NOT NULL,
+          best_bid REAL,
+          best_ask REAL,
+          bid_size REAL,
+          ask_size REAL,
+          mid REAL,
+          last_trade_price REAL,
+          source TEXT NOT NULL,
+          status TEXT NOT NULL,
+          event_hash TEXT NOT NULL,
+          UNIQUE(source, token_id, exchange_event_at, event_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_market_top_ticks_event_time
+          ON market_top_ticks(event_id, exchange_event_at);
+        CREATE INDEX IF NOT EXISTS idx_market_top_ticks_token_time
+          ON market_top_ticks(token_id, exchange_event_at);
+        CREATE INDEX IF NOT EXISTS idx_market_top_ticks_day
+          ON market_top_ticks(object_local_date, exchange_event_at);
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (4, "unified_weather_store", _migration_v4),
     (5, "source_capture_ownership", _migration_v5),
+    (6, "object_time_market_ticks", _migration_v6),
 )
 
 

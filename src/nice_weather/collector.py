@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import re
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -303,7 +304,7 @@ def parse_settlement_page(text: str, local_day: date, zone: ZoneInfo) -> ParsedS
             )
         )
     local_temperatures = [temp for observed_at, temp in rows if observed_at.date() == local_day]
-    if tmax_f is None and local_temperatures:
+    if local_temperatures:
         tmax_f = max(local_temperatures)
     next_day_rows = [item for item in rows if item[0].date() > local_day]
     next_day = min(next_day_rows, key=lambda item: item[0]) if next_day_rows else None
@@ -379,6 +380,7 @@ def _json_capture(
     source_version: str | None = None,
 ) -> SourceCapture:
     payload_hash = content_hash(result.payload)
+    object_time = observed_at or issued_at or source_time or result.received_at
     return SourceCapture(
         capture_id=stable_id("capture", source, kind, payload_hash),
         source=source,
@@ -386,7 +388,7 @@ def _json_capture(
         station_id=config.station_id,
         requested_at=result.requested_at,
         received_at=result.received_at,
-        local_date=result.received_at.astimezone(config.zone).date(),
+        local_date=object_time.astimezone(config.zone).date(),
         source_version=source_version or payload_hash,
         content_hash=payload_hash,
         request_url=result.request_url,
@@ -412,6 +414,32 @@ class WeatherCollector:
         self.database_path = database_path
         self.weather_client_factory = weather_client_factory
         self.page_client_factory = page_client_factory
+
+    def _metar_poll_interval(self, now: datetime) -> float:
+        local_now = now.astimezone(self.config.zone)
+        in_window = (
+            self.config.collector.metar_active_start_hour
+            <= local_now.hour
+            < self.config.collector.metar_active_end_hour
+        )
+        if not in_window:
+            return float(self.config.collector.metar_interval_seconds)
+        try:
+            with WeatherStore(self.database_path, read_only=True) as store:
+                active_contract = store.connection.execute(
+                    """
+                    SELECT 1 FROM contract_versions
+                    WHERE local_day=? AND event_active=1 AND event_closed=0 LIMIT 1
+                    """,
+                    (local_now.date().isoformat(),),
+                ).fetchone()
+        except (OSError, sqlite3.Error):
+            active_contract = None
+        return float(
+            self.config.collector.metar_active_interval_seconds
+            if active_contract
+            else self.config.collector.metar_interval_seconds
+        )
 
     def _save_metar(self, client: OfficialWeatherClient) -> bool:
         result = client.fetch_metar(self.config.station_id)
@@ -512,7 +540,13 @@ class WeatherCollector:
             temperature = float(item["temperature"])
             unit = item.get("temperatureUnit")
             temperature_f = temperature if unit == "F" else celsius_to_fahrenheit(temperature)
-            periods.append({"valid_at": valid_at, "temperature_f": temperature_f})
+            periods.append(
+                {
+                    "valid_at": valid_at,
+                    "temperature_f": temperature_f,
+                    "object_timezone": self.config.timezone,
+                }
+            )
         capture = _json_capture(
             result,
             source="nws",
@@ -774,6 +808,8 @@ class WeatherCollector:
                     if monotonic_now >= next_due[name]:
                         result = self._run_source(name, action)
                         print(json.dumps(result, ensure_ascii=False, sort_keys=True), flush=True)
+                        if name == "aviationweather":
+                            interval = self._metar_poll_interval(utc_now())
                         next_due[name] = monotonic_now + interval
                 now = utc_now()
                 if now >= settlement_due:

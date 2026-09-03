@@ -27,6 +27,9 @@ dashboard_refresh_seconds = 10
 
 [collector]
 metar_interval_seconds = 120
+metar_active_interval_seconds = 30
+metar_active_start_hour = 6
+metar_active_end_hour = 23
 forecast_interval_seconds = 900
 nws_observation_interval_seconds = 300
 nws_observation_overlap_hours = 2
@@ -36,6 +39,8 @@ r2_sync_interval_seconds = 900
 daily_export_hour = 3
 daily_export_minute = 15
 storage_warning_bytes = 7516192768
+market_discovery_interval_seconds = 300
+market_stream_reconnect_seconds = 5
 settlement_url = "https://www.weather.gov/wrh/timeseries?site=KLGA"
 
 [model]

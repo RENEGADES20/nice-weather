@@ -71,6 +71,33 @@ class PolymarketReadOnlyAdapter:
                 ) from exc
         raise AssertionError("unreachable")
 
+    def _post(self, url: str, *, stage: str, payload: Any) -> httpx.Response:
+        started = time.monotonic()
+        for attempt in range(1, self.retries + 1):
+            try:
+                response = self.client.post(url, json=payload)
+                response.raise_for_status()
+                return response
+            except httpx.HTTPStatusError as exc:
+                raise MarketDataRequestError(
+                    stage=stage,
+                    url=url,
+                    attempts=attempt,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    cause=exc,
+                ) from exc
+            except httpx.TransportError as exc:
+                if attempt < self.retries:
+                    continue
+                raise MarketDataRequestError(
+                    stage=stage,
+                    url=url,
+                    attempts=attempt,
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    cause=exc,
+                ) from exc
+        raise AssertionError("unreachable")
+
     def close(self) -> None:
         self.client.close()
 
@@ -179,3 +206,16 @@ class PolymarketReadOnlyAdapter:
         self, token_ids: list[str], decision_time: datetime
     ) -> list[RawSnapshot]:
         return self.fetch_books(token_ids, decision_time)
+
+    def fetch_books_batch_payload(self, token_ids: list[str]) -> list[dict[str, Any]]:
+        if not token_ids:
+            return []
+        response = self._post(
+            f"{self.clob_url}/books",
+            stage="clob_books_batch",
+            payload=[{"token_id": token_id} for token_id in token_ids],
+        )
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError("CLOB batch books response must be a JSON list")
+        return [item for item in payload if isinstance(item, dict)]
