@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS order_book_levels (
 
 CREATE TABLE IF NOT EXISTS weather_observations (
   observation_id TEXT PRIMARY KEY,
-  snapshot_id TEXT NOT NULL REFERENCES raw_snapshots(snapshot_id),
+  capture_id TEXT REFERENCES source_captures(capture_id),
+  legacy_snapshot_id TEXT REFERENCES raw_snapshots(snapshot_id),
   station_id TEXT NOT NULL,
   observed_at TEXT NOT NULL,
   received_at TEXT NOT NULL,
@@ -118,17 +119,20 @@ CREATE TABLE IF NOT EXISTS weather_observations (
   report_time TEXT,
   revision_type TEXT NOT NULL DEFAULT 'initial',
   parser_version TEXT NOT NULL DEFAULT 'legacy-v1',
-  weather_metadata_json TEXT NOT NULL DEFAULT '{}'
+  weather_metadata_json TEXT NOT NULL DEFAULT '{}',
+  CHECK(capture_id IS NOT NULL OR legacy_snapshot_id IS NOT NULL)
 );
 
 CREATE TABLE IF NOT EXISTS forecast_points (
   forecast_point_id TEXT PRIMARY KEY,
-  snapshot_id TEXT NOT NULL REFERENCES raw_snapshots(snapshot_id),
+  capture_id TEXT REFERENCES source_captures(capture_id),
+  legacy_snapshot_id TEXT REFERENCES raw_snapshots(snapshot_id),
   source TEXT NOT NULL,
   issued_at TEXT NOT NULL,
   valid_at TEXT NOT NULL,
   received_at TEXT NOT NULL,
-  temperature_f REAL NOT NULL
+  temperature_f REAL NOT NULL,
+  CHECK(capture_id IS NOT NULL OR legacy_snapshot_id IS NOT NULL)
 );
 
 CREATE TABLE IF NOT EXISTS decisions (

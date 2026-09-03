@@ -17,10 +17,13 @@ Polymarket Gamma -> Runner -> 阶段 A 分布 -> 候选 token -> CLOB Quote
 Dashboard <---------------------- 统一库只读查询
 ```
 
-- Collector 写 `poll_attempts` 和内容变化后的 `source_captures`；各来源失败独立记录。
+- Collector 写 `poll_attempts` 和内容变化后的 `source_captures`；天气原文只在该表压缩保存，
+  `raw_snapshots` 仅保留迁移前天气记录及市场兼容记录。各来源失败独立记录。
 - Runner 只从 Repository 获取天气，所有 as-of 查询强制 `received_at <= decision_time`。
 - 阶段 A 使用 NWS 预报与 Weather.gov 官方已实现 Tmax 下界；高频观测只提供诊断和趋势特征。
 - CLOB 只对概率门槛候选、持仓和未完成 Paper order请求；生产只保存有限 `execution_quotes`。
+- Gamma 版本按内容哈希寻址，完整事件 JSON 仅在内容变化时进入 `market_captures`；
+  `raw_snapshots` 中的 Gamma 记录只保存轻量内容引用。
 - R2 v1 保持不可变，新数据进入 v2；allowlist 排除所有市场、决策、Paper 和资金数据。
 - SQLite 使用 WAL、5 秒 busy timeout、短 `BEGIN IMMEDIATE` 事务和 Runner lease。歧义、过期或锁超时均进入可审计 `no-trade`。
 
@@ -108,7 +111,13 @@ CityConfig(NYC / KLGA)
 
 ### 独立天气采集与归档
 
-2026-08-27 起，天气采集从决策 Runner 的轮询中拆出独立进程。AviationWeather METAR、NWS hourly forecast、NWS station observations 和 Weather.gov 结算页面按各自频率进入同一个 SQLite WAL。每份版本保存来源时间、接收时间、内容哈希和压缩原始响应。
+2026-08-27 起，天气采集从决策 Runner 的轮询中拆出独立进程。AviationWeather METAR、NWS hourly forecast、NWS station observations 和 Weather.gov 结算页面按各自频率进入同一个 SQLite WAL。每份版本保存来源时间、接收时间、内容哈希和压缩原始响应。NWS station observations 使用两小时重叠窗口，标准化行按观测时间和内容版本去重，避免每五分钟重复保存完整日内历史。
+
+schema v5 将新增观测和预报直接关联 `source_captures`；迁移前记录继续通过
+`legacy_snapshot_id` 关联 `raw_snapshots`。新决策通过 model prediction 对应的 feature snapshot
+保存完整天气 capture ID 集，避免每分钟重复写数十条关系；`decision_weather_inputs` 继续读取
+迁移前关系。数据健康为 BLOCKED 时，决策在数据门控层结束，不再生成市场、edge、现金或
+城市限额原因码。
 
 SQLite 允许采集器和 Paper Runner 以短事务并发写入；决策 Runner 的 lease 继续防止两个交易 Runner 同时运行。R2 同步器只读取已提交记录，上传内容寻址的原始批次、结算截图、每日 Parquet 和 manifest。R2 与本地存储均不自动删除。
 

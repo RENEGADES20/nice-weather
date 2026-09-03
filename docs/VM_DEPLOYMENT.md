@@ -1,6 +1,6 @@
 # Ubuntu VM 部署与人工验收
 
-本文以 2026-09-01 schema v4 统一部署为 canonical 流程。后续旧 `weather.sqlite3` 双目录命令仅用于回滚参考。
+本文以 schema v5 统一部署为 canonical 流程。后续旧 `weather.sqlite3` 双目录命令仅用于回滚参考。
 
 ## 0. 统一部署摘要
 
@@ -26,6 +26,18 @@ sudo systemctl stop nice-weather-collector.service
 sudo systemctl stop nice-weather-r2-sync.service
 sudo systemctl stop nice-weather-dashboard.service
 ```
+
+已有统一库从 schema v4 升级时，先使用 SQLite backup API 保存精确副本，再执行原位迁移和验证：
+
+```bash
+sudo -u nice-weather /opt/nice-weather/.venv/bin/nice-weather db migrate \
+  --db /var/lib/nice-weather/nice-weather.sqlite3
+sudo -u nice-weather /opt/nice-weather/.venv/bin/nice-weather db verify \
+  --db /var/lib/nice-weather/nice-weather.sqlite3
+```
+
+验证结果必须为 schema version 5、`integrity_check=ok` 且无 foreign key error。旧天气原文不在
+本次迁移中删除，迁移后的空闲页交给 SQLite 后续写入复用。
 
 确认无 writer 后，备份并迁移：
 

@@ -80,23 +80,43 @@ class DashboardQuery:
     def get_weather_path(self, decision_id: str) -> dict[str, list[dict[str, Any]]]:
         observations = self._query(
             """
+            WITH weather_ids(capture_id) AS (
+              SELECT capture_id FROM decision_weather_inputs WHERE decision_id=?
+              UNION
+              SELECT input.value FROM model_predictions AS prediction
+              JOIN weather_feature_snapshots AS feature USING(feature_snapshot_id)
+              JOIN json_each(feature.input_capture_ids_json) AS input
+              WHERE prediction.decision_id=?
+            )
             SELECT w.* FROM weather_observations w
-            WHERE w.snapshot_id IN (
+            WHERE w.legacy_snapshot_id IN (
               SELECT snapshot_id FROM decision_inputs WHERE decision_id=?
-              UNION SELECT capture_id FROM decision_weather_inputs WHERE decision_id=?
-            ) ORDER BY w.observed_at
+            ) OR w.capture_id IN (
+              SELECT capture_id FROM weather_ids
+            )
+            ORDER BY w.observed_at
             """,
-            (decision_id, decision_id),
+            (decision_id, decision_id, decision_id),
         )
         forecasts = self._query(
             """
+            WITH weather_ids(capture_id) AS (
+              SELECT capture_id FROM decision_weather_inputs WHERE decision_id=?
+              UNION
+              SELECT input.value FROM model_predictions AS prediction
+              JOIN weather_feature_snapshots AS feature USING(feature_snapshot_id)
+              JOIN json_each(feature.input_capture_ids_json) AS input
+              WHERE prediction.decision_id=?
+            )
             SELECT f.* FROM forecast_points f
-            WHERE f.snapshot_id IN (
+            WHERE f.legacy_snapshot_id IN (
               SELECT snapshot_id FROM decision_inputs WHERE decision_id=?
-              UNION SELECT capture_id FROM decision_weather_inputs WHERE decision_id=?
-            ) ORDER BY f.valid_at
+            ) OR f.capture_id IN (
+              SELECT capture_id FROM weather_ids
+            )
+            ORDER BY f.valid_at
             """,
-            (decision_id, decision_id),
+            (decision_id, decision_id, decision_id),
         )
         return {"observations": observations, "forecasts": forecasts}
 

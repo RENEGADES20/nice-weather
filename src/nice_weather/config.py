@@ -38,6 +38,7 @@ class CollectorConfig:
     daily_export_minute: int
     storage_warning_bytes: int
     settlement_url: str
+    nws_observation_overlap_hours: int = 2
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,7 @@ def validate_city_config(config: CityConfig) -> None:
         config.collector.metar_interval_seconds,
         config.collector.forecast_interval_seconds,
         config.collector.nws_observation_interval_seconds,
+        config.collector.nws_observation_overlap_hours,
         config.collector.settlement_interval_seconds,
         config.collector.settlement_close_interval_seconds,
         config.collector.r2_sync_interval_seconds,

@@ -9,6 +9,7 @@ from nice_weather.adapters.fixture import load_fixture
 from nice_weather.cli import _clone_migrate
 from nice_weather.config import load_city_config
 from nice_weather.domain import RunMode, SourceCapture, content_hash, stable_id
+from nice_weather.queries import DashboardQuery
 from nice_weather.runner import _run_bundle, _run_live_cycle
 from nice_weather.store import WeatherStore
 from nice_weather.weather_repository import (
@@ -105,6 +106,65 @@ def test_shadow_persists_minimal_quotes_without_full_book_levels(
         assert counts["weather_observations"] == 0
         assert counts["forecast_points"] == 0
         assert counts["weather_feature_snapshots"] == 1
+        gamma_payload = json.loads(
+            store.connection.execute(
+                "SELECT payload_json FROM raw_snapshots WHERE source='polymarket_gamma'"
+            ).fetchone()[0]
+        )
+        assert gamma_payload["storage_policy"] == "market-capture-ref-v1"
+        assert store.table_counts()["market_captures"] == 1
+
+
+def test_weather_inputs_use_feature_snapshot_relationship(fixture_manifest, tmp_path) -> None:
+    database = tmp_path / "weather-input.sqlite3"
+    config = load_city_config()
+    bundle = load_fixture(fixture_manifest, config)
+    capture = _capture({"v": 1}, bundle.decision_time)
+    with WeatherStore(database) as store:
+        store.init_schema()
+        store.save_source_capture(
+            capture,
+            payload={"v": 1},
+            observations=[
+                {
+                    "observed_at": bundle.decision_time,
+                    "temperature_c": 20.0,
+                    "temperature_f": 68.0,
+                    "raw_unit": "unit:degC",
+                    "raw_text": "feature-linked",
+                    "quality_control": {},
+                    "zone": config.zone,
+                }
+            ],
+        )
+
+    bundle = replace(bundle, extra_input_snapshot_ids=(capture.capture_id,))
+    decision = _run_bundle(bundle, database, config, RunMode.SHADOW)
+
+    with WeatherStore(database, read_only=True) as store:
+        weather_links = store.connection.execute(
+            "SELECT capture_id FROM decision_weather_inputs WHERE decision_id=?",
+            (decision.decision_id,),
+        ).fetchall()
+        legacy_links = store.connection.execute(
+            "SELECT snapshot_id FROM decision_inputs WHERE decision_id=? AND snapshot_id=?",
+            (decision.decision_id, capture.capture_id),
+        ).fetchall()
+        input_ids = json.loads(
+            store.connection.execute(
+                """
+                SELECT feature.input_capture_ids_json FROM weather_feature_snapshots AS feature
+                JOIN model_predictions AS prediction USING(feature_snapshot_id)
+                WHERE prediction.decision_id=?
+                """,
+                (decision.decision_id,),
+            ).fetchone()[0]
+        )
+    assert weather_links == []
+    assert legacy_links == []
+    assert capture.capture_id in input_ids
+    weather = DashboardQuery(database).get_weather_path(decision.decision_id)
+    assert any(row["raw_text"] == "feature-linked" for row in weather["observations"])
 
 
 def test_live_cycle_freezes_decision_time_after_quote_receipt(

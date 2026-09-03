@@ -157,10 +157,14 @@ class OfficialWeatherClient:
     def fetch_nws_observations(self, config: CityConfig, now: datetime) -> HttpPayload:
         local_start = datetime.combine(now.astimezone(config.zone).date(), datetime_time.min)
         local_start = local_start.replace(tzinfo=config.zone).astimezone(UTC)
+        overlap_start = now.astimezone(UTC) - timedelta(
+            hours=config.collector.nws_observation_overlap_hours
+        )
+        request_start = max(local_start, overlap_start)
         return self._get_json(
             f"{self.nws_url}/stations/{config.station_id}/observations",
             params={
-                "start": local_start.isoformat().replace("+00:00", "Z"),
+                "start": request_start.isoformat().replace("+00:00", "Z"),
                 "end": now.astimezone(UTC).isoformat().replace("+00:00", "Z"),
             },
         )

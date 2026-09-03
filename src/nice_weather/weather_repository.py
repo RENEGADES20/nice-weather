@@ -61,7 +61,7 @@ class WeatherRepository:
                 forecast_rows = connection.execute(
                     """
                     SELECT * FROM forecast_points
-                    WHERE snapshot_id=? AND received_at<=? ORDER BY valid_at
+                    WHERE capture_id=? AND received_at<=? ORDER BY valid_at
                     """,
                     (forecast_capture["capture_id"], decision_time.isoformat()),
                 ).fetchall()
@@ -76,7 +76,7 @@ class WeatherRepository:
 
         normalized_observations = tuple(
             WeatherObservation(
-                snapshot_id=str(row["snapshot_id"]),
+                snapshot_id=str(row["capture_id"] or row["legacy_snapshot_id"]),
                 station_id=str(row["station_id"]),
                 observed_at=datetime.fromisoformat(row["observed_at"]),
                 received_at=datetime.fromisoformat(row["received_at"]),
@@ -89,7 +89,7 @@ class WeatherRepository:
         )
         forecasts = tuple(
             ForecastPoint(
-                snapshot_id=str(row["snapshot_id"]),
+                snapshot_id=str(row["capture_id"] or row["legacy_snapshot_id"]),
                 source=str(row["source"]),
                 issued_at=datetime.fromisoformat(row["issued_at"]),
                 valid_at=datetime.fromisoformat(row["valid_at"]),

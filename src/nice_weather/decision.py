@@ -38,6 +38,22 @@ def depth_quote(book: OrderBook, side: str, requested_quantity: float) -> Execut
     )
 
 
+def depth_quote_for_notional(book: OrderBook, max_notional: float) -> ExecutionQuote:
+    remaining_notional = max(0.0, max_notional)
+    cost = 0.0
+    filled = 0.0
+    for level in book.asks:
+        if level.price <= 0:
+            continue
+        take = min(level.size, remaining_notional / level.price)
+        cost += take * level.price
+        filled += take
+        remaining_notional -= take * level.price
+        if remaining_notional <= 1e-12:
+            break
+    return ExecutionQuote(filled, cost / filled if filled else None, sum(x.size for x in book.asks))
+
+
 def taker_fee_per_share(price: float, rate: float, exponent: float) -> float:
     return rate * (price * (1.0 - price)) ** exponent
 
@@ -71,9 +87,9 @@ def build_outcomes(
         approved = False
         if health_level is HealthLevel.BLOCKED:
             reasons.append(ReasonCode.DATA_STALE)
-        if not item.active or item.closed or not item.accepting_orders:
+        elif not item.active or item.closed or not item.accepting_orders:
             reasons.append(ReasonCode.MARKET_CLOSED)
-        if (
+        elif (
             model_probability < config.signal.quote_probability_floor
             and position_quantity <= 0
         ):
@@ -104,11 +120,10 @@ def build_outcomes(
                     action = SignalAction.EXIT_YES
                     approved = not reasons
             if action is not SignalAction.EXIT_YES:
-                requested_quantity = min(
-                    config.signal.target_notional / best_ask,
-                    config.paper.max_bin_notional / best_ask,
+                quote = depth_quote_for_notional(
+                    book,
+                    min(config.signal.target_notional, config.paper.max_bin_notional),
                 )
-                quote = depth_quote(book, "buy", requested_quantity)
                 if quote.quantity < item.minimum_order_size or quote.vwap is None:
                     reasons.append(ReasonCode.DEPTH_INSUFFICIENT)
                 else:

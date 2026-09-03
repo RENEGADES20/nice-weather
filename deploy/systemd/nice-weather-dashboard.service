@@ -10,7 +10,7 @@ Group=nice-weather
 WorkingDirectory=/opt/nice-weather/repo
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/etc/nice-weather/nice-weather.env
-ExecStart=/opt/nice-weather/.venv/bin/streamlit run /opt/nice-weather/repo/src/nice_weather/dashboard.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true -- --db /var/lib/nice-weather/nice-weather.sqlite3 --refresh-seconds 10
+ExecStart=/opt/nice-weather/.venv/bin/streamlit run /opt/nice-weather/repo/src/nice_weather/dashboard.py --server.address=127.0.0.1 --server.port=8501 --server.headless=true --browser.gatherUsageStats=false -- --db /var/lib/nice-weather/nice-weather.sqlite3 --refresh-seconds 10
 Restart=on-failure
 RestartSec=15
 NoNewPrivileges=true

@@ -6,7 +6,7 @@ from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
 from nice_weather.adapters.fixture import FixtureBundle, load_fixture
-from nice_weather.adapters.polymarket import PolymarketReadOnlyAdapter
+from nice_weather.adapters.polymarket import MarketDataRequestError, PolymarketReadOnlyAdapter
 from nice_weather.config import CityConfig, load_city_config
 from nice_weather.contract import parse_gamma_contract
 from nice_weather.decision import build_outcomes
@@ -550,6 +550,9 @@ def run_live_once(
     try:
         return _run_live_cycle(mode, database_path, config_path)
     except Exception as exc:
+        context = {"mode": mode.value}
+        if isinstance(exc, MarketDataRequestError):
+            context.update(exc.context)
         with WeatherStore(database_path) as store:
             store.init_schema()
             store.record_system_event(
@@ -558,7 +561,7 @@ def run_live_once(
                 "runner",
                 type(exc).__name__,
                 str(exc),
-                {"mode": mode.value},
+                context,
             )
         raise
     finally:
