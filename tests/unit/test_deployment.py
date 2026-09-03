@@ -38,3 +38,4 @@ def test_deployment_health_validates_market_object_date(tmp_path) -> None:
 
     assert result["ok"]
     assert result["bad_market_dates"] == 0
+    assert result["inactive_services"] == []

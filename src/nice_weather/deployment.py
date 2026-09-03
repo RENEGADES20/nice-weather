@@ -36,11 +36,18 @@ def _parse(value: str) -> datetime:
 
 
 def deployment_health(
-    database: str | Path, config: CityConfig, *, now: datetime | None = None
+    database: str | Path,
+    config: CityConfig,
+    *,
+    now: datetime | None = None,
+    check_services: bool | None = None,
 ) -> dict[str, Any]:
     now = (now or datetime.now(UTC)).astimezone(UTC)
+    database_path = Path(database).resolve()
+    if check_services is None:
+        check_services = database_path == Path("/var/lib/nice-weather/nice-weather.sqlite3")
     failures = []
-    with WeatherStore(database, read_only=True) as store:
+    with WeatherStore(database_path, read_only=True) as store:
         schema = store.verify_schema()
         if not schema["ok"]:
             failures.append("database_verification")
@@ -113,7 +120,7 @@ def deployment_health(
         if market_stale:
             failures.append("market_stream_stale")
     inactive_services = []
-    if os.name != "nt":
+    if check_services and os.name != "nt":
         for service in SERVICES:
             result = subprocess.run(
                 ["systemctl", "is-active", "--quiet", service], check=False
