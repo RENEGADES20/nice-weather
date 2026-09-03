@@ -163,16 +163,18 @@ def _repair_metar_times(database: Path, config_path: Path | None) -> dict[str, i
                 changed = connection.execute(
                     """
                     INSERT OR IGNORE INTO weather_observations(
-                      observation_id,snapshot_id,station_id,observed_at,received_at,
+                      observation_id,capture_id,legacy_snapshot_id,station_id,
+                      observed_at,received_at,
                       temperature_f,raw_text,source,temperature_c,raw_unit,
                       quality_control_json,source_version,revision,local_date,
                       provider_received_at,report_time,revision_type,parser_version,
                       weather_metadata_json
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         observation_id,
-                        row["snapshot_id"],
+                        row["capture_id"],
+                        row["legacy_snapshot_id"],
                         row["station_id"],
                         corrected.isoformat(),
                         row["received_at"],

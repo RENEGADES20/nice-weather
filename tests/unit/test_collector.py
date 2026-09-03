@@ -4,6 +4,7 @@ from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfo
 
 from nice_weather.collector import (
+    OfficialWeatherClient,
     next_settlement_due,
     parse_metar_observed_at,
     parse_settlement_page,
@@ -131,7 +132,34 @@ def test_capture_dedup_and_observation_revisions(tmp_path) -> None:
             "SELECT revision FROM weather_observations ORDER BY revision"
         ).fetchall()
         assert [item[0] for item in revisions] == [1, 2]
-        assert store.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 4
+        assert store.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert store.table_counts()["raw_snapshots"] == 0
+        stored = store.connection.execute(
+            "SELECT capture_id,legacy_snapshot_id FROM weather_observations LIMIT 1"
+        ).fetchone()
+        assert stored["capture_id"] == first.capture_id
+        assert stored["legacy_snapshot_id"] is None
+
+
+def test_nws_observations_use_bounded_overlap_window(monkeypatch) -> None:
+    config = load_city_config()
+    client = OfficialWeatherClient()
+    calls = []
+    sentinel = object()
+
+    def fake_get_json(url, *, params=None):
+        calls.append((url, params))
+        return sentinel
+
+    monkeypatch.setattr(client, "_get_json", fake_get_json)
+    try:
+        now = datetime(2026, 9, 2, 16, 0, tzinfo=UTC)
+        assert client.fetch_nws_observations(config, now) is sentinel
+    finally:
+        client.close()
+
+    assert calls[0][1]["start"] == "2026-09-02T14:00:00Z"
+    assert calls[0][1]["end"] == "2026-09-02T16:00:00Z"
 
 
 def test_metar_ddhhmmz_uses_provider_receipt_month() -> None:

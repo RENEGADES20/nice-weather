@@ -334,37 +334,6 @@ class WeatherStore:
             ).rowcount
             if not inserted:
                 return False
-            if capture.content_type == "application/json":
-                connection.execute(
-                    """
-                    INSERT OR IGNORE INTO raw_snapshots(
-                      snapshot_id, source, kind, source_time, observed_at, issued_at,
-                      valid_from, valid_to, received_at, source_version, content_hash,
-                      event_id, market_id, token_id, request_url, http_status,
-                      duplicate_of_snapshot_id, payload_json
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        capture.capture_id,
-                        capture.source,
-                        capture.kind,
-                        self._iso(capture.source_time),
-                        self._iso(capture.observed_at),
-                        self._iso(capture.issued_at),
-                        None,
-                        None,
-                        self._iso(capture.received_at),
-                        capture.source_version,
-                        capture.content_hash,
-                        None,
-                        None,
-                        None,
-                        capture.request_url,
-                        capture.http_status,
-                        None,
-                        self.dumps(payload),
-                    ),
-                )
             for item in observations or []:
                 observed_at = item["observed_at"]
                 observation_hash = content_hash(
@@ -419,12 +388,13 @@ class WeatherStore:
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO weather_observations(
-                      observation_id, snapshot_id, station_id, observed_at, received_at,
-                      temperature_f, raw_text, source, temperature_c, raw_unit,
+                      observation_id, capture_id, legacy_snapshot_id, station_id,
+                      observed_at, received_at, temperature_f, raw_text, source,
+                      temperature_c, raw_unit,
                       quality_control_json, source_version, revision, local_date,
                       provider_received_at, report_time, revision_type, parser_version,
                       weather_metadata_json
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stable_id(
@@ -434,6 +404,7 @@ class WeatherStore:
                             observation_hash,
                         ),
                         capture.capture_id,
+                        None,
                         capture.station_id,
                         self._iso(observed_at),
                         self._iso(capture.received_at),
@@ -475,9 +446,9 @@ class WeatherStore:
                     connection.execute(
                         """
                         INSERT OR IGNORE INTO forecast_points(
-                          forecast_point_id, snapshot_id, source, issued_at, valid_at,
-                          received_at, temperature_f
-                        ) VALUES(?,?,?,?,?,?,?)
+                          forecast_point_id, capture_id, legacy_snapshot_id, source,
+                          issued_at, valid_at, received_at, temperature_f
+                        ) VALUES(?,?,?,?,?,?,?,?)
                         """,
                         (
                             stable_id(
@@ -486,6 +457,7 @@ class WeatherStore:
                                 item["valid_at"],
                             ),
                             capture.capture_id,
+                            None,
                             capture.source,
                             self._iso(capture.issued_at or capture.received_at),
                             self._iso(item["valid_at"]),
@@ -682,7 +654,7 @@ class WeatherStore:
             rows = self.connection.execute(
                 """
                 SELECT point.* FROM forecast_points AS point
-                JOIN source_captures AS capture ON capture.capture_id=point.snapshot_id
+                JOIN source_captures AS capture ON capture.capture_id=point.capture_id
                 WHERE capture.local_date=? ORDER BY point.valid_at, point.forecast_point_id
                 """,
                 (local_date,),
@@ -843,6 +815,11 @@ class WeatherStore:
                         "asks": snapshot.payload.get("asks", [])[:5],
                         "storage_policy": "candidate-top5-v1",
                     }
+                elif snapshot.source == "polymarket_gamma" and state.mode is not RunMode.FIXTURE:
+                    persisted_payload = {
+                        "content_hash": snapshot.hash,
+                        "storage_policy": "market-capture-ref-v1",
+                    }
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO raw_snapshots(
@@ -990,12 +967,13 @@ class WeatherStore:
                     connection.execute(
                         """
                         INSERT OR REPLACE INTO weather_observations(
-                          observation_id, snapshot_id, station_id, observed_at, received_at,
-                          temperature_f, raw_text
-                        ) VALUES(?,?,?,?,?,?,?)
+                          observation_id, capture_id, legacy_snapshot_id, station_id,
+                          observed_at, received_at, temperature_f, raw_text
+                        ) VALUES(?,?,?,?,?,?,?,?)
                         """,
                         (
                             stable_id("observation", item.snapshot_id, item.observed_at),
+                            None,
                             item.snapshot_id,
                             item.station_id,
                             self._iso(item.observed_at),
@@ -1006,9 +984,15 @@ class WeatherStore:
                     )
                 for item in state.forecasts:
                     connection.execute(
-                        "INSERT OR REPLACE INTO forecast_points VALUES(?,?,?,?,?,?,?)",
+                        """
+                        INSERT OR REPLACE INTO forecast_points(
+                          forecast_point_id,capture_id,legacy_snapshot_id,source,
+                          issued_at,valid_at,received_at,temperature_f
+                        ) VALUES(?,?,?,?,?,?,?,?)
+                        """,
                         (
                             stable_id("forecast", item.snapshot_id, item.valid_at),
+                            None,
                             item.snapshot_id,
                             item.source,
                             self._iso(item.issued_at),
@@ -1055,18 +1039,15 @@ class WeatherStore:
             )
             for snapshot_id in state.input_snapshot_ids:
                 if connection.execute(
+                    "SELECT 1 FROM source_captures WHERE capture_id=?", (snapshot_id,)
+                ).fetchone():
+                    continue
+                elif connection.execute(
                     "SELECT 1 FROM raw_snapshots WHERE snapshot_id=?", (snapshot_id,)
                 ).fetchone():
                     connection.execute(
                         "INSERT INTO decision_inputs VALUES(?,?,?)",
                         (decision.decision_id, snapshot_id, "decision_state"),
-                    )
-                elif connection.execute(
-                    "SELECT 1 FROM source_captures WHERE capture_id=?", (snapshot_id,)
-                ).fetchone():
-                    connection.execute(
-                        "INSERT OR IGNORE INTO decision_weather_inputs VALUES(?,?,?)",
-                        (decision.decision_id, snapshot_id, "weather_as_of"),
                     )
             for outcome in decision.outcomes:
                 connection.execute(

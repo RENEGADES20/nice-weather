@@ -4,9 +4,24 @@
 
 ## 当前阶段
 
-项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，进入 24 小时 Shadow 观察”的阶段。
+项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，schema v5 存储修复待部署后重新观察”的阶段。
 
 天气采集器已通过 PR #3 合并；统一存储与阶段 A 通过 PR #6 合并，live as-of 时钟修复通过 PR #7 合并，隔离状态通过 PR #9 合并。Dashboard 时区改造前的 VM 审计 SHA 为 `69b89f69d0104e57abd7dd8da7155fee147f0c11`；当前运行 SHA 以 Dashboard build 标识和 VM `git rev-parse HEAD` 为准。
+
+## 2026-09-02 schema v5 存储与门控修复
+
+- 24 小时观察确认数据库约增长 232 MiB/日，主要来源为天气完整 JSON 双写、每分钟 Gamma
+  完整快照以及天气输入误入旧 `decision_inputs`。
+- schema v5 将新增天气观测和预报直接关联 `source_captures`，历史记录保留
+  `legacy_snapshot_id`；迁移既有天气决策关联时不丢失输入关系。新决策通过 feature snapshot
+  保存完整 capture ID 集，停止每分钟重复写数十条天气关联。
+- NWS station observations 改为两小时重叠窗口；Gamma snapshot ID 改为内容寻址，完整事件
+  只按内容变化保存，旧快照表只保留轻量引用。
+- BLOCKED 决策停止进入市场和风险判断，逐层买入 quote 的实际名义金额不超过目标和单档上限。
+- Polymarket 读取增加一次有限重试，错误事件记录 stage、URL、attempts、elapsed 和底层异常类型。
+- Dashboard systemd 关闭 Streamlit 使用统计，保留 `ProtectSystem=strict` 和 `ProtectHome=true`。
+- 本地 Ruff 和 48 项完整 pytest 通过。VM 尚未升级 schema v5；部署后重新开始 24 小时观察，
+  隔离的三个旧 live 数据库文件继续保留。
 
 ## 2026-09-02 Dashboard 时区
 
@@ -98,7 +113,8 @@ D:\ALLPROJECTS\x learner\天气预测市场交易系统_项目启动会.pptx
 - 基线正态分布固定 `sigma=3°F`，没有经过样本外校准。
 - CLOB 使用 REST 快照，尚未接 WebSocket 增量簿或 maker 排队模型。
 - 自动结算等待 Gamma winning outcome；跨机场日未完成结算的旧持仓仍需人工对账。
-- 外部 API 失败已有 `system_events`、循环续跑和 heartbeat，尚未经过长时间断流与重连演练。
+- 外部 API 失败已有阶段化 `system_events`、有限重试、循环续跑和 heartbeat，尚未经过长时间断流与重连演练。
+- schema v5 尚未部署，首次 24 小时观察因数据库增长超限而未通过；部署后需重新计时验证。
 - Nautilus Trader、复杂回放、集合预报和多城市继续后置。
 
 ## 2026-08-23 MVP 纵向闭环

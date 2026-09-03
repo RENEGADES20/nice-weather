@@ -6,11 +6,20 @@ import sqlite3
 from collections.abc import Callable
 from typing import Any
 
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")')}
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        is not None
+    )
 
 
 def _add_column(
@@ -177,8 +186,144 @@ def _migration_v4(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_v5(connection: sqlite3.Connection) -> None:
+    weather_columns = {
+        "source": "TEXT NOT NULL DEFAULT 'aviationweather'",
+        "temperature_c": "REAL",
+        "raw_unit": "TEXT",
+        "quality_control_json": "TEXT NOT NULL DEFAULT '{}'",
+        "source_version": "TEXT",
+        "revision": "INTEGER NOT NULL DEFAULT 1",
+        "local_date": "TEXT",
+        "provider_received_at": "TEXT",
+        "report_time": "TEXT",
+        "revision_type": "TEXT NOT NULL DEFAULT 'initial'",
+        "parser_version": "TEXT NOT NULL DEFAULT 'legacy-v1'",
+        "weather_metadata_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for name, definition in weather_columns.items():
+        _add_column(connection, "weather_observations", name, definition)
+
+    if "capture_id" not in _columns(connection, "weather_observations"):
+        connection.executescript(
+            """
+            ALTER TABLE weather_observations RENAME TO weather_observations_v4;
+            CREATE TABLE weather_observations (
+              observation_id TEXT PRIMARY KEY,
+              capture_id TEXT REFERENCES source_captures(capture_id),
+              legacy_snapshot_id TEXT REFERENCES raw_snapshots(snapshot_id),
+              station_id TEXT NOT NULL,
+              observed_at TEXT NOT NULL,
+              received_at TEXT NOT NULL,
+              temperature_f REAL NOT NULL,
+              raw_text TEXT NOT NULL,
+              source TEXT NOT NULL DEFAULT 'aviationweather',
+              temperature_c REAL,
+              raw_unit TEXT,
+              quality_control_json TEXT NOT NULL DEFAULT '{}',
+              source_version TEXT,
+              revision INTEGER NOT NULL DEFAULT 1,
+              local_date TEXT,
+              provider_received_at TEXT,
+              report_time TEXT,
+              revision_type TEXT NOT NULL DEFAULT 'initial',
+              parser_version TEXT NOT NULL DEFAULT 'legacy-v1',
+              weather_metadata_json TEXT NOT NULL DEFAULT '{}',
+              CHECK(capture_id IS NOT NULL OR legacy_snapshot_id IS NOT NULL)
+            );
+            INSERT INTO weather_observations(
+              observation_id,capture_id,legacy_snapshot_id,station_id,observed_at,
+              received_at,temperature_f,raw_text,source,temperature_c,raw_unit,
+              quality_control_json,source_version,revision,local_date,
+              provider_received_at,report_time,revision_type,parser_version,
+              weather_metadata_json
+            )
+            SELECT
+              observation_id,
+              CASE WHEN EXISTS(
+                SELECT 1 FROM source_captures
+                WHERE capture_id=weather_observations_v4.snapshot_id
+              ) THEN snapshot_id END,
+              CASE WHEN EXISTS(
+                SELECT 1 FROM source_captures
+                WHERE capture_id=weather_observations_v4.snapshot_id
+              ) THEN NULL ELSE snapshot_id END,
+              station_id,observed_at,received_at,temperature_f,raw_text,source,
+              temperature_c,raw_unit,quality_control_json,source_version,revision,
+              local_date,provider_received_at,report_time,revision_type,
+              parser_version,weather_metadata_json
+            FROM weather_observations_v4;
+            DROP TABLE weather_observations_v4;
+            CREATE INDEX idx_weather_observations_capture
+              ON weather_observations(capture_id);
+            """
+        )
+
+    if "capture_id" not in _columns(connection, "forecast_points"):
+        connection.executescript(
+            """
+            ALTER TABLE forecast_points RENAME TO forecast_points_v4;
+            CREATE TABLE forecast_points (
+              forecast_point_id TEXT PRIMARY KEY,
+              capture_id TEXT REFERENCES source_captures(capture_id),
+              legacy_snapshot_id TEXT REFERENCES raw_snapshots(snapshot_id),
+              source TEXT NOT NULL,
+              issued_at TEXT NOT NULL,
+              valid_at TEXT NOT NULL,
+              received_at TEXT NOT NULL,
+              temperature_f REAL NOT NULL,
+              CHECK(capture_id IS NOT NULL OR legacy_snapshot_id IS NOT NULL)
+            );
+            INSERT INTO forecast_points(
+              forecast_point_id,capture_id,legacy_snapshot_id,source,issued_at,
+              valid_at,received_at,temperature_f
+            )
+            SELECT
+              forecast_point_id,
+              CASE WHEN EXISTS(
+                SELECT 1 FROM source_captures
+                WHERE capture_id=forecast_points_v4.snapshot_id
+              ) THEN snapshot_id END,
+              CASE WHEN EXISTS(
+                SELECT 1 FROM source_captures
+                WHERE capture_id=forecast_points_v4.snapshot_id
+              ) THEN NULL ELSE snapshot_id END,
+              source,issued_at,valid_at,received_at,temperature_f
+            FROM forecast_points_v4;
+            DROP TABLE forecast_points_v4;
+            CREATE INDEX idx_forecast_points_capture ON forecast_points(capture_id);
+            """
+        )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_weather_observations_capture "
+        "ON weather_observations(capture_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_forecast_points_capture "
+        "ON forecast_points(capture_id)"
+    )
+    if _table_exists(connection, "decision_inputs") and _table_exists(
+        connection, "decision_weather_inputs"
+    ):
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO decision_weather_inputs(decision_id,capture_id,role)
+            SELECT input.decision_id,input.snapshot_id,'weather_as_of'
+            FROM decision_inputs AS input
+            JOIN source_captures AS capture ON capture.capture_id=input.snapshot_id
+            """
+        )
+        connection.execute(
+            """
+            DELETE FROM decision_inputs
+            WHERE snapshot_id IN (SELECT capture_id FROM source_captures)
+            """
+        )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (4, "unified_weather_store", _migration_v4),
+    (5, "source_capture_ownership", _migration_v5),
 )
 
 

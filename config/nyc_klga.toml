@@ -29,6 +29,7 @@ dashboard_refresh_seconds = 10
 metar_interval_seconds = 120
 forecast_interval_seconds = 900
 nws_observation_interval_seconds = 300
+nws_observation_overlap_hours = 2
 settlement_interval_seconds = 3600
 settlement_close_interval_seconds = 120
 r2_sync_interval_seconds = 900

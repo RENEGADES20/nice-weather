@@ -62,6 +62,38 @@ def test_buy_uses_ask_depth_and_cost_buffers(fixture_manifest) -> None:
 
     assert selected.best_ask == 0.40
     assert selected.executable_price > selected.best_ask
+    assert selected.executable_quantity * selected.executable_price <= 5.0 + 1e-9
     assert selected.fee > 0
     assert selected.risk_approved
     assert depth_quote(book, "buy", 10).quantity == 10
+
+
+def test_blocked_health_stops_before_market_and_risk_checks(fixture_manifest) -> None:
+    config = load_city_config()
+    bundle = load_fixture(fixture_manifest, config)
+    contract = parse_gamma_contract(bundle.gamma_snapshot.payload, config)
+    estimate = ProbabilityEstimate(
+        "test",
+        bundle.decision_time,
+        80,
+        None,
+        80,
+        80,
+        76,
+        84,
+        tuple(BinProbability(item.bin_id, 1 / len(contract.bins)) for item in contract.bins),
+        1.0,
+        (),
+    )
+    outcomes = build_outcomes(
+        "blocked",
+        contract,
+        estimate,
+        bundle.books,
+        config,
+        HealthLevel.BLOCKED,
+        0,
+        config.paper.max_city_day_notional,
+    )
+
+    assert all(outcome.reason_codes == ("DATA_STALE",) for outcome in outcomes)
