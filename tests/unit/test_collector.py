@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 from nice_weather.collector import (
     OfficialWeatherClient,
+    WeatherCollector,
     next_settlement_due,
     parse_metar_observed_at,
     parse_settlement_page,
@@ -12,6 +13,7 @@ from nice_weather.collector import (
 )
 from nice_weather.config import load_city_config
 from nice_weather.domain import SettlementEvidence, SourceCapture, content_hash, stable_id
+from nice_weather.runner import run_fixture_once
 from nice_weather.store import WeatherStore
 
 
@@ -24,7 +26,7 @@ def test_settlement_page_parses_tmax_and_next_day_row() -> None:
     """
     parsed = parse_settlement_page(text, date(2026, 8, 26), ZoneInfo("America/New_York"))
     assert parsed.parse_status == "parsed"
-    assert parsed.tmax_f == 86.0
+    assert parsed.tmax_f == 84.0
     assert parsed.finalized
     assert parsed.first_next_day_temperature_f == 82.0
     assert parsed.first_next_day_observed_at == datetime(2026, 8, 27, 4, 51, tzinfo=UTC)
@@ -132,7 +134,7 @@ def test_capture_dedup_and_observation_revisions(tmp_path) -> None:
             "SELECT revision FROM weather_observations ORDER BY revision"
         ).fetchall()
         assert [item[0] for item in revisions] == [1, 2]
-        assert store.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 5
+        assert store.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
         assert store.table_counts()["raw_snapshots"] == 0
         stored = store.connection.execute(
             "SELECT capture_id,legacy_snapshot_id FROM weather_observations LIMIT 1"
@@ -160,6 +162,24 @@ def test_nws_observations_use_bounded_overlap_window(monkeypatch) -> None:
 
     assert calls[0][1]["start"] == "2026-09-02T14:00:00Z"
     assert calls[0][1]["end"] == "2026-09-02T16:00:00Z"
+
+
+def test_metar_uses_active_interval_only_for_open_market_day(
+    fixture_manifest, tmp_path
+) -> None:
+    database = tmp_path / "active-market.sqlite3"
+    config = load_city_config()
+    collector = WeatherCollector(config, str(database))
+
+    assert collector._metar_poll_interval(
+        datetime(2026, 8, 24, 16, tzinfo=UTC)
+    ) == config.collector.metar_interval_seconds
+
+    run_fixture_once(fixture_manifest, database)
+
+    assert collector._metar_poll_interval(
+        datetime(2026, 8, 24, 16, tzinfo=UTC)
+    ) == config.collector.metar_active_interval_seconds
 
 
 def test_metar_ddhhmmz_uses_provider_receipt_month() -> None:

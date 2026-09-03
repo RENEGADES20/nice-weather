@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import json
 import os
 import shutil
@@ -49,6 +51,16 @@ def build_parser() -> argparse.ArgumentParser:
     repair.add_argument("--db", type=Path, required=True)
     repair.add_argument("--config", type=Path)
 
+    settlement_repair = subparsers.add_parser(
+        "repair-settlement-dates",
+        help="Rebuild settlement row object dates and derived labels",
+    )
+    settlement_repair.add_argument("--db", type=Path, required=True)
+    settlement_repair.add_argument("--config", type=Path)
+    repair_mode = settlement_repair.add_mutually_exclusive_group(required=True)
+    repair_mode.add_argument("--dry-run", action="store_true")
+    repair_mode.add_argument("--apply", action="store_true")
+
     version_parser = subparsers.add_parser("version", help="Show deployed build metadata")
     version_parser.add_argument("--json", action="store_true")
     version_parser.add_argument("--db", type=Path)
@@ -86,6 +98,26 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--once", action="store_true")
     collect.add_argument("--skip-settlement", action="store_true")
 
+    market_stream = subparsers.add_parser(
+        "collect-market-stream", help="Collect CLOB top-of-book changes"
+    )
+    market_stream.add_argument("--db", type=Path, required=True)
+    market_stream.add_argument("--config", type=Path)
+    market_stream.add_argument("--discover-once", action="store_true")
+
+    research = subparsers.add_parser("research", help="Run read-only research reports")
+    research_commands = research.add_subparsers(dest="research_command", required=True)
+    repricing = research_commands.add_parser(
+        "tmax-repricing", help="Measure market repricing around Tmax knowledge events"
+    )
+    repricing.add_argument("--db", type=Path, required=True)
+    repricing.add_argument("--config", type=Path)
+    repricing.add_argument("--from", dest="start_date", type=date.fromisoformat, required=True)
+    repricing.add_argument("--to", dest="end_date", type=date.fromisoformat, required=True)
+    repricing.add_argument("--quantity", type=float, default=10.0)
+    repricing.add_argument("--thresholds", default="0.80,0.90,0.95,0.99")
+    repricing.add_argument("--format", choices=("json", "csv"), default="json")
+
     r2_check = subparsers.add_parser("r2-check", help="Verify append-only R2 write and read")
     r2_check.add_argument("--db", type=Path, required=True)
     r2_check.add_argument("--config", type=Path)
@@ -99,6 +131,17 @@ def build_parser() -> argparse.ArgumentParser:
     status = subparsers.add_parser("collector-status", help="Show source and storage health")
     status.add_argument("--db", type=Path, required=True)
     status.add_argument("--config", type=Path)
+
+    observer = subparsers.add_parser(
+        "observe-deployment", help="Monitor a deployment and roll back persistent failures"
+    )
+    observer.add_argument("--db", type=Path, required=True)
+    observer.add_argument("--config", type=Path)
+    observer.add_argument("--previous-sha", required=True)
+    observer.add_argument("--backup", type=Path, required=True)
+    observer.add_argument("--hours", type=float, default=24.0)
+    observer.add_argument("--interval-seconds", type=int, default=300)
+    observer.add_argument("--check-only", action="store_true")
     return parser
 
 
@@ -168,8 +211,8 @@ def _repair_metar_times(database: Path, config_path: Path | None) -> dict[str, i
                       temperature_f,raw_text,source,temperature_c,raw_unit,
                       quality_control_json,source_version,revision,local_date,
                       provider_received_at,report_time,revision_type,parser_version,
-                      weather_metadata_json
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      weather_metadata_json,object_timezone,object_local_date
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         observation_id,
@@ -192,6 +235,8 @@ def _repair_metar_times(database: Path, config_path: Path | None) -> dict[str, i
                         "timestamp_repair",
                         "metar-ddhhmmz-v2",
                         row["weather_metadata_json"],
+                        config.object_timezone,
+                        corrected.astimezone(config.zone).date().isoformat(),
                     ),
                 ).rowcount
                 inserted += int(changed)
@@ -219,6 +264,57 @@ def _clone_migrate(source: Path, target: Path) -> dict[str, object]:
     result["source"] = str(source)
     result["database"] = str(target)
     return result
+
+
+def _repricing_csv(report: dict[str, object]) -> str:
+    events = list(report["events"])
+    thresholds = [str(item) for item in report["thresholds"]]
+    fields = [
+        "event_id",
+        "local_day",
+        "type",
+        "bin_id",
+        "label",
+        "source",
+        "temperature_f",
+        "contract_temperature_f",
+        "object_time",
+        "system_received_at",
+        "source_latency_seconds",
+        "first_market_move_at",
+        "tradable_lead_seconds",
+        "pre_mid",
+        "pre_best_bid",
+        "pre_best_ask",
+        "target_quantity",
+        "target_ask_vwap",
+        "executable_ask_depth",
+        "slippage",
+        "estimated_fee",
+        "paper_pnl",
+        "sunset",
+        "minutes_to_sunset",
+        "solar_elevation",
+        "remaining_forecast_tmax_f",
+        "weather_covariates",
+        "final_official_temperature_f",
+        "final_bin_id",
+        "higher_bin_later",
+        *[f"threshold_{item}" for item in thresholds],
+    ]
+    output = io.StringIO()
+    writer = csv.DictWriter(output, fieldnames=fields, lineterminator="\n")
+    writer.writeheader()
+    for event in events:
+        row = {key: event.get(key) for key in fields}
+        threshold_times = event.get("threshold_times", {})
+        for threshold in thresholds:
+            row[f"threshold_{threshold}"] = threshold_times.get(threshold)
+        row["weather_covariates"] = json.dumps(
+            row.get("weather_covariates", {}), sort_keys=True
+        )
+        writer.writerow(row)
+    return output.getvalue()
 
 
 def _run_smoke(args: argparse.Namespace) -> dict[str, object]:
@@ -353,6 +449,26 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             print(json.dumps({"status": "stopped"}))
         return 0
+    if args.command == "collect-market-stream":
+        from nice_weather.market_stream import MarketStreamCollector
+
+        config = load_city_config(args.config)
+        collector = MarketStreamCollector(config, str(args.db))
+        if args.discover_once:
+            metadata, _ = collector.discover()
+            print(
+                json.dumps(
+                    {"status": "complete", "tokens": len(metadata)},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        try:
+            collector.run_forever()
+        except KeyboardInterrupt:
+            print(json.dumps({"status": "stopped"}))
+        return 0
     if args.command == "db":
         if args.db_command == "clone-migrate":
             result = _clone_migrate(args.source, args.db)
@@ -367,6 +483,37 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result["ok"] else 1
     if args.command == "repair-metar-time":
         print(json.dumps(_repair_metar_times(args.db, args.config), sort_keys=True))
+        return 0
+    if args.command == "repair-settlement-dates":
+        from nice_weather.research import repair_settlement_dates
+
+        config = load_city_config(args.config)
+        result = repair_settlement_dates(args.db, config, apply=args.apply)
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.command == "research":
+        from nice_weather.research import tmax_repricing_report
+
+        thresholds = tuple(float(item) for item in args.thresholds.split(","))
+        if any(item <= 0 or item >= 1 for item in thresholds):
+            raise SystemExit("--thresholds must contain probabilities between 0 and 1")
+        if args.start_date > args.end_date:
+            raise SystemExit("--from must be on or before --to")
+        if args.quantity <= 0:
+            raise SystemExit("--quantity must be positive")
+        report = tmax_repricing_report(
+            args.db,
+            load_city_config(args.config),
+            start_date=args.start_date,
+            end_date=args.end_date,
+            quantity=args.quantity,
+            thresholds=thresholds,
+        )
+        print(
+            _repricing_csv(report)
+            if args.format == "csv"
+            else json.dumps(report, ensure_ascii=False, sort_keys=True)
+        )
         return 0
     if args.command == "version":
         config = load_city_config(args.config)
@@ -431,6 +578,20 @@ def main(argv: list[str] | None = None) -> int:
         r2["warning"] = int(r2["bytes"]) >= config.collector.storage_warning_bytes
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0
+    if args.command == "observe-deployment":
+        from nice_weather.deployment import observe_deployment
+
+        result = observe_deployment(
+            args.db,
+            load_city_config(args.config),
+            previous_sha=args.previous_sha,
+            backup=args.backup,
+            hours=args.hours,
+            interval_seconds=args.interval_seconds,
+            check_only=args.check_only,
+        )
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0 if result["ok"] else 1
     raise AssertionError(f"Unhandled command: {args.command}")
 
 

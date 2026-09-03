@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -10,8 +10,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+from astral import LocationInfo
+from astral.sun import sun
 
+from nice_weather.config import load_city_config
+from nice_weather.domain import content_hash
 from nice_weather.queries import DashboardQuery
+from nice_weather.trading_chart import trading_chart
 
 _TIMESTAMP_KEYS = frozenset({"decision_time", "source_time", "valid_from", "valid_to"})
 
@@ -185,6 +190,257 @@ def _localize_records(records: list[dict[str, Any]], zone: tzinfo) -> list[dict[
     return [_localize_record(record, zone) for record in records]
 
 
+def _epoch(value: object) -> float:
+    parsed = _display_datetime(value, UTC)
+    if parsed is None:
+        raise ValueError(f"Invalid timestamp: {value}")
+    return parsed.timestamp()
+
+
+def _points(
+    rows: list[dict[str, Any]], time_key: str, value_key: str
+) -> list[dict[str, object]]:
+    return [
+        {
+            "time": _epoch(row[time_key]),
+            "value": float(row[value_key]),
+            "object_time": row[time_key],
+            "received_at": row.get("received_at"),
+        }
+        for row in rows
+        if row.get(time_key) is not None and row.get(value_key) is not None
+    ]
+
+
+def _market_series(
+    ticks: list[dict[str, Any]], bins: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    palette = ("#2dd4bf", "#60a5fa", "#f59e0b", "#f472b6", "#a78bfa", "#84cc16")
+    result = []
+    for index, contract_bin in enumerate(bins):
+        bin_ticks = [item for item in ticks if item["bin_id"] == contract_bin["bin_id"]]
+        label = str(contract_bin["label"])
+        color = palette[index % len(palette)]
+        clob = [item for item in bin_ticks if item["source"] == "clob_ws"]
+        gamma = [item for item in bin_ticks if item["source"] == "gamma_fallback"]
+        for key, name, style, default in (
+            ("mid", "Mid", "solid", True),
+            ("best_bid", "Bid", "dotted", True),
+            ("best_ask", "Ask", "dashed", True),
+            ("last_trade_price", "Last", "solid", False),
+        ):
+            result.append(
+                {
+                    "id": f"{contract_bin['bin_id']}:{key}",
+                    "name": f"{label} {name}",
+                    "group": "Market",
+                    "axis": "right",
+                    "color": color,
+                    "lineStyle": style,
+                    "defaultVisible": default,
+                    "points": _points(clob, "exchange_event_at", key),
+                }
+            )
+        result.append(
+            {
+                "id": f"{contract_bin['bin_id']}:gamma",
+                "name": f"{label} Gamma fallback",
+                "group": "Market",
+                "axis": "right",
+                "color": color,
+                "lineStyle": "dashed",
+                "defaultVisible": False,
+                "points": _points(gamma, "exchange_event_at", "mid"),
+            }
+        )
+    return result
+
+
+def _render_trading_timeline(db: Path) -> None:
+    query = DashboardQuery(db)
+    days = query.list_market_days()
+    if not days:
+        return
+    st.subheader("KLGA Tmax and market repricing")
+    controls = st.columns((2, 3, 4, 3))
+    day_labels = {
+        f"{item['local_day']} · {item['event_title']}": item for item in days
+    }
+    selected_day_label = controls[0].selectbox(
+        "Market day", list(day_labels), key="timeline-market-day"
+    )
+    selected_day = day_labels[selected_day_label]
+    horizon = controls[1].selectbox(
+        "Forecast range", options=(1, 2, 3, 5), index=1,
+        format_func=lambda value: f"{value}D"
+    )
+    bins = query.get_event_bins(str(selected_day["event_id"]))
+    middle = max(0, len(bins) // 2 - 1)
+    default_bins = [str(item["bin_id"]) for item in bins[middle : middle + 3]]
+    selected_bin_ids = controls[2].multiselect(
+        "Temperature bins",
+        options=[str(item["bin_id"]) for item in bins],
+        default=default_bins,
+        max_selections=6,
+        format_func=lambda value: next(
+            str(item["label"]) for item in bins if item["bin_id"] == value
+        ),
+    )
+    threshold = controls[3].selectbox(
+        "Price-in", options=(0.8, 0.9, 0.95, 0.99), index=1,
+        format_func=lambda value: f"{value:.0%}",
+    )
+    if not selected_bin_ids:
+        st.info("Select at least one temperature bin.")
+        return
+    horizon = int(horizon or 2)
+    threshold = float(threshold or 0.9)
+    object_day = date.fromisoformat(str(selected_day["local_day"]))
+    object_timezone = str(selected_day["timezone"])
+    zone = ZoneInfo(object_timezone)
+    start = datetime.combine(object_day, time.min, zone).astimezone(UTC)
+    end = (datetime.combine(object_day, time.min, zone) + timedelta(days=horizon)).astimezone(UTC)
+    now = datetime.now(UTC)
+    timeline = query.get_weather_timeline(object_day, horizon, now, object_timezone)
+    selected_bins = [item for item in bins if str(item["bin_id"]) in selected_bin_ids]
+
+    cache_key = content_hash(
+        {
+            "event": selected_day["event_id"],
+            "bins": selected_bin_ids,
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+        }
+    )
+    state_key = "timeline-market-cache"
+    cached = st.session_state.get(state_key)
+    if not isinstance(cached, dict) or cached.get("key") != cache_key:
+        market = query.get_market_bin_history(
+            str(selected_day["event_id"]), selected_bin_ids, start, end
+        )
+        cached = {"key": cache_key, "ticks": market["ticks"], "cursor": market["cursor"]}
+    else:
+        market = query.get_market_bin_history(
+            str(selected_day["event_id"]),
+            selected_bin_ids,
+            start,
+            end,
+            cached.get("cursor"),
+        )
+        known = {str(item["tick_id"]) for item in cached["ticks"]}
+        cached["ticks"].extend(
+            item for item in market["ticks"] if str(item["tick_id"]) not in known
+        )
+        cached["cursor"] = market["cursor"]
+    st.session_state[state_key] = cached
+
+    metar = [item for item in timeline["observations"] if item["source"] == "aviationweather"]
+    nws = [item for item in timeline["observations"] if item["source"] == "nws"]
+    running = query.get_tmax_knowledge_events(object_day, now)
+    series = [
+        {
+            "id": "forecast",
+            "name": "NWS forecast",
+            "group": "Weather",
+            "axis": "left",
+            "color": "#f2c94c",
+            "lineStyle": "dashed",
+            "defaultVisible": True,
+            "points": _points(timeline["forecasts"], "valid_at", "temperature_f"),
+        },
+        {
+            "id": "metar",
+            "name": "METAR",
+            "group": "Weather",
+            "axis": "left",
+            "color": "#ef6c5b",
+            "lineStyle": "solid",
+            "defaultVisible": True,
+            "points": _points(metar, "observed_at", "temperature_f"),
+        },
+        {
+            "id": "nws-observations",
+            "name": "NWS observations",
+            "group": "Weather",
+            "axis": "left",
+            "color": "#8b9dc3",
+            "lineStyle": "dotted",
+            "defaultVisible": False,
+            "points": _points(nws, "observed_at", "temperature_f"),
+        },
+        {
+            "id": "running-tmax",
+            "name": "Running Tmax",
+            "group": "Weather",
+            "axis": "left",
+            "color": "#f2f5f8",
+            "lineStyle": "solid",
+            "defaultVisible": True,
+            "points": _points(running, "observed_at", "running_tmax_f"),
+        },
+        *_market_series(cached["ticks"], selected_bins),
+    ]
+    analysis = query.get_price_in_analysis(str(selected_day["event_id"]), threshold, 10.0)
+    events = [
+        {
+            "id": f"{item['type']}:{item['bin_id']}:{item['object_time']}",
+            "type": item["type"],
+            "title": (
+                f"{item['label']} eliminated"
+                if item["type"] == "bin_eliminated"
+                else (
+                    f"Forecast revised to {item['contract_temperature_f']:.0f} F"
+                    if item["type"] == "forecast_revised"
+                    else f"{item['label']} entered"
+                )
+            ),
+            "time": _epoch(item["object_time"]),
+            "object_time": item["object_time"],
+            "received_at": item["system_received_at"],
+            "first_market_move_at": item["first_market_move_at"],
+            "source_latency_seconds": item["source_latency_seconds"],
+            "tradable_lead_seconds": item["tradable_lead_seconds"],
+            "threshold_times": item["threshold_times"],
+            "bin_id": item["bin_id"],
+            "temperature_f": item["temperature_f"],
+        }
+        for item in analysis
+    ]
+    config = load_city_config()
+    location = LocationInfo(
+        config.city_name, "US", object_timezone, config.latitude, config.longitude
+    )
+    solar = sun(location.observer, date=object_day, tzinfo=zone)
+    for name, title in (("sunset", "Sunset"), ("dusk", "Civil twilight ends")):
+        instant = solar[name].astimezone(UTC)
+        events.append(
+            {
+                "id": f"solar:{name}:{object_day}",
+                "type": name,
+                "title": title,
+                "time": round(instant.timestamp()),
+                "object_time": instant.isoformat(),
+                "received_at": instant.isoformat(),
+            }
+        )
+    events.sort(key=lambda item: int(item["time"]))
+    context = getattr(st, "context", None)
+    _, display_timezone = _display_timezone(getattr(context, "timezone", None))
+    payload = {
+        "signature": cache_key,
+        "objectTimezone": object_timezone,
+        "displayTimezone": display_timezone,
+        "threshold": str(threshold),
+        "series": series,
+        "events": events,
+    }
+    trading_chart(payload, key="klga-tmax-trading-chart-v2")
+    st.caption(
+        "Axis labels use the trader display time zone. Market-day assignment and all research "
+        f"calculations remain fixed to {object_timezone}."
+    )
+
+
 def _render(db: Path) -> None:
     query = DashboardQuery(db)
     try:
@@ -200,7 +456,6 @@ def _render(db: Path) -> None:
     decision_id = str(summary["decision_id"])
     outcomes = query.get_outcome_snapshot(decision_id)
     contract = query.get_contract_view(decision_id)
-    weather = query.get_weather_path(decision_id)
     health = query.get_health_view(decision_id)
     paper = query.get_paper_view(decision_id)
     model_context = query.get_model_context(decision_id)
@@ -276,9 +531,6 @@ def _render(db: Path) -> None:
         weather_metrics[5].metric(
             "80% interval",
             f"{probability['interval_low_f']:.1f}–{probability['interval_high_f']:.1f} °F",
-        )
-        st.plotly_chart(
-            weather_figure(weather, summary, display_zone, timezone_name), width="stretch"
         )
         if features:
             st.caption(
@@ -447,7 +699,15 @@ def main() -> None:
     def refresh() -> None:
         _render(args.db)
 
+    @st.fragment(run_every="2s")
+    def refresh_trading_timeline() -> None:
+        try:
+            _render_trading_timeline(args.db)
+        except Exception as exc:
+            st.warning(f"Trading timeline unavailable: {type(exc).__name__}: {exc}")
+
     refresh()
+    refresh_trading_timeline()
 
 
 if __name__ == "__main__":

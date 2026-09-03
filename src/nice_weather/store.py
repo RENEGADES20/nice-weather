@@ -8,10 +8,12 @@ from datetime import datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from nice_weather.domain import (
     Decision,
     MarketContract,
+    MarketTopTick,
     PaperOrderStatus,
     ProbabilityEstimate,
     RawSnapshot,
@@ -306,10 +308,11 @@ class WeatherStore:
                 """
                 INSERT OR IGNORE INTO source_captures(
                   capture_id, source, kind, station_id, requested_at, source_time,
-                  observed_at, issued_at, received_at, local_date, source_version,
+                  observed_at, issued_at, received_at, local_date, object_local_date,
+                  object_timezone,source_version,
                   content_hash, request_url, http_status, content_type, content_encoding,
                   raw_size_bytes, raw_blob
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     capture.capture_id,
@@ -322,6 +325,8 @@ class WeatherStore:
                     self._iso(capture.issued_at),
                     self._iso(capture.received_at),
                     capture.local_date.isoformat(),
+                    capture.local_date.isoformat(),
+                    capture.object_timezone,
                     capture.source_version,
                     capture.content_hash,
                     capture.request_url,
@@ -392,9 +397,10 @@ class WeatherStore:
                       observed_at, received_at, temperature_f, raw_text, source,
                       temperature_c, raw_unit,
                       quality_control_json, source_version, revision, local_date,
+                      object_local_date,object_timezone,
                       provider_received_at, report_time, revision_type, parser_version,
                       weather_metadata_json
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stable_id(
@@ -417,6 +423,8 @@ class WeatherStore:
                         capture.source_version,
                         revision,
                         observed_at.astimezone(item["zone"]).date().isoformat(),
+                        observed_at.astimezone(item["zone"]).date().isoformat(),
+                        getattr(item["zone"], "key", str(item["zone"])),
                         self._iso(item.get("provider_received_at")),
                         self._iso(item.get("report_time")),
                         revision_type,
@@ -427,7 +435,11 @@ class WeatherStore:
             if forecast_periods is not None:
                 connection.execute(
                     """
-                    INSERT OR IGNORE INTO weather_forecasts VALUES(?,?,?,?,?,?,?,?,?,?)
+                    INSERT OR IGNORE INTO weather_forecasts(
+                      forecast_id,capture_id,source,station_id,issued_at,received_at,
+                      local_date,object_local_date,object_timezone,source_version,
+                      content_hash,period_count
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stable_id("forecast", capture.source, capture.content_hash),
@@ -437,6 +449,8 @@ class WeatherStore:
                         self._iso(capture.issued_at or capture.received_at),
                         self._iso(capture.received_at),
                         capture.local_date.isoformat(),
+                        capture.local_date.isoformat(),
+                        capture.object_timezone,
                         capture.source_version,
                         capture.content_hash,
                         len(forecast_periods),
@@ -447,8 +461,9 @@ class WeatherStore:
                         """
                         INSERT OR IGNORE INTO forecast_points(
                           forecast_point_id, capture_id, legacy_snapshot_id, source,
-                          issued_at, valid_at, received_at, temperature_f
-                        ) VALUES(?,?,?,?,?,?,?,?)
+                          issued_at, valid_at, received_at, temperature_f,
+                          object_local_date,object_timezone
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
                             stable_id(
@@ -463,6 +478,13 @@ class WeatherStore:
                             self._iso(item["valid_at"]),
                             self._iso(capture.received_at),
                             item["temperature_f"],
+                            item["valid_at"]
+                            .astimezone(
+                                ZoneInfo(item.get("object_timezone", "America/New_York"))
+                            )
+                            .date()
+                            .isoformat(),
+                            item.get("object_timezone", "America/New_York"),
                         ),
                     )
         return True
@@ -480,17 +502,20 @@ class WeatherStore:
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO settlement_evidence(
-                      evidence_id,capture_id,station_id,local_date,received_at,page_updated_at,
+                      evidence_id,capture_id,station_id,local_date,object_local_date,
+                      object_timezone,received_at,page_updated_at,
                       tmax_f,first_next_day_observed_at,first_next_day_temperature_f,table_text,
                       parse_status,no_trade_reason,finalized,screenshot_png,screenshot_sha256,
                       parser_version,page_url,content_hash,screenshot_trigger,response_metadata_json
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         evidence.evidence_id,
                         evidence.capture_id,
                         evidence.station_id,
                         evidence.local_date.isoformat(),
+                        evidence.local_date.isoformat(),
+                        evidence.object_timezone,
                         self._iso(evidence.received_at),
                         self._iso(evidence.page_updated_at),
                         evidence.tmax_f,
@@ -519,16 +544,18 @@ class WeatherStore:
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO settlement_rows(
-                      row_id,evidence_id,capture_id,station_id,local_date,observed_at,
-                      received_at,temperature_f,row_index,row_hash
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                      row_id,evidence_id,capture_id,station_id,local_date,object_local_date,
+                      object_timezone,observed_at,received_at,temperature_f,row_index,row_hash
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         stable_id("settlement_row", evidence.evidence_id, index, row_hash),
                         evidence.evidence_id,
                         evidence.capture_id,
                         evidence.station_id,
-                        evidence.local_date.isoformat(),
+                        observed_at.astimezone(ZoneInfo(evidence.object_timezone)).date().isoformat(),
+                        observed_at.astimezone(ZoneInfo(evidence.object_timezone)).date().isoformat(),
+                        evidence.object_timezone,
                         self._iso(observed_at),
                         self._iso(evidence.received_at),
                         temperature_f,
@@ -564,6 +591,43 @@ class WeatherStore:
                     ),
                 )
             return True
+
+    def save_market_top_tick(self, tick: MarketTopTick) -> bool:
+        with self.transaction() as connection:
+            return bool(
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO market_top_ticks(
+                      tick_id,event_id,condition_id,market_id,bin_id,token_id,label,
+                      exchange_event_at,received_at,object_timezone,object_local_date,
+                      best_bid,best_ask,bid_size,ask_size,mid,last_trade_price,
+                      source,status,event_hash
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        tick.tick_id,
+                        tick.event_id,
+                        tick.condition_id,
+                        tick.market_id,
+                        tick.bin_id,
+                        tick.token_id,
+                        tick.label,
+                        self._iso(tick.exchange_event_at),
+                        self._iso(tick.received_at),
+                        tick.object_timezone,
+                        tick.object_local_date.isoformat(),
+                        tick.best_bid,
+                        tick.best_ask,
+                        tick.bid_size,
+                        tick.ask_size,
+                        tick.mid,
+                        tick.last_trade_price,
+                        tick.source,
+                        tick.status,
+                        tick.event_hash,
+                    ),
+                ).rowcount
+            )
 
     def latest_settlement_evidence(self, local_date: Any) -> sqlite3.Row | None:
         value = local_date.isoformat() if hasattr(local_date, "isoformat") else str(local_date)

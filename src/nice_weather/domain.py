@@ -120,6 +120,7 @@ class SourceCapture:
     observed_at: datetime | None = None
     issued_at: datetime | None = None
     content_encoding: str = "gzip"
+    object_timezone: str = "America/New_York"
 
     def __post_init__(self) -> None:
         for name in ("requested_at", "received_at"):
@@ -151,6 +152,7 @@ class SettlementEvidence:
     content_hash: str | None = None
     screenshot_trigger: str | None = None
     response_metadata: dict[str, Any] = field(default_factory=dict)
+    object_timezone: str = "America/New_York"
 
     def __post_init__(self) -> None:
         require_aware(self.received_at, "received_at")
@@ -158,6 +160,34 @@ class SettlementEvidence:
             value = getattr(self, name)
             if value is not None:
                 require_aware(value, name)
+
+
+@dataclass(frozen=True)
+class MarketTopTick:
+    tick_id: str
+    event_id: str
+    condition_id: str
+    market_id: str
+    token_id: str
+    label: str
+    exchange_event_at: datetime
+    received_at: datetime
+    object_timezone: str
+    object_local_date: date
+    source: str
+    status: str
+    event_hash: str
+    bin_id: str | None = None
+    best_bid: float | None = None
+    best_ask: float | None = None
+    bid_size: float | None = None
+    ask_size: float | None = None
+    mid: float | None = None
+    last_trade_price: float | None = None
+
+    def __post_init__(self) -> None:
+        require_aware(self.exchange_event_at, "exchange_event_at")
+        require_aware(self.received_at, "received_at")
 
 
 @dataclass(frozen=True)

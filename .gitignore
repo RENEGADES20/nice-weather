@@ -7,6 +7,9 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+node_modules/
+test-results/
+playwright-report/
 .env
 .env.*
 !.env.example
@@ -23,6 +26,8 @@ research_runs/
 tools/
 .ppt-build/
 assets/
+!src/nice_weather/trading_chart_dist/assets/
+!src/nice_weather/trading_chart_dist/assets/**
 纽约天气交易MVP_项目架构与流程/
 *.pptx
 *.pptx.inspect.ndjson

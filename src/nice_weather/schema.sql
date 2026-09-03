@@ -115,6 +115,8 @@ CREATE TABLE IF NOT EXISTS weather_observations (
   source_version TEXT,
   revision INTEGER NOT NULL DEFAULT 1,
   local_date TEXT,
+  object_local_date TEXT,
+  object_timezone TEXT NOT NULL DEFAULT 'America/New_York',
   provider_received_at TEXT,
   report_time TEXT,
   revision_type TEXT NOT NULL DEFAULT 'initial',
@@ -132,6 +134,8 @@ CREATE TABLE IF NOT EXISTS forecast_points (
   valid_at TEXT NOT NULL,
   received_at TEXT NOT NULL,
   temperature_f REAL NOT NULL,
+  object_local_date TEXT,
+  object_timezone TEXT NOT NULL DEFAULT 'America/New_York',
   CHECK(capture_id IS NOT NULL OR legacy_snapshot_id IS NOT NULL)
 );
 
@@ -283,6 +287,8 @@ CREATE TABLE IF NOT EXISTS source_captures (
   issued_at TEXT,
   received_at TEXT NOT NULL,
   local_date TEXT NOT NULL,
+  object_local_date TEXT,
+  object_timezone TEXT NOT NULL DEFAULT 'America/New_York',
   source_version TEXT NOT NULL,
   content_hash TEXT NOT NULL,
   request_url TEXT NOT NULL,
@@ -306,6 +312,8 @@ CREATE TABLE IF NOT EXISTS weather_forecasts (
   issued_at TEXT NOT NULL,
   received_at TEXT NOT NULL,
   local_date TEXT NOT NULL,
+  object_local_date TEXT,
+  object_timezone TEXT NOT NULL DEFAULT 'America/New_York',
   source_version TEXT NOT NULL,
   content_hash TEXT NOT NULL,
   period_count INTEGER NOT NULL,
@@ -317,6 +325,8 @@ CREATE TABLE IF NOT EXISTS settlement_evidence (
   capture_id TEXT NOT NULL REFERENCES source_captures(capture_id),
   station_id TEXT NOT NULL,
   local_date TEXT NOT NULL,
+  object_local_date TEXT,
+  object_timezone TEXT NOT NULL DEFAULT 'America/New_York',
   received_at TEXT NOT NULL,
   page_updated_at TEXT,
   tmax_f REAL,
@@ -389,6 +399,8 @@ CREATE TABLE IF NOT EXISTS settlement_rows (
   capture_id TEXT NOT NULL REFERENCES source_captures(capture_id),
   station_id TEXT NOT NULL,
   local_date TEXT NOT NULL,
+  object_local_date TEXT,
+  object_timezone TEXT NOT NULL DEFAULT 'America/New_York',
   observed_at TEXT NOT NULL,
   received_at TEXT NOT NULL,
   temperature_f REAL NOT NULL,
@@ -483,3 +495,33 @@ CREATE TABLE IF NOT EXISTS execution_quotes (
 );
 CREATE INDEX IF NOT EXISTS idx_execution_quotes_token_time
   ON execution_quotes(token_id, received_at DESC);
+
+CREATE TABLE IF NOT EXISTS market_top_ticks (
+  tick_id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL,
+  condition_id TEXT NOT NULL,
+  market_id TEXT NOT NULL,
+  bin_id TEXT,
+  token_id TEXT NOT NULL,
+  label TEXT NOT NULL,
+  exchange_event_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  object_timezone TEXT NOT NULL,
+  object_local_date TEXT NOT NULL,
+  best_bid REAL,
+  best_ask REAL,
+  bid_size REAL,
+  ask_size REAL,
+  mid REAL,
+  last_trade_price REAL,
+  source TEXT NOT NULL,
+  status TEXT NOT NULL,
+  event_hash TEXT NOT NULL,
+  UNIQUE(source, token_id, exchange_event_at, event_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_market_top_ticks_event_time
+  ON market_top_ticks(event_id, exchange_event_at);
+CREATE INDEX IF NOT EXISTS idx_market_top_ticks_token_time
+  ON market_top_ticks(token_id, exchange_event_at);
+CREATE INDEX IF NOT EXISTS idx_market_top_ticks_day
+  ON market_top_ticks(object_local_date, exchange_event_at);

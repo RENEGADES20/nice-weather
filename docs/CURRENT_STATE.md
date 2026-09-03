@@ -1,10 +1,22 @@
 # 当前状态
 
-最后更新：2026-09-02
+最后更新：2026-09-03
 
 ## 当前阶段
 
-项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，schema v5 存储修复待部署后重新观察”的阶段。
+项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，Tmax 重定价研究采集进入 schema v6”的阶段。
+
+## 2026-09-03 Tmax 重定价研究与图表
+
+- H1 信息延迟、H2 尾部升温风险错价和 H3 预报锚定均登记为待验证假说；前 30 个市场日只采集，验证完成前不修改阶段 A 模型。
+- 新增独立 `MarketStreamCollector`：Gamma 每五分钟发现合约并承担虚线 fallback，CLOB WebSocket 订阅全部 YES token，只保存顶层状态变化、成交与断线/重连快照；完整 L2 订单簿继续停用。
+- 活跃纽约市场窗口内 METAR 轮询缩短到 30 秒，其他时段保持 120 秒；NWS 高频观测保持 300 秒。
+- schema v6 为天气、预报、结算和市场 tick 增加显式对象时区/对象日期字段；所有业务归日固定 `America/New_York`，`received_at` 继续承担 as-of 和传播延迟口径。
+- 新增 `repair-settlement-dates --dry-run/--apply`，优先从不可变 raw capture 重建跨午夜日期、滚动累计 Tmax 和最终标签；旧原文无法重解析时报告异常并回退已有明细，页面丢失旧行时仍使用截至 as-of 已收到的历史行。
+- 新增 `research tmax-repricing` JSON/CSV 报告，区分对象传播、系统领先/落后和 80/90/95/99% 持续 price-in；Gamma 不计入可交易窗口。
+- Dashboard 底部新增自建 Lightweight Charts 5.x 双图组件，支持 1D/2D/3D/5D、最多六个区间、图层/颜色/线宽持久化、缩放、平移、跟随、全屏、事件对齐、十字线联动、主图延迟连线和增量 cursor；cursor 按接收顺序推进，晚到事件仍按交易所时间插入。
+- 公开 Gamma/CLOB 实流已完成 11 个 YES token 的发现、批量 book 恢复和 WebSocket 双心跳周期验证；该验证没有账户认证、订单或资金操作。
+- Python、TypeScript、前端构建和敏感信息扫描已纳入本地及 CI 验证；VM 运行只使用随 Python 包发布的静态资源，不安装 Node。
 
 天气采集器已通过 PR #3 合并；统一存储与阶段 A 通过 PR #6 合并，live as-of 时钟修复通过 PR #7 合并，隔离状态通过 PR #9 合并。Dashboard 时区改造前的 VM 审计 SHA 为 `69b89f69d0104e57abd7dd8da7155fee147f0c11`；当前运行 SHA 以 Dashboard build 标识和 VM `git rev-parse HEAD` 为准。
 
