@@ -8,7 +8,13 @@ from streamlit.testing.v1 import AppTest
 
 from nice_weather.adapters.fixture import load_fixture
 from nice_weather.config import load_city_config
-from nice_weather.dashboard import _display_timezone, _format_timestamp, _localize_record
+from nice_weather.dashboard import (
+    _age,
+    _default_timeline_bins,
+    _display_timezone,
+    _format_timestamp,
+    _localize_record,
+)
 from nice_weather.domain import RunMode
 from nice_weather.runner import _run_bundle, run_fixture_once
 from nice_weather.store import WeatherStore
@@ -25,9 +31,20 @@ def test_dashboard_renders_fixture(fixture_manifest, tmp_path, monkeypatch) -> N
 
     assert not app.exception
     assert app.title[0].value == "Polymarket NYC / KLGA Trader Dashboard"
-    assert len(app.tabs) == 4
-    assert any("Decision" in caption.value for caption in app.caption)
-    assert any(metric.label == "Local time" for metric in app.metric)
+    assert [tab.label for tab in app.tabs] == [
+        "Overview",
+        "Repricing",
+        "Execution",
+        "Paper",
+        "System & Audit",
+    ]
+    assert any("Build" in caption.value for caption in app.caption)
+    assert any(metric.label == "Quote age" for metric in app.metric)
+    assert any("dashboard-status" in item.value for item in app.markdown)
+    subheaders = [item.value for item in app.subheader]
+    assert "KLGA Tmax and market repricing" in subheaders
+    assert "Executable quote" in subheaders
+    assert "Market Detail" not in subheaders
 
 
 def test_dashboard_handles_empty_database(tmp_path, monkeypatch) -> None:
@@ -77,3 +94,23 @@ def test_dashboard_localizes_timestamp_fields_without_changing_market_day() -> N
     assert localized["received_at"] == "2026-09-02 08:31:00 PDT"
     assert localized["local_date"] == "2026-09-02"
     assert localized["nested"]["valid_from"] == "2026-09-02 09:00:00 PDT"
+
+
+def test_default_timeline_bins_follow_tmax_then_model_probability() -> None:
+    bins = [
+        {"bin_id": "low", "lower_bound": None, "upper_bound": 79},
+        {"bin_id": "current", "lower_bound": 80, "upper_bound": 81},
+        {"bin_id": "high", "lower_bound": 82, "upper_bound": 83},
+    ]
+
+    assert _default_timeline_bins(bins, 80.4, {"high": 0.8}) == ["current", "high"]
+    assert _default_timeline_bins(bins, 79.6, {"high": 0.8}) == ["current", "high"]
+    assert _default_timeline_bins(bins, None, {"current": 0.2, "high": 0.8}) == ["high"]
+
+
+def test_quote_age_uses_readable_units() -> None:
+    assert _age(None) == "Unavailable"
+    assert _age(12.4) == "12s"
+    assert _age(125) == "2m 5s"
+    assert _age(7_500) == "2h 5m"
+    assert _age(183_600) == "2d 3h"

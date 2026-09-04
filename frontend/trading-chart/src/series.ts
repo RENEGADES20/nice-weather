@@ -1,5 +1,13 @@
 export type Point = { time: number; value: number };
 
+export type DisplayEvent = {
+  id: string;
+  type: string;
+  time: number;
+  temperature_f?: number;
+  groupCount?: number;
+};
+
 export function mergePoints(current: Point[], incoming: Point[]): Point[] {
   const merged = new Map(current.map((point) => [point.time, point]));
   for (const point of incoming) merged.set(point.time, point);
@@ -19,6 +27,43 @@ export function durationLabel(seconds: number | null): string {
   const minutes = Math.floor(absolute / 60);
   const remainder = absolute % 60;
   return `${sign}${minutes}m${remainder.toString().padStart(2, "0")}s`;
+}
+
+export function compactDisplayEvents<T extends DisplayEvent>(events: T[]): T[] {
+  const sorted = [...events].sort((left, right) => left.time - right.time);
+  const deduplicated: T[] = [];
+  let previousForecast: number | undefined;
+  for (const event of sorted) {
+    if (event.type !== "forecast_revised") {
+      deduplicated.push(event);
+      continue;
+    }
+    if (event.temperature_f === previousForecast) continue;
+    previousForecast = event.temperature_f;
+    deduplicated.push(event);
+  }
+
+  const result: T[] = [];
+  const forecastBuckets = new Map<number, T & { groupCount: number }>();
+  for (const event of deduplicated) {
+    if (event.type !== "forecast_revised") {
+      result.push(event);
+      continue;
+    }
+    const bucket = Math.floor(event.time / 1_800);
+    const existing = forecastBuckets.get(bucket);
+    forecastBuckets.set(bucket, {
+      ...event,
+      groupCount: (existing?.groupCount ?? 0) + (event.groupCount ?? 1),
+    });
+  }
+  result.push(...forecastBuckets.values());
+  return result.sort((left, right) => left.time - right.time);
+}
+
+export function proportionalPosition(value: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value) || maximum <= minimum) return 50;
+  return Math.max(0, Math.min(100, ((value - minimum) / (maximum - minimum)) * 100));
 }
 
 export function downsample(points: Point[], maxPoints = 10_000): Point[] {

@@ -18,7 +18,14 @@ def test_fixture_e2e_is_deterministic_and_queryable(fixture_manifest, tmp_path) 
     summary = query.get_latest_decision_summary()
     assert summary is not None
     assert summary["decision_id"] == first.decision_id
-    assert len(query.get_outcome_snapshot(first.decision_id)) == 11
+    outcomes = query.get_outcome_snapshot(first.decision_id)
+    assert len(outcomes) == 11
+    probabilities = query.get_latest_event_probabilities(summary["event_id"])
+    assert len(probabilities) == 11
+    quoted = next(item for item in outcomes if item["quote_id"] is not None)
+    quote = query.get_execution_quote(first.decision_id, quoted["bin_id"])
+    assert quote is not None
+    assert quote["quote_id"] == quoted["quote_id"]
     weather = query.get_weather_path(first.decision_id)
     assert len(weather["forecasts"]) == 24
     assert len(weather["observations"]) == 0

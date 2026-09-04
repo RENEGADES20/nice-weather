@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { appendOnly, downsample, durationLabel, mergePoints } from "./series";
+import {
+  appendOnly,
+  compactDisplayEvents,
+  downsample,
+  durationLabel,
+  mergePoints,
+  proportionalPosition,
+} from "./series";
+import type { DisplayEvent } from "./series";
 
 describe("timeline helpers", () => {
   it("merges revisions and preserves A to B to A", () => {
@@ -32,5 +40,24 @@ describe("timeline helpers", () => {
     expect(sampled[0]).toEqual(points[0]);
     expect(sampled.at(-1)).toEqual(points.at(-1));
     expect(sampled.some((point) => point.value === 999)).toBe(true);
+  });
+
+  it("compacts repeated forecast revisions without changing other events", () => {
+    const events = compactDisplayEvents<DisplayEvent>([
+      { id: "a", type: "forecast_revised", time: 1_800, temperature_f: 84 },
+      { id: "b", type: "forecast_revised", time: 1_900, temperature_f: 84 },
+      { id: "c", type: "forecast_revised", time: 2_000, temperature_f: 85 },
+      { id: "d", type: "forecast_revised", time: 2_200, temperature_f: 86 },
+      { id: "e", type: "bin_entered", time: 2_300 },
+    ]);
+
+    expect(events.map((event) => event.id)).toEqual(["d", "e"]);
+    expect(events[0].groupCount).toBe(3);
+  });
+
+  it("places latency nodes on a shared proportional scale", () => {
+    expect(proportionalPosition(-60, -60, 180)).toBe(0);
+    expect(proportionalPosition(60, -60, 180)).toBe(50);
+    expect(proportionalPosition(180, -60, 180)).toBe(100);
   });
 });
