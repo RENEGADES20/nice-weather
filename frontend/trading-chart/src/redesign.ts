@@ -63,8 +63,8 @@ type Payload = {
 const root = document.querySelector<HTMLElement>("#app")!;
 const seriesApis = new Map<string, ISeriesApi<"Line">>();
 const seriesData = new Map<string, RawPoint[]>();
-const priceSegmentApis = new Map<number, ISeriesApi<"Line">>();
-const priceSegmentTimes = new Map<number, number[]>();
+const segmentApis = new Map<string, Map<number, ISeriesApi<"Line">>>();
+const segmentTimes = new Map<string, Map<number, number[]>>();
 const differenceApis = new Map<string, ISeriesApi<"Line">>();
 const differenceData = new Map<string, DifferencePoint[]>();
 const aligned = new Map<string, AlignedPoint[]>();
@@ -250,50 +250,67 @@ function seriesOptions(spec: SeriesSpec) {
   };
 }
 
-function lineData(point: RawPoint) {
-  return point.value == null
-    ? { time: point.time as UTCTimestamp }
-    : { time: point.time as UTCTimestamp, value: point.value };
-}
-
 function valuedLineData(point: RawPoint): LineData {
-  if (point.value === null) throw new Error("Price segment cannot contain a null point");
+  if (point.value === null) throw new Error("Chart segment cannot contain a null point");
   return { time: point.time as UTCTimestamp, value: point.value };
 }
 
-function removePriceSegment(key: number): void {
-  const api = priceSegmentApis.get(key);
-  if (api) mainChart?.removeSeries(api);
-  priceSegmentApis.delete(key);
-  priceSegmentTimes.delete(key);
+function apisFor(id: string): ISeriesApi<"Line">[] {
+  return [...(segmentApis.get(id)?.values() || [])];
 }
 
-function reconcilePriceFull(spec: SeriesSpec): void {
-  for (const key of [...priceSegmentApis.keys()]) removePriceSegment(key);
+function removeSegment(id: string, key: number): void {
+  const apis = segmentApis.get(id);
+  const times = segmentTimes.get(id);
+  const api = apis?.get(key);
+  if (api) mainChart?.removeSeries(api);
+  if (api && seriesApis.get(id) === api) {
+    seriesApis.delete(id);
+    if (markers) markers = null;
+  }
+  apis?.delete(key);
+  times?.delete(key);
+  if (apis?.size === 0) segmentApis.delete(id);
+  if (times?.size === 0) segmentTimes.delete(id);
+}
+
+function reconcileSeriesFull(spec: SeriesSpec): void {
+  for (const key of [...(segmentApis.get(spec.id)?.keys() || [])]) removeSegment(spec.id, key);
+  const apis = new Map<number, ISeriesApi<"Line">>();
+  const times = new Map<number, number[]>();
   for (const segment of nonNullSegments(spec.points)) {
     const key = segment[0].time;
-    const api = mainChart!.addSeries(LineSeries, seriesOptions(spec), 1);
+    const api = mainChart!.addSeries(
+      LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
+    );
     api.setData(segment.map(valuedLineData));
-    priceSegmentApis.set(key, api);
-    priceSegmentTimes.set(key, segment.map((point) => point.time));
+    apis.set(key, api);
+    times.set(key, segment.map((point) => point.time));
   }
+  segmentApis.set(spec.id, apis);
+  segmentTimes.set(spec.id, times);
+  const representative = apis.values().next().value;
+  if (representative) seriesApis.set(spec.id, representative);
   seriesData.set(spec.id, [...spec.points].sort((a, b) => a.time - b.time));
 }
 
-function reconcilePriceDelta(spec: SeriesSpec, previous: RawPoint[], merged: RawPoint[]): void {
+function reconcileSeriesDelta(spec: SeriesSpec, previous: RawPoint[], merged: RawPoint[]): void {
   const previousByTime = new Map(previous.map((point) => [point.time, point.value]));
   const validKeys = new Set<number>();
   for (const segment of nonNullSegments(merged)) {
     const key = segment[0].time;
     validKeys.add(key);
     const nextTimes = segment.map((point) => point.time);
-    const oldTimes = priceSegmentTimes.get(key) || [];
+    const oldTimes = segmentTimes.get(spec.id)?.get(key) || [];
     const keepsPrefix = oldTimes.every((time, index) => nextTimes[index] === time);
-    if (priceSegmentApis.has(key) && !keepsPrefix) removePriceSegment(key);
-    let api = priceSegmentApis.get(key);
+    if (segmentApis.get(spec.id)?.has(key) && !keepsPrefix) removeSegment(spec.id, key);
+    let api = segmentApis.get(spec.id)?.get(key);
     if (!api) {
-      api = mainChart!.addSeries(LineSeries, seriesOptions(spec), 1);
-      priceSegmentApis.set(key, api);
+      api = mainChart!.addSeries(
+        LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
+      );
+      if (!segmentApis.has(spec.id)) segmentApis.set(spec.id, new Map());
+      segmentApis.get(spec.id)!.set(key, api);
       for (const point of segment) api.update(valuedLineData(point));
     } else {
       const oldSet = new Set(oldTimes);
@@ -306,58 +323,36 @@ function reconcilePriceDelta(spec: SeriesSpec, previous: RawPoint[], merged: Raw
         lastTime = Math.max(lastTime, point.time);
       }
     }
-    priceSegmentTimes.set(key, nextTimes);
+    if (!segmentTimes.has(spec.id)) segmentTimes.set(spec.id, new Map());
+    segmentTimes.get(spec.id)!.set(key, nextTimes);
   }
-  for (const key of [...priceSegmentApis.keys()]) {
-    if (!validKeys.has(key)) removePriceSegment(key);
+  for (const key of [...(segmentApis.get(spec.id)?.keys() || [])]) {
+    if (!validKeys.has(key)) removeSegment(spec.id, key);
   }
+  const representative = segmentApis.get(spec.id)?.values().next().value;
+  if (representative) seriesApis.set(spec.id, representative);
+  else seriesApis.delete(spec.id);
   seriesData.set(spec.id, merged);
 }
 
 function reconcileFull(specs: SeriesSpec[]): void {
   if (!mainChart) return;
   const ids = new Set(specs.map((spec) => spec.id));
-  for (const [id, api] of seriesApis) {
+  for (const id of [...segmentApis.keys()]) {
     if (ids.has(id)) continue;
-    mainChart.removeSeries(api);
-    seriesApis.delete(id);
+    for (const key of [...(segmentApis.get(id)?.keys() || [])]) removeSegment(id, key);
     seriesData.delete(id);
   }
   for (const spec of specs) {
-    if (spec.id === "price") {
-      reconcilePriceFull(spec);
-      continue;
-    }
-    let api = seriesApis.get(spec.id);
-    if (!api) {
-      api = mainChart.addSeries(LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0);
-      seriesApis.set(spec.id, api);
-    } else api.applyOptions(seriesOptions(spec));
-    api.setData(spec.points.map(lineData));
-    seriesData.set(spec.id, [...spec.points].sort((a, b) => a.time - b.time));
+    reconcileSeriesFull(spec);
   }
 }
 
 function reconcileDelta(specs: SeriesSpec[]): void {
   for (const spec of specs) {
-    if (spec.id === "price") {
-      const previous = seriesData.get(spec.id) || [];
-      reconcilePriceDelta(spec, previous, mergeRawPoints(previous, spec.points));
-      continue;
-    }
-    const api = seriesApis.get(spec.id);
-    if (!api) continue;
     const previous = seriesData.get(spec.id) || [];
-    const previousByTime = new Map(previous.map((point) => [point.time, point.value]));
     const merged = mergeRawPoints(previous, spec.points);
-    for (const point of spec.points) {
-      if (previousByTime.has(point.time) && Object.is(previousByTime.get(point.time), point.value)) {
-        continue;
-      }
-      const historical = previous.length > 0 && point.time < previous.at(-1)!.time;
-      api.update(lineData(point), historical);
-    }
-    seriesData.set(spec.id, merged);
+    reconcileSeriesDelta(spec, previous, merged);
   }
 }
 
@@ -459,9 +454,7 @@ function renderMainLegend(time?: Time, values?: ReadonlyMap<unknown, unknown>): 
   if (!payload) return;
   const stamp = time == null ? "ET" : `${formatAxisTime(Number(time), 3, "America/New_York")} ET`;
   const items = payload.series.map((spec) => {
-    const apis = spec.id === "price"
-      ? [...priceSegmentApis.values()]
-      : [seriesApis.get(spec.id)].filter((api): api is ISeriesApi<"Line"> => api != null);
+    const apis = apisFor(spec.id);
     const crosshair = values
       ? apis.map((api) => values.get(api) as LineData | undefined)
         .find((point) => point != null && "value" in point)
