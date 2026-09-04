@@ -63,6 +63,9 @@ describe("difference alignment", () => {
     )).toEqual([
       { time: 0, value: 1 }, { time: 60, value: 3 }, { time: 120, value: 4 },
     ]);
+    expect(mergeRawPoints([], [
+      { time: 60, value: 2 }, { time: 60, value: 3 },
+    ])).toEqual([{ time: 60, value: 3 }]);
   });
 
   it("splits explicit gaps without passing null points to any chart series", () => {

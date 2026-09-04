@@ -118,7 +118,7 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   );
   await frame.locator("#main-legend").hover();
   await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "false");
-  await expect(frame.locator("#app")).toHaveAttribute("data-applied-revision", pendingRevision!);
+  await expect(frame.locator("#app")).toHaveAttribute("data-flushed-revision", pendingRevision!);
   await expect(frame.locator("#app")).toHaveAttribute("data-pending-revision", "");
   expect(pageErrors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("dashboard-repricing.png"), fullPage: true });
