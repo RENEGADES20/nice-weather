@@ -262,8 +262,12 @@ function reconcileDelta(specs: SeriesSpec[]): void {
     const api = seriesApis.get(spec.id);
     if (!api) continue;
     const previous = seriesData.get(spec.id) || [];
+    const previousByTime = new Map(previous.map((point) => [point.time, point.value]));
     const merged = mergeRawPoints(previous, spec.points);
     for (const point of spec.points) {
+      if (previousByTime.has(point.time) && Object.is(previousByTime.get(point.time), point.value)) {
+        continue;
+      }
       const historical = previous.length > 0 && point.time < previous.at(-1)!.time;
       api.update(lineData(point), historical);
     }
