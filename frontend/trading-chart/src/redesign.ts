@@ -18,6 +18,7 @@ import {
   alignToMinuteGrid,
   differencePoints,
   mergeRawPoints,
+  nonNullSegments,
   zAnchor,
   type AlignableSeries,
   type AlignedPoint,
@@ -62,6 +63,8 @@ type Payload = {
 const root = document.querySelector<HTMLElement>("#app")!;
 const seriesApis = new Map<string, ISeriesApi<"Line">>();
 const seriesData = new Map<string, RawPoint[]>();
+const priceSegmentApis = new Map<number, ISeriesApi<"Line">>();
+const priceSegmentTimes = new Map<number, number[]>();
 const differenceApis = new Map<string, ISeriesApi<"Line">>();
 const differenceData = new Map<string, DifferencePoint[]>();
 const aligned = new Map<string, AlignedPoint[]>();
@@ -253,6 +256,64 @@ function lineData(point: RawPoint) {
     : { time: point.time as UTCTimestamp, value: point.value };
 }
 
+function valuedLineData(point: RawPoint): LineData {
+  if (point.value === null) throw new Error("Price segment cannot contain a null point");
+  return { time: point.time as UTCTimestamp, value: point.value };
+}
+
+function removePriceSegment(key: number): void {
+  const api = priceSegmentApis.get(key);
+  if (api) mainChart?.removeSeries(api);
+  priceSegmentApis.delete(key);
+  priceSegmentTimes.delete(key);
+}
+
+function reconcilePriceFull(spec: SeriesSpec): void {
+  for (const key of [...priceSegmentApis.keys()]) removePriceSegment(key);
+  for (const segment of nonNullSegments(spec.points)) {
+    const key = segment[0].time;
+    const api = mainChart!.addSeries(LineSeries, seriesOptions(spec), 1);
+    api.setData(segment.map(valuedLineData));
+    priceSegmentApis.set(key, api);
+    priceSegmentTimes.set(key, segment.map((point) => point.time));
+  }
+  seriesData.set(spec.id, [...spec.points].sort((a, b) => a.time - b.time));
+}
+
+function reconcilePriceDelta(spec: SeriesSpec, previous: RawPoint[], merged: RawPoint[]): void {
+  const previousByTime = new Map(previous.map((point) => [point.time, point.value]));
+  const validKeys = new Set<number>();
+  for (const segment of nonNullSegments(merged)) {
+    const key = segment[0].time;
+    validKeys.add(key);
+    const nextTimes = segment.map((point) => point.time);
+    const oldTimes = priceSegmentTimes.get(key) || [];
+    const keepsPrefix = oldTimes.every((time, index) => nextTimes[index] === time);
+    if (priceSegmentApis.has(key) && !keepsPrefix) removePriceSegment(key);
+    let api = priceSegmentApis.get(key);
+    if (!api) {
+      api = mainChart!.addSeries(LineSeries, seriesOptions(spec), 1);
+      priceSegmentApis.set(key, api);
+      for (const point of segment) api.update(valuedLineData(point));
+    } else {
+      const oldSet = new Set(oldTimes);
+      let lastTime = oldTimes.at(-1) ?? Number.NEGATIVE_INFINITY;
+      for (const point of segment) {
+        const changed = previousByTime.has(point.time)
+          && !Object.is(previousByTime.get(point.time), point.value);
+        if (oldSet.has(point.time) && !changed) continue;
+        api.update(valuedLineData(point), point.time < lastTime);
+        lastTime = Math.max(lastTime, point.time);
+      }
+    }
+    priceSegmentTimes.set(key, nextTimes);
+  }
+  for (const key of [...priceSegmentApis.keys()]) {
+    if (!validKeys.has(key)) removePriceSegment(key);
+  }
+  seriesData.set(spec.id, merged);
+}
+
 function reconcileFull(specs: SeriesSpec[]): void {
   if (!mainChart) return;
   const ids = new Set(specs.map((spec) => spec.id));
@@ -263,6 +324,10 @@ function reconcileFull(specs: SeriesSpec[]): void {
     seriesData.delete(id);
   }
   for (const spec of specs) {
+    if (spec.id === "price") {
+      reconcilePriceFull(spec);
+      continue;
+    }
     let api = seriesApis.get(spec.id);
     if (!api) {
       api = mainChart.addSeries(LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0);
@@ -275,6 +340,11 @@ function reconcileFull(specs: SeriesSpec[]): void {
 
 function reconcileDelta(specs: SeriesSpec[]): void {
   for (const spec of specs) {
+    if (spec.id === "price") {
+      const previous = seriesData.get(spec.id) || [];
+      reconcilePriceDelta(spec, previous, mergeRawPoints(previous, spec.points));
+      continue;
+    }
     const api = seriesApis.get(spec.id);
     if (!api) continue;
     const previous = seriesData.get(spec.id) || [];
@@ -389,8 +459,13 @@ function renderMainLegend(time?: Time, values?: ReadonlyMap<unknown, unknown>): 
   if (!payload) return;
   const stamp = time == null ? "ET" : `${formatAxisTime(Number(time), 3, "America/New_York")} ET`;
   const items = payload.series.map((spec) => {
-    const api = seriesApis.get(spec.id);
-    const crosshair = api && values ? values.get(api) as LineData | undefined : undefined;
+    const apis = spec.id === "price"
+      ? [...priceSegmentApis.values()]
+      : [seriesApis.get(spec.id)].filter((api): api is ISeriesApi<"Line"> => api != null);
+    const crosshair = values
+      ? apis.map((api) => values.get(api) as LineData | undefined)
+        .find((point) => point != null && "value" in point)
+      : undefined;
     const point = crosshair && "value" in crosshair ? crosshair.value : latestPoint(spec.id)?.value;
     const value = point == null ? "Unavailable" : formatRaw(point, spec.format === "probability" ? "probability" : "°F");
     return `<span class="legend-item"><i style="background:${spec.color}"></i>${escapeHtml(spec.name)} <button class="info" title="${escapeHtml(spec.description)}">i</button><strong>${value}</strong></span>`;

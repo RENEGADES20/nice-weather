@@ -4,6 +4,7 @@ import {
   createBidirectionalSync,
   differencePoints,
   mergeRawPoints,
+  nonNullSegments,
   zAnchor,
 } from "./difference";
 
@@ -61,6 +62,18 @@ describe("difference alignment", () => {
       [{ time: 60, value: 3 }, { time: 120, value: 4 }],
     )).toEqual([
       { time: 0, value: 1 }, { time: 60, value: 3 }, { time: 120, value: 4 },
+    ]);
+  });
+
+  it("splits explicit price gaps without passing null points to chart series", () => {
+    expect(nonNullSegments([
+      { time: 0, value: 0.4 },
+      { time: 60, value: null },
+      { time: 120, value: 0.5 },
+      { time: 180, value: 0.6 },
+    ])).toEqual([
+      [{ time: 0, value: 0.4 }],
+      [{ time: 120, value: 0.5 }, { time: 180, value: 0.6 }],
     ]);
   });
 
