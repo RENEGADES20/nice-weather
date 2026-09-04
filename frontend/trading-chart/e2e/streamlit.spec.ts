@@ -66,6 +66,7 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   await frame.locator("#reset-button").click();
   await frame.locator("#main-chart").hover();
   await page.mouse.wheel(0, -500);
+  await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "true");
   await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", /.+/);
   await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", /.+/);
   await expect.poll(async () => {
@@ -86,7 +87,6 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   const [initialStart, initialEnd] = rangeValues(initialRange);
   const initialSpan = initialEnd - initialStart;
   const initialPrice = await frame.locator("#price-readout").innerText();
-  let priceChanged = false;
 
   for (let cycle = 0; cycle < 10; cycle += 1) {
     await page.waitForTimeout(2_100);
@@ -98,6 +98,7 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     await expect(frame.locator("#shell")).toHaveCSS("opacity", "1");
     await expect(frame.locator("#events-button")).toHaveAttribute("aria-pressed", "true");
     await expect(frame.locator("input[name='reference'][value='price']")).toBeChecked();
+    await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "true");
     await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", /.+/);
     await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", /.+/);
     const ratio = await canvasRatio(frame);
@@ -110,9 +111,10 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     expect(Math.abs((currentStart + currentEnd) - (initialStart + initialEnd))).toBeLessThan(
       initialSpan * 0.04,
     );
-    if (await frame.locator("#price-readout").innerText() !== initialPrice) priceChanged = true;
   }
-  expect(priceChanged).toBe(true);
+  await frame.locator("#main-legend").hover();
+  await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "false");
+  await expect.poll(async () => frame.locator("#price-readout").innerText()).not.toBe(initialPrice);
   expect(pageErrors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("dashboard-repricing.png"), fullPage: true });
 });
