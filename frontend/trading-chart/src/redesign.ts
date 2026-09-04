@@ -444,22 +444,44 @@ function syncCrosshair(time: Time | undefined, fromMain: boolean): void {
   syncingCrosshair = false;
 }
 
-function restoreCrosshair(time: number, onDifference: boolean): void {
+function restoreCrosshair(time: number, onDifference: boolean): boolean {
   const chart = onDifference ? differenceChart : mainChart;
   const apis = onDifference ? differenceApis : seriesApis;
   const values = onDifference ? differenceData : aligned;
-  if (!chart) return;
-  const basis = onDifference ? differenceTimeBasis : mainTimeBasis;
-  if (basis) {
-    chart.setCrosshairPosition(0, time as UTCTimestamp, basis);
-    return;
+  if (!chart) return false;
+  try {
+    const basis = onDifference ? differenceTimeBasis : mainTimeBasis;
+    if (basis) {
+      chart.setCrosshairPosition(0, time as UTCTimestamp, basis);
+      return true;
+    }
+    for (const [id, api] of apis) {
+      const point = values.get(id)?.find((item) => item.time === time);
+      if (!point || !Number.isFinite(point.value)) continue;
+      chart.setCrosshairPosition(point.value, time as UTCTimestamp, api);
+      return true;
+    }
+  } catch {
+    // Lightweight Charts 5.2 can retain a stale hovered row until a later paint after
+    // series.update(). Retry after another frame without leaking its internal null error.
+    return false;
   }
-  for (const [id, api] of apis) {
-    const point = values.get(id)?.find((item) => item.time === time);
-    if (!point || !Number.isFinite(point.value)) continue;
-    chart.setCrosshairPosition(point.value, time as UTCTimestamp, api);
-    return;
-  }
+  return false;
+}
+
+function restoreCrosshairsAfterPaint(time: number, attempt = 0): void {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    const mainRestored = restoreCrosshair(time, false);
+    const differenceRestored = restoreCrosshair(time, true);
+    if ((!mainRestored || !differenceRestored) && attempt < 2) {
+      window.setTimeout(() => restoreCrosshairsAfterPaint(time, attempt + 1), 32);
+      return;
+    }
+    root.dataset.mainCrosshair = String(time);
+    root.dataset.differenceCrosshair = String(time);
+    crosshairTime = time as UTCTimestamp;
+    syncingCrosshair = false;
+  }));
 }
 
 function updateIncrementally(next: Payload): void {
@@ -476,14 +498,9 @@ function updateIncrementally(next: Payload): void {
   renderDifferences(false);
   if (following) mainChart?.timeScale().scrollToRealTime();
 
-  if (savedCrosshair != null && Number.isFinite(savedCrosshair)) requestAnimationFrame(() => {
-    restoreCrosshair(savedCrosshair, false);
-    restoreCrosshair(savedCrosshair, true);
-    root.dataset.mainCrosshair = String(savedCrosshair);
-    root.dataset.differenceCrosshair = String(savedCrosshair);
-    crosshairTime = savedCrosshair as UTCTimestamp;
-    syncingCrosshair = false;
-  });
+  if (savedCrosshair != null && Number.isFinite(savedCrosshair)) {
+    restoreCrosshairsAfterPaint(savedCrosshair);
+  }
   else syncingCrosshair = false;
 }
 
