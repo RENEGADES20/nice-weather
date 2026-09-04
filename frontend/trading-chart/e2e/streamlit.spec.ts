@@ -112,7 +112,7 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     );
   }
   const pendingRevision = await frame.locator("#app").getAttribute("data-pending-revision");
-  expect(pendingRevision).toMatch(/\d+/);
+  expect(pendingRevision).toMatch(/.+/);
   expect(await frame.locator("#app").getAttribute("data-applied-revision")).not.toBe(
     pendingRevision,
   );

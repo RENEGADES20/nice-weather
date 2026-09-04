@@ -516,10 +516,17 @@ function updateIncrementally(next: Payload): void {
   mainChart?.clearCrosshairPosition();
   differenceChart?.clearCrosshairPosition();
   requestAnimationFrame(() => {
+    if (chartPointerActive) {
+      pendingDelta = next;
+      root.dataset.pendingRevision = String(next.revision);
+      syncingCrosshair = false;
+      return;
+    }
     reconcileDelta(next.series);
     rebuildAlignment(false);
     renderDifferences(false);
     if (following) mainChart?.timeScale().scrollToRealTime();
+    root.dataset.appliedRevision = String(next.revision);
 
     if (savedCrosshair != null && Number.isFinite(savedCrosshair)) {
       restoreCrosshairsAfterPaint(savedCrosshair);
@@ -566,7 +573,7 @@ function applyPayload(next: Payload): void {
   renderPrice();
   renderMainLegend();
   renderMarkers();
-  root.dataset.appliedRevision = String(next.revision);
+  if (next.mode === "full") root.dataset.appliedRevision = String(next.revision);
 }
 
 function render(data: RenderData): void {
