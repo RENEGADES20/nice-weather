@@ -73,6 +73,7 @@ let differenceTimeBasis: ISeriesApi<"Line"> | null = null;
 let payload: Payload | null = null;
 let signature = "";
 let referenceSeriesId = "forecast";
+let referenceUserSelected = false;
 let eventsVisible = false;
 let markers: ISeriesMarkersPluginApi<Time> | null = null;
 let channel: BroadcastChannel | null = null;
@@ -83,6 +84,8 @@ let differenceRangeKey = "";
 let syncingCrosshair = false;
 let crosshairTime: Time | undefined;
 let following = true;
+let chartPointerActive = false;
+let pendingDelta: Payload | null = null;
 
 const style = (value?: string): LineStyle => value === "dashed"
   ? LineStyle.Dashed
@@ -151,6 +154,7 @@ function buildShell(): void {
   differenceChart = createChart(
     document.querySelector<HTMLElement>("#difference-chart")!, chartOptions(),
   );
+  root.dataset.feedPaused = "false";
   mainChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
     if (!range) return;
     mainRangeKey = `${range.from}:${range.to}`;
@@ -193,6 +197,18 @@ function buildShell(): void {
     mainChart?.timeScale().scrollToRealTime();
   });
   document.querySelector("#main-chart")?.addEventListener("pointerdown", () => { following = false; });
+  for (const selector of ["#main-chart", "#difference-chart"]) {
+    const target = document.querySelector(selector);
+    target?.addEventListener("pointerenter", () => {
+      chartPointerActive = true;
+      root.dataset.feedPaused = "true";
+    });
+    target?.addEventListener("pointerleave", () => flushPendingDelta());
+    target?.addEventListener("pointercancel", () => flushPendingDelta());
+    target?.addEventListener("pointerup", (event) => {
+      if ((event as PointerEvent).pointerType !== "mouse") flushPendingDelta();
+    });
+  }
   document.querySelector("#reset-button")?.addEventListener("click", () => {
     following = false;
     mainChart?.timeScale().fitContent();
@@ -403,6 +419,7 @@ function renderDifferenceLegend(time?: Time, values?: ReadonlyMap<unknown, unkno
   target.querySelectorAll<HTMLInputElement>("input[name='reference']").forEach((input) => {
     input.addEventListener("change", () => {
       referenceSeriesId = input.value;
+      referenceUserSelected = true;
       renderDifferences(true);
       Streamlit.setComponentValue({ referenceSeriesId });
     });
@@ -511,12 +528,28 @@ function updateIncrementally(next: Payload): void {
   });
 }
 
+function flushPendingDelta(): void {
+  chartPointerActive = false;
+  root.dataset.feedPaused = "false";
+  const next = pendingDelta;
+  pendingDelta = null;
+  if (next) applyPayload(next);
+}
+
 function applyPayload(next: Payload): void {
   if (next.channelId !== channelId || next.mode === "feed") return;
+  if (next.mode === "delta" && chartPointerActive) {
+    pendingDelta = next;
+    return;
+  }
+  const signatureChanged = signature !== next.signature;
   payload = { ...payload, ...next, mode: next.mode, series: next.series };
-  referenceSeriesId = next.referenceSeriesId || referenceSeriesId;
+  if (!referenceUserSelected || (next.mode === "full" && signatureChanged)) {
+    referenceSeriesId = next.referenceSeriesId || referenceSeriesId;
+    if (next.mode === "full" && signatureChanged) referenceUserSelected = false;
+  }
   if (next.mode === "full") {
-    const changed = signature !== next.signature;
+    const changed = signatureChanged;
     if (changed) {
       rangeSyncReady = false;
       signature = next.signature || "";
