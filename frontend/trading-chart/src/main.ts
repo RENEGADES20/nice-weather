@@ -20,6 +20,7 @@ import {
   compactDisplayEvents,
   downsample,
   durationLabel,
+  formatAxisTime,
   mergePoints,
   proportionalPosition,
   type Point,
@@ -190,7 +191,9 @@ function resolveTheme(data: RenderData): Theme {
 function chartOptions(relative = false) {
   const formatter = relative
     ? (chartTime: Time) => formatRelative(Number(chartTime) - 1_700_000_000)
-    : (chartTime: Time) => formatTime(Number(chartTime), payload?.displayTimezone);
+    : (chartTime: Time, tickMarkType: number) => (
+      formatAxisTime(Number(chartTime), tickMarkType, payload?.displayTimezone)
+    );
   return {
     autoSize: true,
     layout: {

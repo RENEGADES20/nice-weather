@@ -1,5 +1,34 @@
 export type Point = { time: number; value: number };
 
+export function formatAxisTime(
+  epoch: number,
+  tickMarkType: number,
+  zone?: string,
+  locale?: string,
+): string {
+  const instant = new Date(epoch * 1000);
+  if (tickMarkType === 0) {
+    return new Intl.DateTimeFormat(locale, { timeZone: zone, year: "numeric" }).format(instant);
+  }
+  if (tickMarkType === 1) {
+    return new Intl.DateTimeFormat(locale, { timeZone: zone, month: "short" }).format(instant);
+  }
+  if (tickMarkType === 2) {
+    return new Intl.DateTimeFormat(locale, {
+      timeZone: zone,
+      month: "short",
+      day: "2-digit",
+    }).format(instant);
+  }
+  return new Intl.DateTimeFormat(locale, {
+    timeZone: zone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: tickMarkType === 4 ? "2-digit" : undefined,
+    hour12: false,
+  }).format(instant);
+}
+
 export type DisplayEvent = {
   id: string;
   type: string;

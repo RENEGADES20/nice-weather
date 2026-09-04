@@ -4,6 +4,7 @@ import {
   compactDisplayEvents,
   downsample,
   durationLabel,
+  formatAxisTime,
   mergePoints,
   proportionalPosition,
 } from "./series";
@@ -31,6 +32,15 @@ describe("timeline helpers", () => {
   it("formats signed latency", () => {
     expect(durationLabel(115)).toBe("+1m55s");
     expect(durationLabel(-70)).toBe("-1m10s");
+  });
+
+  it("formats time-axis ticks according to their scale level", () => {
+    const epoch = Date.UTC(2026, 8, 3, 15, 35, 45) / 1000;
+    expect(formatAxisTime(epoch, 0, "UTC", "en-US")).toBe("2026");
+    expect(formatAxisTime(epoch, 1, "UTC", "en-US")).toBe("Sep");
+    expect(formatAxisTime(epoch, 2, "UTC", "en-US")).toBe("Sep 03");
+    expect(formatAxisTime(epoch, 3, "UTC", "en-US")).toBe("15:35");
+    expect(formatAxisTime(epoch, 4, "UTC", "en-US")).toBe("15:35:45");
   });
 
   it("downsamples while retaining extrema and endpoints", () => {
