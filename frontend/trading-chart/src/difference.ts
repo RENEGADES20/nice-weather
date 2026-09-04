@@ -26,6 +26,21 @@ export function mergeRawPoints(existing: RawPoint[], incoming: RawPoint[]): RawP
   return [...byTime.values()].sort((left, right) => left.time - right.time);
 }
 
+export function nonNullSegments(points: RawPoint[]): RawPoint[][] {
+  const segments: RawPoint[][] = [];
+  let current: RawPoint[] = [];
+  for (const point of [...points].sort((left, right) => left.time - right.time)) {
+    if (point.value === null) {
+      if (current.length) segments.push(current);
+      current = [];
+      continue;
+    }
+    current.push(point);
+  }
+  if (current.length) segments.push(current);
+  return segments;
+}
+
 export function createBidirectionalSync<T>(
   applyLeft: (value: T) => void,
   applyRight: (value: T) => void,
