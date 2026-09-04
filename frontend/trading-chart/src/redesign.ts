@@ -81,6 +81,7 @@ let rangeSyncReady = false;
 let mainRangeKey = "";
 let differenceRangeKey = "";
 let syncingCrosshair = false;
+let crosshairTime: Time | undefined;
 let following = true;
 
 const style = (value?: string): LineStyle => value === "dashed"
@@ -169,12 +170,18 @@ function buildShell(): void {
   mainChart.subscribeCrosshairMove((param) => {
     root.dataset.mainCrosshair = param.time == null ? "" : String(param.time);
     renderMainLegend(param.time, param.seriesData);
-    if (!syncingCrosshair) syncCrosshair(param.time, true);
+    if (!syncingCrosshair) {
+      crosshairTime = param.time;
+      syncCrosshair(param.time, true);
+    }
   });
   differenceChart.subscribeCrosshairMove((param) => {
     root.dataset.differenceCrosshair = param.time == null ? "" : String(param.time);
     renderDifferenceLegend(param.time, param.seriesData);
-    if (!syncingCrosshair) syncCrosshair(param.time, false);
+    if (!syncingCrosshair) {
+      crosshairTime = param.time;
+      syncCrosshair(param.time, false);
+    }
   });
   document.querySelector("#events-button")?.addEventListener("click", () => {
     eventsVisible = !eventsVisible;
@@ -418,14 +425,66 @@ function syncCrosshair(time: Time | undefined, fromMain: boolean): void {
     target?.clearCrosshairPosition();
     return;
   }
-  const first = apis.entries().next().value as [string, ISeriesApi<"Line">] | undefined;
-  if (!first) return;
-  const values = fromMain ? differenceData.get(first[0]) : seriesData.get(first[0]);
-  const point = values?.find((item) => item.time === Number(time));
-  if (!point || point.value == null) return;
   syncingCrosshair = true;
-  target.setCrosshairPosition(point.value, time, first[1]);
+  const basis = fromMain ? differenceTimeBasis : mainTimeBasis;
+  if (basis) {
+    target.setCrosshairPosition(0, time, basis);
+    if (fromMain) root.dataset.differenceCrosshair = String(time);
+    else root.dataset.mainCrosshair = String(time);
+    syncingCrosshair = false;
+    return;
+  }
+  const values = fromMain ? differenceData : aligned;
+  for (const [id, api] of apis) {
+    const point = values.get(id)?.find((item) => item.time === Number(time));
+    if (!point || !Number.isFinite(point.value)) continue;
+    target.setCrosshairPosition(point.value, time, api);
+    break;
+  }
   syncingCrosshair = false;
+}
+
+function restoreCrosshair(time: number, onDifference: boolean): void {
+  const chart = onDifference ? differenceChart : mainChart;
+  const apis = onDifference ? differenceApis : seriesApis;
+  const values = onDifference ? differenceData : aligned;
+  if (!chart) return;
+  const basis = onDifference ? differenceTimeBasis : mainTimeBasis;
+  if (basis) {
+    chart.setCrosshairPosition(0, time as UTCTimestamp, basis);
+    return;
+  }
+  for (const [id, api] of apis) {
+    const point = values.get(id)?.find((item) => item.time === time);
+    if (!point || !Number.isFinite(point.value)) continue;
+    chart.setCrosshairPosition(point.value, time as UTCTimestamp, api);
+    return;
+  }
+}
+
+function updateIncrementally(next: Payload): void {
+  const savedCrosshair = crosshairTime == null ? undefined : Number(crosshairTime);
+
+  // Lightweight Charts can reuse stale hovered pane rows while several series update and the
+  // time scale changes. Clear the transient cursor before the batch, then restore it after paint.
+  // This keeps delta updates on series.update() and avoids the library's `Value is null` race.
+  syncingCrosshair = true;
+  mainChart?.clearCrosshairPosition();
+  differenceChart?.clearCrosshairPosition();
+  reconcileDelta(next.series);
+  rebuildAlignment(false);
+  renderDifferences(false);
+  if (following) mainChart?.timeScale().scrollToRealTime();
+
+  if (savedCrosshair != null && Number.isFinite(savedCrosshair)) requestAnimationFrame(() => {
+    restoreCrosshair(savedCrosshair, false);
+    restoreCrosshair(savedCrosshair, true);
+    root.dataset.mainCrosshair = String(savedCrosshair);
+    root.dataset.differenceCrosshair = String(savedCrosshair);
+    crosshairTime = savedCrosshair as UTCTimestamp;
+    syncingCrosshair = false;
+  });
+  else syncingCrosshair = false;
 }
 
 function applyPayload(next: Payload): void {
@@ -444,12 +503,7 @@ function applyPayload(next: Payload): void {
       rangeSyncReady = true;
       mainChart?.timeScale().fitContent();
     }
-  } else {
-    reconcileDelta(next.series);
-    rebuildAlignment(false);
-    renderDifferences(false);
-    if (following) mainChart?.timeScale().scrollToRealTime();
-  }
+  } else updateIncrementally(next);
   renderPrice();
   renderMainLegend();
   renderMarkers();

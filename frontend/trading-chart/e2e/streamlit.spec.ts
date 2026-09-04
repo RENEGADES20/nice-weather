@@ -41,6 +41,8 @@ function rangeValues(value: string | null): [number, number] {
 }
 
 test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page }, testInfo) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   const frame = await openRepricing(page);
   const iframe = page.locator("iframe:visible").first();
   await iframe.evaluate((node) => node.setAttribute("data-identity", "stable-iframe"));
@@ -53,6 +55,13 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   await frame.locator("#reset-button").click();
   await frame.locator("#main-chart").hover();
   await page.mouse.wheel(0, -500);
+  await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", /.+/);
+  await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", /.+/);
+  await expect.poll(async () => {
+    const main = await frame.locator("#app").getAttribute("data-main-crosshair");
+    const difference = await frame.locator("#app").getAttribute("data-difference-crosshair");
+    return main !== "" && main === difference;
+  }).toBe(true);
   await expect.poll(async () => canvasRatio(frame)).toBeGreaterThan(0.001);
   const initialRatio = await canvasRatio(frame);
   expect(initialRatio).toBeGreaterThan(0.001);
@@ -78,6 +87,8 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     await expect(frame.locator("#shell")).toHaveCSS("opacity", "1");
     await expect(frame.locator("#events-button")).toHaveAttribute("aria-pressed", "true");
     await expect(frame.locator("input[name='reference'][value='price']")).toBeChecked();
+    await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", /.+/);
+    await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", /.+/);
     const ratio = await canvasRatio(frame);
     expect(ratio).toBeGreaterThan(0.001);
     expect(ratio).toBeGreaterThan(initialRatio * 0.25);
@@ -91,6 +102,7 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     if (await frame.locator("#price-readout").innerText() !== initialPrice) priceChanged = true;
   }
   expect(priceChanged).toBe(true);
+  expect(pageErrors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("dashboard-repricing.png"), fullPage: true });
 });
 
