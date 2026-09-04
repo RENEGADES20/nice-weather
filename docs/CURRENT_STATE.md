@@ -6,6 +6,16 @@
 
 项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，Tmax 重定价研究采集进入 schema v6”的阶段。
 
+## 2026-09-03 Dashboard 浅色重设计
+
+- Dashboard 重组为 `Overview`、`Repricing`、`Execution`、`Paper`、`System & Audit` 五个页签；模型摘要、历史重定价、当前可执行深度和审计信息各自归位，Execution 不再重复展示模型概率与 edge 历史。
+- 顶部状态改为无卡片的紧凑网格：桌面四列两行、移动端两列四行；长 Git SHA、数据库路径和版本信息移入 System & Audit。
+- Repricing 组件恢复浅色页面语言，同一 Lightweight Charts 实例内以 65/35 双 pane 分离温度和概率轴。默认只显示 NWS forecast、METAR、Running Tmax 及所选 bin 的 mid，focus bin 使用较粗线。
+- 永久事件文字已移除；forecast revisions 默认隐藏并仅在展示层做连续值去重和 30 分钟聚合，原始事件、对象时间和研究计算保持不变。
+- Price-in 区域使用真实时间比例定位对象发生、系统获知、市场首次变化和阈值持续成立四个节点；移动端用四列摘要避免近邻标签重叠。
+- 组件根节点、首屏 HTML、图表和全屏均固定浅色背景；移除 iframe 高度脉冲。2 秒 Repricing fragment 只发送增量数据，组件实例、缩放、图层状态和 focus 状态在常规刷新中保持。
+- 浏览器/系统时区继续只影响显示，纽约对象日期、as-of、Tmax、forecast、日落和延迟计算没有变化。本次没有数据库迁移，也没有修改 Collector、Market Stream、Runner、R2 或 Shadow/Paper 逻辑。
+
 ## 2026-09-03 Tmax 重定价研究与图表
 
 - H1 信息延迟、H2 尾部升温风险错价和 H3 预报锚定均登记为待验证假说；前 30 个市场日只采集，验证完成前不修改阶段 A 模型。
@@ -14,7 +24,7 @@
 - schema v6 为天气、预报、结算和市场 tick 增加显式对象时区/对象日期字段；所有业务归日固定 `America/New_York`，`received_at` 继续承担 as-of 和传播延迟口径。
 - 新增 `repair-settlement-dates --dry-run/--apply`，优先从不可变 raw capture 重建跨午夜日期、滚动累计 Tmax 和最终标签；旧原文无法重解析时报告异常并回退已有明细，页面丢失旧行时仍使用截至 as-of 已收到的历史行。
 - 新增 `research tmax-repricing` JSON/CSV 报告，区分对象传播、系统领先/落后和 80/90/95/99% 持续 price-in；Gamma 不计入可交易窗口。
-- Dashboard 底部新增自建 Lightweight Charts 5.x 双图组件，支持 1D/2D/3D/5D、最多六个区间、图层/颜色/线宽持久化、缩放、平移、跟随、全屏、事件对齐、十字线联动、主图延迟连线和增量 cursor；cursor 按接收顺序推进，晚到事件仍按交易所时间插入。
+- Dashboard 新增自建 Lightweight Charts 5.x 主时间线与 Price-in 响应组件；当前展示形态见同日浅色重设计记录。cursor 按接收顺序推进，晚到事件仍按交易所时间插入。
 - 公开 Gamma/CLOB 实流已完成 11 个 YES token 的发现、批量 book 恢复和 WebSocket 双心跳周期验证；该验证没有账户认证、订单或资金操作。
 - Python、TypeScript、前端构建和敏感信息扫描已纳入本地及 CI 验证；VM 运行只使用随 Python 包发布的静态资源，不安装 Node。
 
@@ -123,10 +133,10 @@ D:\ALLPROJECTS\x learner\天气预测市场交易系统_项目启动会.pptx
 - PAPER CANARY 尚未人工批准和启动；当前实际 live 验证只运行 SHADOW。
 - 尚未连续运行 3 个 Paper canary 市场日和 10 个 continuous paper 市场日。
 - 基线正态分布固定 `sigma=3°F`，没有经过样本外校准。
-- CLOB 使用 REST 快照，尚未接 WebSocket 增量簿或 maker 排队模型。
+- CLOB 顶层 WebSocket 增量流已经部署；maker 排队模型仍未实现，前 30 个市场日继续只采集研究数据。
 - 自动结算等待 Gamma winning outcome；跨机场日未完成结算的旧持仓仍需人工对账。
 - 外部 API 失败已有阶段化 `system_events`、有限重试、循环续跑和 heartbeat，尚未经过长时间断流与重连演练。
-- schema v5 尚未部署，首次 24 小时观察因数据库增长超限而未通过；部署后需重新计时验证。
+- schema v6 已部署；Dashboard 最终 SHA 上线后需重置 24 小时观察基线，避免混合两个展示版本的运行记录。
 - Nautilus Trader、复杂回放、集合预报和多城市继续后置。
 
 ## 2026-08-23 MVP 纵向闭环

@@ -170,6 +170,22 @@ class DashboardQuery:
             (event_id, event_id),
         )
 
+    def get_latest_event_probabilities(self, event_id: str) -> dict[str, float]:
+        rows = self._query(
+            """
+            SELECT o.bin_id,o.model_probability
+            FROM decision_outcomes o
+            WHERE o.decision_id=(
+              SELECT d.decision_id FROM decisions d
+              JOIN contract_versions c USING(contract_version_id)
+              WHERE c.event_id=? AND d.status='complete'
+              ORDER BY d.decision_time DESC,d.decision_id DESC LIMIT 1
+            )
+            """,
+            (event_id,),
+        )
+        return {str(row["bin_id"]): float(row["model_probability"]) for row in rows}
+
     def get_weather_timeline(
         self,
         object_local_date: date,
@@ -379,6 +395,21 @@ class DashboardQuery:
             """,
             (decision_id, bin_id),
         )
+
+    def get_execution_quote(self, decision_id: str, bin_id: str) -> dict[str, Any] | None:
+        rows = self._query(
+            """
+            SELECT q.quote_id,q.market_id,q.token_id,q.requested_at,q.received_at,
+                   q.best_bid,q.best_ask,q.spread,q.target_quantity,q.bid_vwap,
+                   q.ask_vwap,q.bid_depth,q.ask_depth,q.status,q.error_reason
+            FROM execution_quotes q
+            JOIN decision_outcomes o ON o.quote_id=q.quote_id
+            WHERE o.decision_id=? AND o.bin_id=?
+            LIMIT 1
+            """,
+            (decision_id, bin_id),
+        )
+        return rows[0] if rows else None
 
     def get_model_context(self, decision_id: str) -> dict[str, Any]:
         features = self._query(

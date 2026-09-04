@@ -500,6 +500,39 @@ Dashboard 文本与坐标轴。新增独立 CLOB WebSocket 顶层状态流和 Tm
 CLOB transport p95 超过 2 秒、图表显示 p95 超过 3 秒、市场数据增长超过 5 MiB/日，或顶层数据
 无法重建所需研究指标时，重新评估采样和深度范围。
 
+## D-030：Dashboard 按交易职责分区并采用浅色双 pane 图表
+
+日期：2026-09-03
+
+决定：
+
+Dashboard 固定为 Overview、Repricing、Execution、Paper、System & Audit 五个页签。Repricing 保留
+Lightweight Charts 的缩放、平移、十字线、增量更新和事件对齐能力，使用浅色双 pane 分离温度与
+概率。forecast revision 去重和 30 分钟聚合仅用于显示；原始事件与研究计算不变。浏览器时区仅
+用于文字和坐标轴，全部归日、as-of 和延迟仍使用对象时间。
+
+原因：
+
+旧深色单图把温度、价格、多条 bid/mid/ask 和大量永久事件文字压在同一视觉平面，轴语义混杂且
+刷新时出现黑色首帧。Market Detail 同时重复 Overview 的模型概率、edge 和历史价格，无法突出
+当前可执行状态。
+
+影响：
+
+Repricing 默认最多选择四个 bin，并以当前累计 Tmax 或最高模型概率确定默认 focus bin；默认只
+显示核心天气序列和各 bin mid。Execution 只展示当前 Quote、VWAP、深度、年龄和来源。组件 DOM
+保持稳定，2 秒 fragment 只增量协调数据；VM 运行时继续只加载 Python 包内静态资源。
+
+替代方案：
+
+继续在 Plotly 或单 pane 深色图上做配色微调。该路径无法同时解决异量纲轴、事件拥挤、刷新黑闪
+和状态保持问题。
+
+重新评估条件：
+
+连续刷新仍重建 iframe、移动端产生横向溢出、10,000 个可见点下交互明显退化，或交易员无法从
+双 pane 与延迟轴区分天气发生、系统获知和市场调整时，重新评估组件协议与图表拆分。
+
 ```markdown
 ## D-XXX：决策标题
 

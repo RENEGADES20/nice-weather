@@ -29,7 +29,8 @@ Dashboard Lightweight Charts <- 稳定 cursor 增量查询 ---+
 
 - 市场流只保存 best bid/ask、顶层数量、mid、last trade、交易所事件时间和接收时间；A→B→A 状态完整保留，完全重复消息去重。
 - 断线重连先以批量 CLOB book 恢复状态，Gamma 只作发现和 fallback，不进入可交易延迟统计。
-- 图表组件使用随 Python 包发布的静态资源；前端保持图表实例、缩放、联动十字线、跟随和图层状态，2 秒查询以 `received_at/tick_id` cursor 防止漏掉乱序事件，再按 `exchange_event_at` 插入图表。
+- 图表组件使用随 Python 包发布的静态资源；Repricing 在同一浅色图表实例内用双 pane 分离天气温度与市场概率，Price-in 使用独立响应图和等比例延迟轴。前端保持图表实例、缩放、联动十字线、跟随和图层状态，2 秒查询以 `received_at/tick_id` cursor 防止漏掉乱序事件，再按 `exchange_event_at` 插入图表。
+- forecast revision 的连续值去重和 30 分钟合并只发生在展示层；持久化事件、研究报告、阈值持续判定和对象时间不受影响。Overview、Execution、Paper 与 System & Audit 不承担历史重定价图表职责。
 - 对象时间决定纽约市场日、Tmax、forecast 覆盖、日落和结算；访问者时区仅用于显示。
 
 - Collector 写 `poll_attempts` 和内容变化后的 `source_captures`；天气原文只在该表压缩保存，
