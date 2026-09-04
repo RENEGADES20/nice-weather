@@ -534,12 +534,14 @@ function flushPendingDelta(): void {
   const next = pendingDelta;
   pendingDelta = null;
   if (next) applyPayload(next);
+  root.dataset.pendingRevision = "";
 }
 
 function applyPayload(next: Payload): void {
   if (next.channelId !== channelId || next.mode === "feed") return;
   if (next.mode === "delta" && chartPointerActive) {
     pendingDelta = next;
+    root.dataset.pendingRevision = String(next.revision);
     return;
   }
   const signatureChanged = signature !== next.signature;
@@ -564,6 +566,7 @@ function applyPayload(next: Payload): void {
   renderPrice();
   renderMainLegend();
   renderMarkers();
+  root.dataset.appliedRevision = String(next.revision);
 }
 
 function render(data: RenderData): void {

@@ -86,7 +86,6 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   const initialRange = await frame.locator("#app").getAttribute("data-main-range");
   const [initialStart, initialEnd] = rangeValues(initialRange);
   const initialSpan = initialEnd - initialStart;
-  const initialPrice = await frame.locator("#price-readout").innerText();
 
   for (let cycle = 0; cycle < 10; cycle += 1) {
     await page.waitForTimeout(2_100);
@@ -112,9 +111,15 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
       initialSpan * 0.04,
     );
   }
+  const pendingRevision = await frame.locator("#app").getAttribute("data-pending-revision");
+  expect(pendingRevision).toMatch(/\d+/);
+  expect(await frame.locator("#app").getAttribute("data-applied-revision")).not.toBe(
+    pendingRevision,
+  );
   await frame.locator("#main-legend").hover();
   await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "false");
-  await expect.poll(async () => frame.locator("#price-readout").innerText()).not.toBe(initialPrice);
+  await expect(frame.locator("#app")).toHaveAttribute("data-applied-revision", pendingRevision!);
+  await expect(frame.locator("#app")).toHaveAttribute("data-pending-revision", "");
   expect(pageErrors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("dashboard-repricing.png"), fullPage: true });
 });
