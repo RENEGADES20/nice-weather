@@ -1,14 +1,25 @@
 import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 
 async function openRepricing(page: Page): Promise<FrameLocator> {
-  await page.goto("/");
-  await expect(page.getByText("Polymarket NYC / KLGA Trader Dashboard")).toBeVisible();
-  await page.getByText("Repricing", { exact: true }).click();
-  const visibleFrame = page.locator("iframe:visible").first();
-  await expect(visibleFrame).toBeVisible();
-  const frame = visibleFrame.contentFrame();
-  await expect(frame.locator("#main-chart canvas").first()).toBeVisible({ timeout: 20_000 });
-  return frame;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      await page.goto("/");
+      await expect(page.getByText("Polymarket NYC / KLGA Trader Dashboard")).toBeVisible({
+        timeout: 20_000,
+      });
+      await page.getByText("Repricing", { exact: true }).click();
+      const visibleFrame = page.locator("iframe:visible").first();
+      await expect(visibleFrame).toBeVisible({ timeout: 20_000 });
+      const frame = visibleFrame.contentFrame();
+      await expect(frame.locator("#main-chart canvas").first()).toBeVisible({ timeout: 20_000 });
+      return frame;
+    } catch (error) {
+      lastError = error;
+      await page.waitForTimeout(1_000);
+    }
+  }
+  throw lastError;
 }
 
 async function canvasRatio(frame: FrameLocator): Promise<number> {
