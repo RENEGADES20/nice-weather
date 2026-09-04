@@ -89,6 +89,7 @@ let crosshairTime: Time | undefined;
 let following = true;
 let chartPointerActive = false;
 let pendingDelta: Payload | null = null;
+let flushingRevision = "";
 
 const style = (value?: string): LineStyle => value === "dashed"
   ? LineStyle.Dashed
@@ -278,7 +279,8 @@ function reconcileSeriesFull(spec: SeriesSpec): void {
   for (const key of [...(segmentApis.get(spec.id)?.keys() || [])]) removeSegment(spec.id, key);
   const apis = new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
-  for (const segment of nonNullSegments(spec.points)) {
+  const normalized = mergeRawPoints([], spec.points);
+  for (const segment of nonNullSegments(normalized)) {
     const key = segment[0].time;
     const api = mainChart!.addSeries(
       LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
@@ -291,7 +293,7 @@ function reconcileSeriesFull(spec: SeriesSpec): void {
   segmentTimes.set(spec.id, times);
   const representative = apis.values().next().value;
   if (representative) seriesApis.set(spec.id, representative);
-  seriesData.set(spec.id, [...spec.points].sort((a, b) => a.time - b.time));
+  seriesData.set(spec.id, normalized);
 }
 
 function reconcileSeriesDelta(spec: SeriesSpec, previous: RawPoint[], merged: RawPoint[]): void {
@@ -595,6 +597,10 @@ function updateIncrementally(next: Payload): void {
     renderDifferences(false);
     if (following) mainChart?.timeScale().scrollToRealTime();
     root.dataset.appliedRevision = String(next.revision);
+    if (String(next.revision) === flushingRevision) {
+      root.dataset.flushedRevision = flushingRevision;
+      flushingRevision = "";
+    }
 
     if (savedCrosshair != null && Number.isFinite(savedCrosshair)) {
       restoreCrosshairsAfterPaint(savedCrosshair);
@@ -608,7 +614,10 @@ function flushPendingDelta(): void {
   root.dataset.feedPaused = "false";
   const next = pendingDelta;
   pendingDelta = null;
-  if (next) applyPayload(next);
+  if (next) {
+    flushingRevision = String(next.revision);
+    applyPayload(next);
+  }
   root.dataset.pendingRevision = "";
 }
 
