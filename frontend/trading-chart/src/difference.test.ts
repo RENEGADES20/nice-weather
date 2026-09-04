@@ -65,7 +65,7 @@ describe("difference alignment", () => {
     ]);
   });
 
-  it("splits explicit price gaps without passing null points to chart series", () => {
+  it("splits explicit gaps without passing null points to any chart series", () => {
     expect(nonNullSegments([
       { time: 0, value: 0.4 },
       { time: 60, value: null },
