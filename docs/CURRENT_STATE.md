@@ -1,10 +1,19 @@
 # 当前状态
 
-最后更新：2026-09-03
+最后更新：2026-09-04
 
 ## 当前阶段
 
 项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，Tmax 重定价研究采集进入 schema v6”的阶段。
+
+## 2026-09-04 Dashboard 来源差值与稳定刷新
+
+- Dashboard 五个页签的时间文本、表格、Plotly 和 Lightweight Charts 坐标统一固定为纽约时间并标注 `ET`；浏览器时区及其当前 DST 时差只在 Overview 顶部说明，不参与市场日、查询范围或计算。
+- Overview 将四类天气摘要移至概率图之前，使用真实来源名称和信息提示，并单独展示合约 `resolutionSource`；只有规范化 URL 与配置的结算证据页一致时才标记为结算来源，审计标识移入折叠区。
+- Repricing 收敛为市场日、`1D/2D/3D/5D`、单一温度档和天气源集合。市场 pane 只保留一条 Price，按有效 CLOB midpoint、五分钟内 last trade、十分钟内 Gamma indicative probability 依次回退。
+- 主图继续在同一 Lightweight Charts 实例中使用天气与市场双 pane；下方 Difference 图按一分钟网格对齐，采用 `z_other - z_reference`，支持 forecast 线性插值、实况新鲜度约束、当日累计 Tmax 保持和价格有效期保持。首次完整窗口的均值与标准差在增量期间冻结；重叠不足、零方差或无共同范围时显示数据不足。
+- 可见图表只挂载一次。独立零高度两秒 fragment 通过 session 级 `BroadcastChannel` 传送数据，前端按 series ID 调用增量更新；选择条件变化才进行全量协调。Overview、Execution、Paper、System 改为手动刷新。
+- Difference 只承担共同变化与偏离观察，不进入交易决策或历史标签。本次未修改 Collector、Market Stream、阶段 A、Runner、R2、Paper、风险逻辑、数据库 schema 或历史数据。
 
 ## 2026-09-03 Dashboard 浅色重设计
 

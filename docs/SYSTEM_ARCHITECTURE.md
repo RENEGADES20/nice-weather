@@ -1,6 +1,6 @@
 # 系统架构概览
 
-最后更新：2026-09-03
+最后更新：2026-09-04
 
 本文描述模块职责、输入、输出和主要失败方式。具体模型权重、风险比例、交易阈值、数据库字段和运行参数留给后续技术设计。
 
@@ -24,14 +24,15 @@ Gamma 合约发现 -> CLOB WebSocket 全部 YES token -> market_top_ticks
                                                         |
 对象时间天气流 -> Tmax knowledge events ----------------+-> repricing report
                                                         |
-Dashboard Lightweight Charts <- 稳定 cursor 增量查询 ---+
+Dashboard Lightweight Charts <- BroadcastChannel 数据泵 -----+
 ```
 
 - 市场流只保存 best bid/ask、顶层数量、mid、last trade、交易所事件时间和接收时间；A→B→A 状态完整保留，完全重复消息去重。
 - 断线重连先以批量 CLOB book 恢复状态，Gamma 只作发现和 fallback，不进入可交易延迟统计。
-- 图表组件使用随 Python 包发布的静态资源；Repricing 在同一浅色图表实例内用双 pane 分离天气温度与市场概率，Price-in 使用独立响应图和等比例延迟轴。前端保持图表实例、缩放、联动十字线、跟随和图层状态，2 秒查询以 `received_at/tick_id` cursor 防止漏掉乱序事件，再按 `exchange_event_at` 插入图表。
-- forecast revision 的连续值去重和 30 分钟合并只发生在展示层；持久化事件、研究报告、阈值持续判定和对象时间不受影响。Overview、Execution、Paper 与 System & Audit 不承担历史重定价图表职责。
-- 对象时间决定纽约市场日、Tmax、forecast 覆盖、日落和结算；访问者时区仅用于显示。
+- 图表组件使用随 Python 包发布的静态资源；Repricing 在同一浅色 Lightweight Charts 实例内用双 pane 分离天气温度与单温度档 Price。下方 Difference 图与主图双向同步时间范围和十字线，并按 `z_other - z_reference` 显示标准化偏离。
+- 可见组件只挂载一次；独立零高度两秒 Streamlit fragment 查询当前窗口，通过 session channel ID 对应的 `BroadcastChannel` 发送 feed。前端仅按 series ID 增量更新，市场日、范围、温度档或来源集合改变时才全量协调并重算标准化锚点。浏览器缺少 `BroadcastChannel` 时停止自动 feed，不采用周期性重建回退。
+- Difference 在纽约一分钟网格上对齐：forecast 线性插值，METAR/NWS observation 按新鲜度上限保持，Weather.gov 累计 Tmax 只在目标市场日保持，市场价格保持到断线或明确失效。零方差、共同有效点少于五个或无共同范围均视为数据不足。该指标不进入研究延迟标签、阶段 A 或交易逻辑。
+- 对象时间决定纽约市场日、Tmax、forecast 覆盖、日落和结算。Dashboard 展示统一固定 `America/New_York` 并标注 `ET`；浏览器时区只在 Overview 显示当前 DST 时差。
 
 - Collector 写 `poll_attempts` 和内容变化后的 `source_captures`；天气原文只在该表压缩保存，
   `raw_snapshots` 仅保留迁移前天气记录及市场兼容记录。各来源失败独立记录。
