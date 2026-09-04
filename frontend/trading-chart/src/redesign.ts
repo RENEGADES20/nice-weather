@@ -488,20 +488,23 @@ function updateIncrementally(next: Payload): void {
   const savedCrosshair = crosshairTime == null ? undefined : Number(crosshairTime);
 
   // Lightweight Charts can reuse stale hovered pane rows while several series update and the
-  // time scale changes. Clear the transient cursor before the batch, then restore it after paint.
-  // This keeps delta updates on series.update() and avoids the library's `Value is null` race.
+  // time scale changes. Clear the transient cursor and allow that invalidation to paint before
+  // the batch, then restore it after later paints. This keeps deltas on series.update() while
+  // avoiding the library's asynchronous `Value is null` race in its hovered pane cache.
   syncingCrosshair = true;
   mainChart?.clearCrosshairPosition();
   differenceChart?.clearCrosshairPosition();
-  reconcileDelta(next.series);
-  rebuildAlignment(false);
-  renderDifferences(false);
-  if (following) mainChart?.timeScale().scrollToRealTime();
+  requestAnimationFrame(() => {
+    reconcileDelta(next.series);
+    rebuildAlignment(false);
+    renderDifferences(false);
+    if (following) mainChart?.timeScale().scrollToRealTime();
 
-  if (savedCrosshair != null && Number.isFinite(savedCrosshair)) {
-    restoreCrosshairsAfterPaint(savedCrosshair);
-  }
-  else syncingCrosshair = false;
+    if (savedCrosshair != null && Number.isFinite(savedCrosshair)) {
+      restoreCrosshairsAfterPaint(savedCrosshair);
+    }
+    else syncingCrosshair = false;
+  });
 }
 
 function applyPayload(next: Payload): void {
