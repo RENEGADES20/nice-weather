@@ -295,3 +295,29 @@ def test_v6_backup_migrates_without_rewriting_legacy_ticks(tmp_path, monkeypatch
     with sqlite3.connect(backup) as copy:
         assert copy.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
         assert copy.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+
+
+def test_new_forecast_missing_point_replaces_old_snapshot():
+    now = datetime(2026, 9, 5, 12, tzinfo=UTC)
+    rows = [
+        {
+            "capture_id": capture,
+            "forecast_point_id": f"{capture}-{i}",
+            "received_at": (now - timedelta(minutes=2 if capture == "old" else 1)).isoformat(),
+            "issued_at": (now - timedelta(minutes=3)).isoformat(),
+            "valid_at": (now + timedelta(hours=i)).isoformat(),
+            "temperature_f": value,
+        }
+        for capture, values in [("old", [70, 72]), ("new", [70, None])]
+        for i, value in enumerate(values)
+    ]
+    target = int((now + timedelta(minutes=30)).timestamp())
+    result = dashboard._forecast_point(dashboard._forecast_snapshots(rows), target, 21600)
+    assert result["value"] is None and result["reason"] == "missing-forecast"
+    _, hashes = dashboard._series_delta(
+        [{"id": "forecast", "points": [{"time": 1, "value": 70}, {"time": 2, "value": 72}]}], {}
+    )
+    delta, _ = dashboard._series_delta(
+        [{"id": "forecast", "points": [{"time": 1, "value": 70}]}], hashes
+    )
+    assert delta[0]["removedTimes"] == [2.0]

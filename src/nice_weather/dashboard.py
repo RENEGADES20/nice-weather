@@ -728,29 +728,33 @@ def _temperature_point(
 def _forecast_point(
     snapshots: list[dict[str, Any]], target: int, max_issue_age_seconds: int
 ) -> dict[str, Any]:
+    reason = "no-records"
     for snapshot in reversed(snapshots):
         received = snapshot["received_epoch"]
         issued = snapshot["issued_epoch"]
-        if received > target or issued > target or target - issued > max_issue_age_seconds:
+        if received > target or issued > target:
             continue
+        reason = "expired" if target - issued > max_issue_age_seconds else "missing-forecast"
+        if reason == "expired":
+            break
         times: list[int] = snapshot["times"]
         index = bisect_left(times, target)
         if index < len(times) and times[index] == target:
             left = right = snapshot["points"][index]
             value = _finite_float(left.get("temperature_f"))
         elif index == 0 or index >= len(times):
-            continue
+            break
         else:
             left = snapshot["points"][index - 1]
             right = snapshot["points"][index]
             left_value = _finite_float(left.get("temperature_f"))
             right_value = _finite_float(right.get("temperature_f"))
             if left_value is None or right_value is None or times[index] == times[index - 1]:
-                continue
+                break
             ratio = (target - times[index - 1]) / (times[index] - times[index - 1])
             value = left_value + (right_value - left_value) * ratio
         if value is None or not math.isfinite(value):
-            continue
+            break
         return {
             "time": target,
             "value": value,
@@ -765,7 +769,7 @@ def _forecast_point(
             "captureId": snapshot["capture_id"],
             "ageSeconds": target - received,
         }
-    return {"time": target, "value": None}
+    return {"time": target, "value": None, "reason": reason}
 
 
 def _forecast_snapshots(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1190,7 +1194,7 @@ def _timeline_data(
     market = cache["bins"].setdefault(selected_bin_id, {"ticks": [], "cursor": None})
     market_start = (now if future else start) - timedelta(seconds=600)
     incoming = query.get_repricing_ticks(
-        event_id, selected_bin_id, market_start, end, now, market["cursor"]
+        event_id, selected_bin_id, market_start, end, now if future else cutoff, market["cursor"]
     )
     market["ticks"].extend(incoming["ticks"])
     market["cursor"] = incoming["cursor"]
