@@ -68,6 +68,29 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   ).toBeChecked();
   await expect(frame.locator("input[name='difference'][value='weather-gov-minus-metar']"))
     .not.toBeChecked();
+  const differenceIds = [
+    "metar-minus-forecast",
+    "weather-gov-minus-forecast",
+    "weather-gov-minus-metar",
+    "price-minus-forecast",
+    "price-minus-metar",
+    "price-minus-weather-gov",
+  ];
+  for (const id of [
+    "weather-gov-minus-forecast",
+    "weather-gov-minus-metar",
+    "price-minus-weather-gov",
+  ]) {
+    await frame.locator(`input[name='difference'][value='${id}']`).click();
+    await expect(frame.locator(`input[name='difference'][value='${id}']`)).toBeChecked();
+  }
+  for (const id of differenceIds) {
+    await frame.locator(`input[name='difference'][value='${id}']`).click();
+    await expect(frame.locator(`input[name='difference'][value='${id}']`)).not.toBeChecked();
+  }
+  for (const id of [differenceIds[0], differenceIds[3], differenceIds[4]]) {
+    await frame.locator(`input[name='difference'][value='${id}']`).click();
+  }
   await frame.locator("#reset-button").click();
   await frame.locator("#main-chart").hover();
   await page.mouse.wheel(0, -500);
@@ -159,8 +182,14 @@ test("keeps one bin state and fits the requested viewport", async ({ page }, tes
   expect(componentDimensions.scrollHeight).toBeLessThanOrEqual(componentDimensions.height);
   await expect(frame.locator("#difference-chart canvas").first()).toBeVisible();
   await expect(frame.locator("input[name='reference']")).toHaveCount(0);
+  const targetRadio = page.getByTestId("stRadioGroup").getByRole("radio", { name: "68-69°F" });
+  const targetBin = page.getByTestId("stRadioGroup").getByText("68-69°F", { exact: true });
+  if (await targetRadio.isChecked()) {
+    await page.getByTestId("stRadioGroup").getByText("70-71°F", { exact: true }).click();
+    await expect(targetRadio).not.toBeChecked();
+  }
   const firstBin = await frame.locator("#app").getAttribute("data-selected-bin-id");
-  await page.getByTestId("stRadioGroup").getByText("68-69°F", { exact: true }).click();
+  await targetBin.click();
   await expect.poll(async () => frame.locator("#app").getAttribute("data-selected-bin-id"))
     .not.toBe(firstBin);
   await expect(frame.locator("#price-readout")).toContainText("Unavailable");
