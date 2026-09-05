@@ -19,6 +19,7 @@ import {
   differencePoints,
   mergeRawPoints,
   nonNullSegments,
+  stepVertices,
   type DifferencePoint,
   type PointSeries,
   type RawPoint,
@@ -351,19 +352,21 @@ function removeSegment(id: string, key: number): void {
 }
 
 function reconcileSeriesFull(spec: SeriesSpec): void {
-  for (const key of [...(segmentApis.get(spec.id)?.keys() || [])]) removeSegment(spec.id, key);
-  const apis = new Map<number, ISeriesApi<"Line">>();
+  const apis = segmentApis.get(spec.id) || new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
   const normalized = mergeRawPoints([], spec.points);
-  for (const segment of nonNullSegments(normalized)) {
+  for (const rawSegment of nonNullSegments(normalized)) {
+    const segment = spec.fill === "forecast" ? rawSegment : stepVertices(rawSegment);
     const key = segment[0].time;
-    const api = mainChart!.addSeries(
+    const api = apis.get(key) || mainChart!.addSeries(
       LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
     );
+    api.applyOptions(seriesOptions(spec));
     api.setData(segment.map(valuedLineData));
     apis.set(key, api);
     times.set(key, segment.map((point) => point.time));
   }
+  for (const key of [...apis.keys()]) if (!times.has(key)) removeSegment(spec.id, key);
   segmentApis.set(spec.id, apis);
   segmentTimes.set(spec.id, times);
   const representative = apis.values().next().value;
@@ -374,7 +377,8 @@ function reconcileSeriesFull(spec: SeriesSpec): void {
 function reconcileSeriesDelta(spec: SeriesSpec, previous: RawPoint[], merged: RawPoint[]): void {
   const previousByTime = new Map(previous.map((point) => [point.time, point.value]));
   const validKeys = new Set<number>();
-  for (const segment of nonNullSegments(merged)) {
+  for (const rawSegment of nonNullSegments(merged)) {
+    const segment = spec.fill === "forecast" ? rawSegment : stepVertices(rawSegment);
     const key = segment[0].time;
     validKeys.add(key);
     const nextTimes = segment.map((point) => point.time);
@@ -460,18 +464,17 @@ function differenceRawPoints(points: DifferencePoint[]): RawPoint[] {
 }
 
 function reconcileDifferenceFull(spec: DifferenceSpec, points: DifferencePoint[]): void {
-  for (const key of [...(differenceSegmentApis.get(spec.id)?.keys() || [])]) {
-    removeDifferenceSegment(spec.id, key);
-  }
-  const apis = new Map<number, ISeriesApi<"Line">>();
+  const apis = differenceSegmentApis.get(spec.id) || new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
   for (const segment of nonNullSegments(differenceRawPoints(points))) {
     const key = segment[0].time;
-    const api = differenceChart!.addSeries(LineSeries, differenceOptions(spec));
+    const api = apis.get(key) || differenceChart!.addSeries(LineSeries, differenceOptions(spec));
+    api.applyOptions(differenceOptions(spec));
     api.setData(segment.map(valuedLineData));
     apis.set(key, api);
     times.set(key, segment.map((point) => point.time));
   }
+  for (const key of [...apis.keys()]) if (!times.has(key)) removeDifferenceSegment(spec.id, key);
   differenceSegmentApis.set(spec.id, apis);
   differenceSegmentTimes.set(spec.id, times);
   const representative = apis.values().next().value;
@@ -545,13 +548,14 @@ function setTimeBasis(start: number, end: number): void {
   if (!mainChart || !differenceChart) return;
   const times = new Set<number>();
   for (let current = Math.floor(start / 60) * 60; current <= end; current += 60) times.add(current);
-  for (const data of [...seriesData.values(), ...differenceInputData.values()]) {
-    for (const point of data) times.add(point.time);
+  for (const segments of [...segmentTimes.values(), ...differenceSegmentTimes.values()]) {
+    for (const data of segments.values()) for (const time of data) times.add(time);
   }
   const ordered = [...times].sort((a, b) => a - b);
   const key = ordered.join(",");
   if (key === timeBasisKey) return;
   timeBasisKey = key;
+  root.dataset.timeBasisPoints = String(ordered.length);
   const points: LineData[] = ordered.map((time) => ({ time: time as UTCTimestamp, value: 0 }));
   const options = {
     color: "rgba(0,0,0,0)",
@@ -949,7 +953,26 @@ function render(data: RenderData): void {
 
 }
 
+let pendingRender = Promise.resolve();
+let lastTransport: string | undefined;
 Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, (event) => {
-  render((event as CustomEvent<RenderData>).detail);
+  const data = (event as CustomEvent<RenderData>).detail;
+  const transport = data.args.payload;
+  // Streamlit resends unchanged arguments after iframe size changes.
+  if (transport.gzip && transport.gzip === lastTransport) return;
+  lastTransport = transport.gzip;
+  pendingRender = pendingRender.then(async () => {
+    if (transport.gzip) {
+      const bytes = Uint8Array.from(atob(transport.gzip), (char) => char.charCodeAt(0));
+      const decoded = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+      data.args.payload = { ...await new Response(decoded).json(), sentAt: transport.sentAt };
+      root.dataset.transportBytes = String(transport.gzip.length);
+    }
+    render(data);
+  }).catch(() => {
+    lastTransport = undefined;
+    if (!mainChart) buildShell();
+    showFeedError("Chart update could not be decoded; showing the last successful data.");
+  });
 });
 Streamlit.setComponentReady();

@@ -4,9 +4,23 @@ import {
   differencePoints,
   mergeRawPoints,
   nonNullSegments,
+  stepVertices,
 } from "./difference";
 
 describe("difference alignment", () => {
+  it("keeps exact step changes, zeros, gaps and endpoints without changing audit points", () => {
+    const points = [0.05, 0.05, 0.002, 0.002, 0.05, 0.05, null, 0, 0, 0]
+      .map((value, time) => ({time, value, receivedAt: String(time)}));
+    const before = structuredClone(points);
+    const segments = nonNullSegments(points).map(stepVertices);
+    expect(segments.map((segment) => segment.map((point) => point.time)))
+      .toEqual([[0, 2, 4, 5], [7, 9]]);
+    for (let time = 0; time <= 5; time += .25) {
+      expect(segments[0].filter((point) => point.time <= time).at(-1)?.value)
+        .toBe(points.filter((point) => point.time <= time).at(-1)?.value);
+    }
+    expect(points).toEqual(before);
+  });
   it("computes ordinary left-minus-right values and preserves input metadata", () => {
     const left = [
       { time: 0, value: 72, objectTime: "left-0" },

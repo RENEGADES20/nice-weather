@@ -1,32 +1,25 @@
 export type Point = { time: number; value: number };
 
+const axisFormatters = new Map<string, Intl.DateTimeFormat>();
+
 export function formatAxisTime(
   epoch: number,
   tickMarkType: number,
   zone?: string,
   locale?: string,
 ): string {
-  const instant = new Date(epoch * 1000);
-  if (tickMarkType === 0) {
-    return new Intl.DateTimeFormat(locale, { timeZone: zone, year: "numeric" }).format(instant);
+  const key = JSON.stringify([tickMarkType, zone, locale]);
+  let formatter = axisFormatters.get(key);
+  if (!formatter) {
+    const options: Intl.DateTimeFormatOptions = tickMarkType === 0 ? { year: "numeric" }
+      : tickMarkType === 1 ? { month: "short" }
+      : tickMarkType === 2 ? { month: "short", day: "2-digit" }
+      : { hour: "2-digit", minute: "2-digit", second: tickMarkType === 4 ? "2-digit" : undefined, hour12: false };
+    formatter = new Intl.DateTimeFormat(locale, { ...options, timeZone: zone });
+    if (axisFormatters.size >= 32) axisFormatters.delete(axisFormatters.keys().next().value!);
+    axisFormatters.set(key, formatter);
   }
-  if (tickMarkType === 1) {
-    return new Intl.DateTimeFormat(locale, { timeZone: zone, month: "short" }).format(instant);
-  }
-  if (tickMarkType === 2) {
-    return new Intl.DateTimeFormat(locale, {
-      timeZone: zone,
-      month: "short",
-      day: "2-digit",
-    }).format(instant);
-  }
-  return new Intl.DateTimeFormat(locale, {
-    timeZone: zone,
-    hour: "2-digit",
-    minute: "2-digit",
-    second: tickMarkType === 4 ? "2-digit" : undefined,
-    hour12: false,
-  }).format(instant);
+  return formatter.format(new Date(epoch * 1000));
 }
 
 export type DisplayEvent = {

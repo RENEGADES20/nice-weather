@@ -7,6 +7,7 @@ import os
 import uuid
 from bisect import bisect_left
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 from time import perf_counter
@@ -465,6 +466,8 @@ def _localize_records(records: list[dict[str, Any]], zone: tzinfo) -> list[dict[
     return [_localize_record(record, zone) for record in records]
 
 
+# Reused across tick sorting, expiry, selection and minute reconstruction; bounded across sessions.
+@lru_cache(maxsize=131_072)
 def _epoch(value: object) -> float:
     parsed = _display_datetime(value, UTC)
     if parsed is None:
@@ -582,43 +585,38 @@ def _price_state_selection(
     return None
 
 
-def _select_price(ticks: list[dict[str, Any]], at: datetime) -> dict[str, Any] | None:
+def _price_candidates(
+    ticks: list[dict[str, Any]], at: datetime, previous: dict[str, dict] | None = None
+) -> dict[str, dict]:
     cutoff = at.astimezone(UTC).timestamp()
-
-    def known(item: dict[str, Any]) -> bool:
+    state = dict(previous or {})
+    for row in ticks:
         try:
-            return (
-                _epoch(item["exchange_event_at"]) <= cutoff
-                and _epoch(item["received_at"]) <= cutoff
-            )
+            received = _epoch(row["received_at"])
+            if received > cutoff or _epoch(row["exchange_event_at"]) > cutoff:
+                continue
         except (KeyError, ValueError):
-            logger.warning("repricing_invalid_price_time tick=%s", item.get("tick_id"))
-            return False
+            logger.warning("repricing_invalid_price_time tick=%s", row.get("tick_id"))
+            continue
+        kind = _price_kind(row)
+        if kind is None or (kind == "trade" and row.get("last_trade_price") is None):
+            continue
+        if kind == "gamma" and (
+            row.get("mid") is None or row.get("status") in {"crossed", "disconnect", "missing"}
+        ):
+            continue
+        current = state.get(kind)
+        if current is None or (received, str(row["tick_id"])) > (
+            _epoch(current["received_at"]),
+            str(current["tick_id"]),
+        ):
+            state[kind] = row
+    return state
 
-    eligible = [item for item in ticks if known(item)]
 
-    def receipt_key(item: dict[str, Any]) -> tuple[float, str]:
-        return _epoch(item["received_at"]), str(item["tick_id"])
-
-    clob = [item for item in eligible if _price_kind(item) == "clob"]
-    trades = [
-        item
-        for item in eligible
-        if _price_kind(item) == "trade" and item.get("last_trade_price") is not None
-    ]
-    gamma = [
-        item
-        for item in eligible
-        if item.get("source") == "gamma_fallback"
-        and item.get("mid") is not None
-        and item.get("status") not in {"crossed", "disconnect", "missing"}
-    ]
-    return _price_state_selection(
-        max(clob, key=receipt_key) if clob else None,
-        max(trades, key=receipt_key) if trades else None,
-        max(gamma, key=receipt_key) if gamma else None,
-        at,
-    )
+def _select_price(ticks: list[dict[str, Any]], at: datetime) -> dict[str, Any] | None:
+    state = _price_candidates(ticks, at)
+    return _price_state_selection(state.get("clob"), state.get("trade"), state.get("gamma"), at)
 
 
 def _price_points(
@@ -874,7 +872,7 @@ def _repricing_difference_inputs(
 
     for target in grid:
         # Empty history is the price-only incremental path.
-        for source_id, rows in (sources.items() if history else []):
+        for source_id, rows in sources.items() if history else []:
             while source_index[source_id] < len(rows):
                 row = rows[source_index[source_id]]
                 if max(_epoch(row["received_at"]), _epoch(row["observed_at"])) > target:
@@ -931,13 +929,9 @@ def _repricing_difference_inputs(
                 )
             ):
                 latest_trade = tick
-            if (
-                tick.get("source") == "gamma_fallback"
-                and (
-                    latest_gamma is None
-                    or receipt_key
-                    > (_epoch(latest_gamma["received_at"]), str(latest_gamma["tick_id"]))
-                )
+            if tick.get("source") == "gamma_fallback" and (
+                latest_gamma is None
+                or receipt_key > (_epoch(latest_gamma["received_at"]), str(latest_gamma["tick_id"]))
             ):
                 latest_gamma = tick
             tick_index += 1
@@ -1199,7 +1193,23 @@ def _timeline_data(
     market["ticks"].extend(incoming["ticks"])
     market["cursor"] = incoming["cursor"]
     ticks = market["ticks"]
-    current_price = _select_price(ticks, now if future else cutoff)
+    price_at = now if future else cutoff
+    ready, pending = [], []
+    latest_actual = market.get("latest_actual", start.timestamp())
+    for row in [*market.get("pending", []), *incoming["ticks"]]:
+        known = max(_epoch(row["received_at"]), _epoch(row["exchange_event_at"]))
+        if known <= price_at.timestamp():
+            ready.append(row)
+            latest_actual = max(latest_actual, known)
+        else:
+            pending.append(row)
+    market["pending"] = pending
+    market["latest_actual"] = latest_actual
+    market["legacy"] = market.get("legacy", False) or any(
+        row.get("event_kind") is None for row in incoming["ticks"]
+    )
+    market["state"] = _price_candidates(ready, price_at, market.get("state"))
+    current_price = _select_price(list(market["state"].values()), price_at)
     if future:
         inputs = _future_inputs(
             cache["history"], current_price, start, end, now, issue_age, selected_bin_id
@@ -1299,35 +1309,31 @@ def _timeline_data(
             + [
                 _epoch(p["objectTime"])
                 for item in series
-                if item["id"] != "forecast"
+                if item["id"] not in {"forecast", "price"}
                 for p in item["points"]
                 if p.get("value") is not None
                 and p["time"] <= min(now.timestamp(), end.timestamp())
                 and p.get("objectTime") is not None
                 and _epoch(p["objectTime"]) >= start.timestamp()
             ]
-            + [
-                max(_epoch(row["exchange_event_at"]), _epoch(row["received_at"]))
-                for row in ticks
-                if _epoch(row["received_at"]) <= cutoff.timestamp()
-                and _epoch(row["exchange_event_at"]) <= cutoff.timestamp()
-            ]
+            + [latest_actual]
         ),
         "queryMs": round((perf_counter() - started) * 1000, 2),
-        "legacyWarning": any(row.get("event_kind") is None for row in ticks),
+        "legacyWarning": market["legacy"],
     }
     return series, inputs, revisions, start, end
 
 
 def _series_delta(
-    series: list[dict[str, Any]], previous: dict[str, dict[str, str]]
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+    series: list[dict[str, Any]], previous: dict[str, dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     delta: list[dict[str, Any]] = []
-    current: dict[str, dict[str, str]] = {}
+    current: dict[str, dict[str, Any]] = {}
     for item in series:
         series_id = str(item["id"])
         prior = previous.get(series_id, {})
-        hashes = {str(point["time"]): content_hash(point) for point in item["points"]}
+        # Scalar point fields can be compared directly without serializing the entire day.
+        hashes = {str(point["time"]): dict(point) for point in item["points"]}
         changed = [
             point
             for point in item["points"]
