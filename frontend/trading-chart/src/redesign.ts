@@ -84,6 +84,7 @@ const differenceSegmentApis = new Map<string, Map<number, ISeriesApi<"Line">>>()
 const differenceSegmentTimes = new Map<string, Map<number, number[]>>();
 const differenceData = new Map<string, DifferencePoint[]>();
 let selectedDifferenceIds = new Set<string>();
+let differenceSelectionInitialized = false;
 let mainChart: IChartApi | null = null;
 let differenceChart: IChartApi | null = null;
 let mainTimeBasis: ISeriesApi<"Line"> | null = null;
@@ -868,11 +869,11 @@ function applyPayload(next: Payload): void {
   const signatureChanged = signature !== next.signature;
   payload = { ...payload, ...next, mode: next.mode, series: next.series };
   if (next.mode === "full") {
-    selectedDifferenceIds = new Set(
-      (next.selectedDifferenceIds || []).filter(
-        (id) => next.differenceSpecs.some((spec) => spec.id === id),
-      ),
-    );
+    const validDifferenceIds = new Set(next.differenceSpecs.map((spec) => spec.id));
+    selectedDifferenceIds = differenceSelectionInitialized
+      ? new Set([...selectedDifferenceIds].filter((id) => validDifferenceIds.has(id)))
+      : new Set((next.selectedDifferenceIds || []).filter((id) => validDifferenceIds.has(id)));
+    differenceSelectionInitialized = true;
     renderDifferenceControls();
     if (signatureChanged) {
       rangeSyncReady = false;
