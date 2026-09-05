@@ -49,6 +49,12 @@ export function nonNullSegments(points: RawPoint[]): RawPoint[][] {
   return segments;
 }
 
+// WithSteps needs each value change and the segment endpoints. Audit points stay untouched.
+export function stepVertices(points: RawPoint[]): RawPoint[] {
+  return points.filter((point, index) => index === 0 || index === points.length - 1
+    || point.value !== points[index - 1].value);
+}
+
 export function createBidirectionalSync<T>(
   applyLeft: (value: T) => void,
   applyRight: (value: T) => void,

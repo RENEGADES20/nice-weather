@@ -25,6 +25,36 @@ async function openRepricing(page: Page): Promise<FrameLocator> {
   throw lastError;
 }
 
+test("renders 70000 audit points using exact step vertices", async ({page}) => {
+  await page.addInitScript(() => window.addEventListener("message", (event) => {
+    if (event.data?.type === "streamlit:render" && event.data.args?.payload?.gzip) {
+      (window as unknown as {testWire: {gzip: string}}).testWire = event.data.args.payload;
+    }
+  }));
+  const frame = await openRepricing(page);
+  const started = Date.now();
+  await frame.locator("#app").evaluate(async (root) => {
+    const wire = (window as unknown as {testWire: {gzip: string}}).testWire;
+    const bytes = Uint8Array.from(atob(wire.gzip), (char) => char.charCodeAt(0));
+    const payload = await new Response(new Blob([bytes]).stream()
+      .pipeThrough(new DecompressionStream("gzip"))).json();
+    payload.signature = "large-history";
+    payload.sequence = Number((root as HTMLElement).dataset.sequence) + 1000;
+    const price = payload.series.find((item: {id: string}) => item.id === "price");
+    price.points = Array.from({length: 70000}, (_, index) => ({
+      time: payload.windowStart + index / 10,
+      value: Math.floor(index / 1000) % 2 ? 0.002 : 0.05,
+      receivedAt: new Date((payload.windowStart + index / 10) * 1000).toISOString(),
+      binId: payload.selectedBinId,
+    }));
+    window.postMessage({type: "streamlit:render", args: {payload}, dfs: [], disabled: false}, "*");
+  });
+  await expect(frame.locator("#app")).toHaveAttribute("data-signature", "large-history");
+  await expect(frame.locator("#app")).toHaveAttribute("data-price-point-count", "70000");
+  expect(Number(await frame.locator("#app").getAttribute("data-time-basis-points"))).toBeLessThan(2000);
+  expect(Date.now() - started).toBeLessThan(5000);
+});
+
 async function canvasRatio(frame: FrameLocator): Promise<number> {
   return frame.locator("#main-chart canvas").evaluateAll((canvases) => {
     let bestRatio = 0;

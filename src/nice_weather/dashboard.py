@@ -1298,7 +1298,7 @@ def _timeline_data(
             + [
                 _epoch(p["objectTime"])
                 for item in series
-                if item["id"] != "forecast"
+                if item["id"] not in {"forecast", "price"}
                 for p in item["points"]
                 if p.get("value") is not None
                 and p["time"] <= min(now.timestamp(), end.timestamp())

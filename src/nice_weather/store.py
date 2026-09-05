@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from importlib.resources import files
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -47,7 +49,7 @@ class WeatherStore:
             self.connection = sqlite3.connect(self.path, timeout=5.0)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys=ON")
-        self.connection.execute("PRAGMA busy_timeout=5000")
+        self.connection.execute(f"PRAGMA busy_timeout={5000 if read_only else 30000}")
         if not read_only:
             self.connection.execute("PRAGMA journal_mode=WAL")
             self.connection.execute("PRAGMA synchronous=NORMAL")
@@ -97,9 +99,18 @@ class WeatherStore:
         if self.read_only:
             raise RuntimeError("Cannot start a write transaction through a read-only connection")
         try:
+            started = perf_counter()
             self.connection.execute("BEGIN IMMEDIATE")
+            acquired = perf_counter()
             yield self.connection
             self.connection.commit()
+            finished = perf_counter()
+            if finished - started > 5:
+                logging.getLogger(__name__).warning(
+                    "sqlite_transaction_slow wait=%.3fs hold=%.3fs",
+                    acquired - started,
+                    finished - acquired,
+                )
         except Exception:
             self.connection.rollback()
             raise

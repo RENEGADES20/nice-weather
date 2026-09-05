@@ -19,6 +19,7 @@ import {
   differencePoints,
   mergeRawPoints,
   nonNullSegments,
+  stepVertices,
   type DifferencePoint,
   type PointSeries,
   type RawPoint,
@@ -355,7 +356,8 @@ function reconcileSeriesFull(spec: SeriesSpec): void {
   const apis = new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
   const normalized = mergeRawPoints([], spec.points);
-  for (const segment of nonNullSegments(normalized)) {
+  for (const rawSegment of nonNullSegments(normalized)) {
+    const segment = spec.fill === "forecast" ? rawSegment : stepVertices(rawSegment);
     const key = segment[0].time;
     const api = mainChart!.addSeries(
       LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
@@ -374,7 +376,8 @@ function reconcileSeriesFull(spec: SeriesSpec): void {
 function reconcileSeriesDelta(spec: SeriesSpec, previous: RawPoint[], merged: RawPoint[]): void {
   const previousByTime = new Map(previous.map((point) => [point.time, point.value]));
   const validKeys = new Set<number>();
-  for (const segment of nonNullSegments(merged)) {
+  for (const rawSegment of nonNullSegments(merged)) {
+    const segment = spec.fill === "forecast" ? rawSegment : stepVertices(rawSegment);
     const key = segment[0].time;
     validKeys.add(key);
     const nextTimes = segment.map((point) => point.time);
@@ -545,13 +548,14 @@ function setTimeBasis(start: number, end: number): void {
   if (!mainChart || !differenceChart) return;
   const times = new Set<number>();
   for (let current = Math.floor(start / 60) * 60; current <= end; current += 60) times.add(current);
-  for (const data of [...seriesData.values(), ...differenceInputData.values()]) {
-    for (const point of data) times.add(point.time);
+  for (const segments of [...segmentTimes.values(), ...differenceSegmentTimes.values()]) {
+    for (const data of segments.values()) for (const time of data) times.add(time);
   }
   const ordered = [...times].sort((a, b) => a - b);
   const key = ordered.join(",");
   if (key === timeBasisKey) return;
   timeBasisKey = key;
+  root.dataset.timeBasisPoints = String(ordered.length);
   const points: LineData[] = ordered.map((time) => ({ time: time as UTCTimestamp, value: 0 }));
   const options = {
     color: "rgba(0,0,0,0)",
