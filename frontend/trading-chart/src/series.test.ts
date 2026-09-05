@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   appendOnly,
   compactDisplayEvents,
@@ -11,6 +11,22 @@ import {
 import type { DisplayEvent } from "./series";
 
 describe("timeline helpers", () => {
+  it("reuses native formatters without mixing time zones or scale levels", () => {
+    const original = Intl.DateTimeFormat;
+    const spy = vi.spyOn(Intl, "DateTimeFormat");
+    try {
+      const epoch = Date.UTC(2026, 10, 1, 6, 30) / 1000;
+      for (let i = 0; i < 100; i++) formatAxisTime(epoch + i * 60, 3, "Pacific/Honolulu", "fr-CA");
+      expect(spy).toHaveBeenCalledTimes(1);
+      const expected = new original("fr-CA", { timeZone: "Pacific/Honolulu", hour: "2-digit", minute: "2-digit", hour12: false });
+      expect(formatAxisTime(epoch, 3, "Pacific/Honolulu", "fr-CA")).toBe(expected.format(new Date(epoch * 1000)));
+      formatAxisTime(epoch, 4, "Pacific/Honolulu", "fr-CA");
+      formatAxisTime(epoch, 3, "America/New_York", "fr-CA");
+      expect(spy).toHaveBeenCalledTimes(3);
+    } finally {
+      spy.mockRestore();
+    }
+  });
   it("merges revisions and preserves A to B to A", () => {
     expect(
       mergePoints(
