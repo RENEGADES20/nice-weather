@@ -351,15 +351,18 @@ class WeatherStore:
                         "weather_metadata": item.get("weather_metadata", {}),
                     }
                 )
-                revision = int(
-                    connection.execute(
-                        """
+                revision = (
+                    int(
+                        connection.execute(
+                            """
                         SELECT COUNT(*) FROM weather_observations
                         WHERE station_id=? AND observed_at=? AND source=?
                         """,
-                        (capture.station_id, self._iso(observed_at), capture.source),
-                    ).fetchone()[0]
-                ) + 1
+                            (capture.station_id, self._iso(observed_at), capture.source),
+                        ).fetchone()[0]
+                    )
+                    + 1
+                )
                 previous = connection.execute(
                     """
                     SELECT temperature_f,raw_text,quality_control_json,raw_unit,
@@ -387,9 +390,7 @@ class WeatherStore:
                         item.get("weather_metadata", {})
                     ):
                         changes.append("metadata")
-                    revision_type = (
-                        f"{changes[0]}_change" if len(changes) == 1 else "mixed"
-                    )
+                    revision_type = f"{changes[0]}_change" if len(changes) == 1 else "mixed"
                 connection.execute(
                     """
                     INSERT OR IGNORE INTO weather_observations(
@@ -479,9 +480,7 @@ class WeatherStore:
                             self._iso(capture.received_at),
                             item["temperature_f"],
                             item["valid_at"]
-                            .astimezone(
-                                ZoneInfo(item.get("object_timezone", "America/New_York"))
-                            )
+                            .astimezone(ZoneInfo(item.get("object_timezone", "America/New_York")))
                             .date()
                             .isoformat(),
                             item.get("object_timezone", "America/New_York"),
@@ -553,8 +552,12 @@ class WeatherStore:
                         evidence.evidence_id,
                         evidence.capture_id,
                         evidence.station_id,
-                        observed_at.astimezone(ZoneInfo(evidence.object_timezone)).date().isoformat(),
-                        observed_at.astimezone(ZoneInfo(evidence.object_timezone)).date().isoformat(),
+                        observed_at.astimezone(ZoneInfo(evidence.object_timezone))
+                        .date()
+                        .isoformat(),
+                        observed_at.astimezone(ZoneInfo(evidence.object_timezone))
+                        .date()
+                        .isoformat(),
                         evidence.object_timezone,
                         self._iso(observed_at),
                         self._iso(evidence.received_at),
@@ -601,8 +604,8 @@ class WeatherStore:
                       tick_id,event_id,condition_id,market_id,bin_id,token_id,label,
                       exchange_event_at,received_at,object_timezone,object_local_date,
                       best_bid,best_ask,bid_size,ask_size,mid,last_trade_price,
-                      source,status,event_hash
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      source,status,event_hash,event_kind
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         tick.tick_id,
@@ -625,6 +628,7 @@ class WeatherStore:
                         tick.source,
                         tick.status,
                         tick.event_hash,
+                        tick.event_kind,
                     ),
                 ).rowcount
             )
@@ -1239,9 +1243,7 @@ class WeatherStore:
                     self._iso(estimate.generated_at),
                     estimate.mean_tmax_f,
                     estimate.probability_sum,
-                    self.dumps(
-                        {item.bin_id: item.probability for item in estimate.probabilities}
-                    ),
+                    self.dumps({item.bin_id: item.probability for item in estimate.probabilities}),
                     "ok" if abs(estimate.probability_sum - 1.0) <= 1e-6 else "blocked",
                     None,
                 ),
@@ -1320,13 +1322,45 @@ class WeatherStore:
         return (selected[-1].temperature_f - selected[0].temperature_f) / hours
 
     @staticmethod
-    def _latest_weather_metadata(
-        observations: tuple[Any, ...], source: str
-    ) -> dict[str, Any]:
+    def _latest_weather_metadata(observations: tuple[Any, ...], source: str) -> dict[str, Any]:
         selected = [item for item in observations if item.source == source]
         if not selected:
             return {}
         return max(selected, key=lambda item: item.observed_at).metadata
+
+    def save_discovered_contract(self, contract: MarketContract, snapshot: RawSnapshot) -> None:
+        with self.transaction() as connection:
+            connection.execute(
+                "INSERT OR IGNORE INTO raw_snapshots "
+                "(snapshot_id,source,kind,received_at,source_version,content_hash,payload_json) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (
+                    snapshot.snapshot_id,
+                    snapshot.source,
+                    snapshot.kind,
+                    self._iso(snapshot.received_at),
+                    snapshot.source_version,
+                    snapshot.hash,
+                    self.dumps({"capture_id": snapshot.snapshot_id}),
+                ),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO market_captures "
+                "(capture_id,source,kind,event_id,requested_at,received_at,"
+                "content_hash,payload_json) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    snapshot.snapshot_id,
+                    snapshot.source,
+                    snapshot.kind,
+                    contract.event_id,
+                    self._iso(snapshot.requested_at or snapshot.received_at),
+                    self._iso(snapshot.received_at),
+                    snapshot.hash,
+                    self.dumps(snapshot.payload),
+                ),
+            )
+            self._save_contract(connection, contract, snapshot.snapshot_id, snapshot.received_at)
 
     def _save_contract(
         self,
@@ -1448,7 +1482,8 @@ class WeatherStore:
                         connection.execute(
                             "SELECT quote_id FROM execution_quotes WHERE snapshot_id=?",
                             (fill.book_snapshot_id,),
-                        ).fetchone() or [None]
+                        ).fetchone()
+                        or [None]
                     )[0],
                 ),
             )

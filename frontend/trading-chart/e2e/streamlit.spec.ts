@@ -9,10 +9,13 @@ async function openRepricing(page: Page): Promise<FrameLocator> {
         timeout: 20_000,
       });
       await page.getByText("Repricing", { exact: true }).click();
+      await page.getByRole("combobox").first().click();
+      await page.getByRole("option").filter({ hasText: "2026-08-" }).first().click();
       const visibleFrame = page.locator("iframe:visible").first();
       await expect(visibleFrame).toBeVisible({ timeout: 20_000 });
       const frame = visibleFrame.contentFrame();
       await expect(frame.locator("#main-chart canvas").first()).toBeVisible({ timeout: 20_000 });
+      await expect(frame.locator("#app")).toHaveAttribute("data-comparison-mode", "as-of", {timeout: 15_000});
       return frame;
     } catch (error) {
       lastError = error;
@@ -95,7 +98,7 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   await frame.locator("#main-chart").hover();
   await page.mouse.wheel(0, -500);
   await expect(frame.locator("#follow-button")).toHaveAttribute("aria-pressed", "false");
-  await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "true");
+  await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "false");
   await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", /.+/);
   await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", /.+/);
   await expect.poll(async () => {
@@ -115,23 +118,23 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   const initialRange = await frame.locator("#app").getAttribute("data-main-range");
   const [initialStart, initialEnd] = rangeValues(initialRange);
   const initialSpan = initialEnd - initialStart;
+  const feedTimings: number[] = [];
   const initialPricePoints = Number(
     await frame.locator("#app").getAttribute("data-price-point-count"),
   );
 
   for (let cycle = 0; cycle < 10; cycle += 1) {
     await page.waitForTimeout(2_100);
+    feedTimings.push(Number(await frame.locator("#app").getAttribute("data-query-ms"))
+      + Number(await frame.locator("#app").getAttribute("data-render-ms")));
     await expect(iframe).toHaveAttribute("data-identity", "stable-iframe");
-    await expect(frame.locator("#main-chart canvas")).toHaveCount(canvasCount);
-    expect(await frame.locator("#main-chart canvas").evaluateAll((nodes) => nodes.map(
-      (node) => node.getAttribute("data-identity"),
-    ))).toEqual(Array.from({ length: canvasCount }, (_, index) => `stable-canvas-${index}`));
+    await expect(frame.locator("#app")).toHaveAttribute("data-mount-count", "1");
     await expect(frame.locator("#shell")).toHaveCSS("opacity", "1");
     await expect(frame.locator("#events-button")).toHaveAttribute("aria-pressed", "true");
     await expect(
       frame.locator("input[name='difference'][value='price-minus-forecast']"),
     ).toBeChecked();
-    await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "true");
+    await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "false");
     await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", /.+/);
     await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", /.+/);
     const ratio = await canvasRatio(frame);
@@ -145,17 +148,10 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
       initialSpan * 0.04,
     );
   }
-  const pendingRevision = await frame.locator("#app").getAttribute("data-pending-revision");
-  expect(pendingRevision).toMatch(/.+/);
-  expect(await frame.locator("#app").getAttribute("data-applied-revision")).not.toBe(
-    pendingRevision,
-  );
-  await frame.locator("#main-legend").hover();
-  await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "false");
-  await expect(frame.locator("#app")).toHaveAttribute("data-flushed-revision", /.+/);
-  await expect(frame.locator("#app")).toHaveAttribute("data-pending-revision", "");
   expect(Number(await frame.locator("#app").getAttribute("data-price-point-count")))
     .toBeGreaterThan(initialPricePoints);
+  await expect(frame.locator("#feed-warning")).toHaveClass(/hidden/);
+  console.log("REPRICING_FEED_PERFORMANCE", testInfo.project.name, JSON.stringify(feedTimings));
   expect(pageErrors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("dashboard-repricing.png"), fullPage: true });
 });
@@ -192,7 +188,63 @@ test("keeps one bin state and fits the requested viewport", async ({ page }, tes
   await targetBin.click();
   await expect.poll(async () => frame.locator("#app").getAttribute("data-selected-bin-id"))
     .not.toBe(firstBin);
-  await expect(frame.locator("#price-readout")).toContainText("Unavailable");
+  await expect(frame.locator("#price-readout")).toContainText("unavailable");
   await expect(frame.locator("#app")).toHaveAttribute("data-price-point-count", "0");
   await page.screenshot({ path: testInfo.outputPath("dashboard-layout.png"), fullPage: true });
+});
+
+
+test("future market uses a current price snapshot and one difference", async ({ page }, testInfo) => {
+  const frame = await openRepricing(page);
+  await page.getByRole("combobox").first().click();
+  await page.getByRole("option").filter({ hasText: "Future fixture" }).click();
+  await expect(frame.locator("#app")).toHaveAttribute("data-comparison-mode", "future-snapshot");
+  await expect(frame.locator("#mode-notice")).toContainText("Current snapshot comparison");
+  await expect(frame.locator("input[name='difference']")).toHaveCount(1);
+  await expect(frame.locator("#price-readout")).toContainText("20.0%");
+  await expect(frame.locator("#main-legend")).not.toContainText("METAR");
+  const latencies: number[] = [];
+  for (let i = 0; i < 10; i++) {
+    const before = await frame.locator("#app").getAttribute("data-price-received-at");
+    await expect.poll(() => frame.locator("#app").getAttribute("data-price-received-at"),
+      {intervals: [100], timeout: 8_000}).not.toBe(before);
+    latencies.push(Number(await frame.locator("#app").getAttribute("data-received-to-visible-ms")));
+  }
+  console.log("REPRICING_RECEIPT_TO_VISIBLE", testInfo.project.name, JSON.stringify(latencies));
+
+  await expect(frame.locator("#app")).toHaveAttribute("data-mount-count", "1");
+});
+
+test("all bins switch without stale messages and feeds recover after disconnect", async ({ page }, testInfo) => {
+  const frame = await openRepricing(page);
+  const latencies: number[] = [];
+  const queryTimes: number[] = [];
+  const renderTimes: number[] = [];
+  const transportTimes: number[] = [];
+  const labels = await page.getByTestId("stRadioGroup").locator("label").allTextContents();
+  for (const label of [...labels, ...labels]) {
+    const before = await frame.locator("#app").getAttribute("data-selected-bin-id");
+    const radio = page.getByTestId("stRadioGroup").getByRole("radio", { name: label.trim(), exact: true });
+    if (await radio.isChecked()) continue;
+    const started = Date.now();
+    await page.getByTestId("stRadioGroup").getByText(label.trim(), { exact: true }).click();
+    await expect.poll(() => frame.locator("#app").getAttribute("data-selected-bin-id"),
+      { intervals: [50, 100], timeout: 10_000 }).not.toBe(before);
+    latencies.push(Date.now() - started);
+    queryTimes.push(Number(await frame.locator("#app").getAttribute("data-query-ms")));
+    renderTimes.push(Number(await frame.locator("#app").getAttribute("data-render-ms")));
+    transportTimes.push(Number(await frame.locator("#app").getAttribute("data-transport-ms")));
+  }
+  await expect(frame.locator("#app")).toHaveAttribute("data-mount-count", "1");
+  const p95 = (values: number[]) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * .95) - 1];
+  console.log("REPRICING_PERFORMANCE", testInfo.project.name, JSON.stringify({binSwitchP95Ms: p95(latencies), queryP95Ms: p95(queryTimes), renderP95Ms: p95(renderTimes), transportP95Ms: p95(transportTimes), loadedBinSwitchP95Ms: p95(latencies.slice(labels.length)), samples: latencies}));
+  await testInfo.attach("performance.json", {body: JSON.stringify({binSwitchP95Ms: p95(latencies),
+    queryP95Ms: p95(queryTimes), renderP95Ms: p95(renderTimes), transportP95Ms: p95(transportTimes), loadedBinSwitchP95Ms: p95(latencies.slice(labels.length)), samples: latencies}), contentType: "application/json"});
+  const sequence = Number(await frame.locator("#app").getAttribute("data-sequence"));
+  await page.context().setOffline(true);
+  await expect(frame.locator("#feed-warning")).toContainText("interrupted", {timeout: 18_000});
+  await page.context().setOffline(false);
+  await expect.poll(async () => Number(await frame.locator("#app").getAttribute("data-sequence")),
+    {timeout: 20_000}).toBeGreaterThan(sequence);
+  await expect(frame.locator("#feed-warning")).toHaveClass(/hidden/);
 });

@@ -27,9 +27,7 @@ class MarketDataRequestError(RuntimeError):
             "elapsed_ms": elapsed_ms,
             "cause_type": type(cause).__name__,
         }
-        super().__init__(
-            f"{stage} failed after {attempts} attempt(s) in {elapsed_ms} ms: {cause}"
-        )
+        super().__init__(f"{stage} failed after {attempts} attempt(s) in {elapsed_ms} ms: {cause}")
 
 
 class PolymarketReadOnlyAdapter:
@@ -42,9 +40,7 @@ class PolymarketReadOnlyAdapter:
         self.client = httpx.Client(timeout=timeout, follow_redirects=True)
         self.retries = retries
 
-    def _get(
-        self, url: str, *, stage: str, params: dict[str, Any] | None = None
-    ) -> httpx.Response:
+    def _get(self, url: str, *, stage: str, params: dict[str, Any] | None = None) -> httpx.Response:
         started = time.monotonic()
         for attempt in range(1, self.retries + 1):
             try:
@@ -107,7 +103,7 @@ class PolymarketReadOnlyAdapter:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def discover(self, config: CityConfig, decision_time: datetime) -> RawSnapshot:
+    def _active_events(self) -> tuple[list[dict[str, Any]], httpx.Response]:
         query = "highest temperature in New York"
         search_url = f"{self.gamma_url}/public-search"
         response = self._get(
@@ -125,6 +121,10 @@ class PolymarketReadOnlyAdapter:
             and "nyc" in str(event.get("title", "")).lower()
             and "klga" in str(event.get("description", "")).lower()
         ]
+        return candidates, response
+
+    def discover(self, config: CityConfig, decision_time: datetime) -> RawSnapshot:
+        candidates, response = self._active_events()
         local_day = decision_time.astimezone(config.zone).date().isoformat()
         candidates = [event for event in candidates if str(event.get("eventDate", "")) >= local_day]
         if not candidates:
@@ -161,9 +161,7 @@ class PolymarketReadOnlyAdapter:
         payload_hash = content_hash(event_payload)
         received_at = utc_now()
         return RawSnapshot(
-            snapshot_id=stable_id(
-                "snapshot", "polymarket_gamma", "event", payload_hash
-            ),
+            snapshot_id=stable_id("snapshot", "polymarket_gamma", "event", payload_hash),
             source="polymarket_gamma",
             kind="event",
             received_at=received_at,
@@ -173,6 +171,34 @@ class PolymarketReadOnlyAdapter:
             http_status=response.status_code,
             requested_at=decision_time,
         )
+
+    def discover_all(self, config: CityConfig, decision_time: datetime) -> list[RawSnapshot]:
+        local_day = decision_time.astimezone(config.zone).date().isoformat()
+        result = []
+        for event in self._active_events()[0]:
+            if str(event.get("eventDate", "")) < local_day:
+                continue
+            detail = self._get(
+                f"{self.gamma_url}/events",
+                stage="gamma_event_detail",
+                params={"slug": event["slug"]},
+            )
+            payload = {"events": detail.json()}
+            digest = content_hash(payload)
+            result.append(
+                RawSnapshot(
+                    snapshot_id=stable_id("snapshot", "polymarket_gamma", "event", digest),
+                    source="polymarket_gamma",
+                    kind="event",
+                    received_at=utc_now(),
+                    source_version=digest,
+                    payload=payload,
+                    request_url=str(detail.request.url),
+                    http_status=detail.status_code,
+                    requested_at=decision_time,
+                )
+            )
+        return result
 
     def fetch_books(self, token_ids: list[str], decision_time: datetime) -> list[RawSnapshot]:
         snapshots: list[RawSnapshot] = []

@@ -134,7 +134,7 @@ def test_capture_dedup_and_observation_revisions(tmp_path) -> None:
             "SELECT revision FROM weather_observations ORDER BY revision"
         ).fetchall()
         assert [item[0] for item in revisions] == [1, 2]
-        assert store.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 6
+        assert store.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
         assert store.table_counts()["raw_snapshots"] == 0
         stored = store.connection.execute(
             "SELECT capture_id,legacy_snapshot_id FROM weather_observations LIMIT 1"

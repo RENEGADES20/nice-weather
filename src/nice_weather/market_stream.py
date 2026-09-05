@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -15,6 +17,8 @@ from nice_weather.contract import parse_gamma_contract
 from nice_weather.domain import MarketTopTick, content_hash, stable_id, utc_now
 from nice_weather.store import WeatherStore
 
+logger = logging.getLogger(__name__)
+
 WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
 
@@ -22,7 +26,8 @@ def _number(value: Any) -> float | None:
     if value in (None, ""):
         return None
     try:
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) else None
     except (TypeError, ValueError):
         return None
 
@@ -65,7 +70,8 @@ class MarketStreamCollector:
         self.database_path = database_path
         self.adapter_factory = adapter_factory
         self.websocket_url = websocket_url
-        self.state: dict[str, dict[str, float | None]] = {}
+        self.state: dict[tuple[str, str], dict[str, float | None]] = {}
+        self._initialized = False
 
     def _save(
         self,
@@ -77,9 +83,10 @@ class MarketStreamCollector:
         status: str,
         changes: dict[str, float | None],
         raw_event: Any,
+        event_kind: str = "quote",
     ) -> bool:
         state = self.state.setdefault(
-            metadata.token_id,
+            (source, metadata.token_id),
             {
                 "best_bid": None,
                 "best_ask": None,
@@ -89,8 +96,21 @@ class MarketStreamCollector:
             },
         )
         before = tuple(state.values())
+        changes = dict(changes)
+        if event_kind != "trade":
+            changes["last_trade_price"] = None
+        else:
+            changes.update(best_bid=None, best_ask=None, bid_size=None, ask_size=None)
+        if status == "disconnect":
+            changes.update(best_bid=None, best_ask=None, bid_size=None, ask_size=None)
+        if event_kind == "trade":
+            state = dict(state)
         state.update(changes)
-        if tuple(state.values()) == before and status == "available":
+        if (
+            tuple(state.values()) == before
+            and status == "available"
+            and event_kind not in {"trade", "gamma", "snapshot"}
+        ):
             return False
         best_bid = state["best_bid"]
         best_ask = state["best_ask"]
@@ -101,10 +121,19 @@ class MarketStreamCollector:
                 mid = (best_bid + best_ask) / 2
             else:
                 normalized_status = "crossed"
-        event_hash = content_hash(raw_event)
+        event_hash = content_hash(
+            {"event": raw_event, "received_at": received_at.isoformat()}
+            if event_kind in {"snapshot", "gamma"}
+            else raw_event
+        )
         tick = MarketTopTick(
             tick_id=stable_id(
-                "market_tick", source, metadata.token_id, exchange_event_at, event_hash
+                "market_tick",
+                source,
+                metadata.token_id,
+                exchange_event_at,
+                event_hash,
+                received_at if event_kind in {"snapshot", "gamma"} else "",
             ),
             event_id=metadata.event_id,
             condition_id=metadata.condition_id,
@@ -125,56 +154,71 @@ class MarketStreamCollector:
             source=source,
             status=normalized_status,
             event_hash=event_hash,
+            event_kind=event_kind,
         )
         with WeatherStore(self.database_path) as store:
-            store.init_schema()
+            if not self._initialized:
+                store.init_schema()
+                self._initialized = True
             return store.save_market_top_tick(tick)
 
     def discover(self) -> tuple[dict[str, TokenMetadata], dict[str, Any]]:
         now = utc_now()
         with self.adapter_factory() as adapter:
-            snapshot = adapter.discover(self.config, now)
-        contract = parse_gamma_contract(snapshot.payload, self.config)
-        metadata = {
-            item.yes_token_id: TokenMetadata(
-                event_id=contract.event_id,
-                condition_id=item.condition_id,
-                market_id=item.market_id,
-                bin_id=item.bin_id,
-                token_id=item.yes_token_id,
-                label=item.label,
-            )
-            for item in contract.bins
-        }
-        event = snapshot.payload["events"][0]
-        markets = {str(item.get("id")): item for item in event.get("markets", [])}
-        for item in contract.bins:
-            market = markets.get(item.market_id, {})
-            bid = _number(market.get("bestBid"))
-            ask = _number(market.get("bestAsk"))
-            self._save(
-                metadata[item.yes_token_id],
-                exchange_event_at=_event_time(market.get("updatedAt"), snapshot.received_at),
-                received_at=snapshot.received_at,
-                source="gamma_fallback",
-                status="available" if bid is not None or ask is not None else "missing",
-                changes={
-                    "best_bid": bid,
-                    "best_ask": ask,
-                    "last_trade_price": _number(market.get("lastTradePrice")),
-                },
-                raw_event={
-                    "bestBid": market.get("bestBid"),
-                    "bestAsk": market.get("bestAsk"),
-                    "lastTradePrice": market.get("lastTradePrice"),
-                    "updatedAt": market.get("updatedAt"),
-                },
-            )
+            snapshots = adapter.discover_all(self.config, now)
+        metadata: dict[str, TokenMetadata] = {}
+        for snapshot in snapshots:
+            contract = parse_gamma_contract(snapshot.payload, self.config)
+            if contract.parse_status != "parsed":
+                logger.warning("market_discovery_ambiguous event=%s", contract.event_id)
+                continue
+            with WeatherStore(self.database_path) as store:
+                if not self._initialized:
+                    store.init_schema()
+                    self._initialized = True
+                store.save_discovered_contract(contract, snapshot)
+            discovered = {
+                item.yes_token_id: TokenMetadata(
+                    event_id=contract.event_id,
+                    condition_id=item.condition_id,
+                    market_id=item.market_id,
+                    bin_id=item.bin_id,
+                    token_id=item.yes_token_id,
+                    label=item.label,
+                )
+                for item in contract.bins
+            }
+            event = snapshot.payload["events"][0]
+            markets = {str(item.get("id")): item for item in event.get("markets", [])}
+            for item in contract.bins:
+                market = markets.get(item.market_id, {})
+                bid = _number(market.get("bestBid"))
+                ask = _number(market.get("bestAsk"))
+                self._save(
+                    discovered[item.yes_token_id],
+                    exchange_event_at=_event_time(market.get("updatedAt"), snapshot.received_at),
+                    received_at=snapshot.received_at,
+                    source="gamma_fallback",
+                    event_kind="gamma",
+                    status="available" if bid is not None or ask is not None else "missing",
+                    changes={
+                        "best_bid": bid,
+                        "best_ask": ask,
+                        "last_trade_price": _number(market.get("lastTradePrice")),
+                    },
+                    raw_event={
+                        "bestBid": market.get("bestBid"),
+                        "bestAsk": market.get("bestAsk"),
+                        "lastTradePrice": market.get("lastTradePrice"),
+                        "updatedAt": market.get("updatedAt"),
+                    },
+                )
+            metadata.update(discovered)
         try:
             with self.adapter_factory() as adapter:
-                snapshots = adapter.fetch_books_batch_payload(list(metadata))
+                books = adapter.fetch_books_batch_payload(list(metadata))
             snapshot_time = utc_now()
-            for book in snapshots:
+            for book in books:
                 token_id = str(book.get("asset_id") or book.get("token_id") or "")
                 target = metadata.get(token_id)
                 if target is None:
@@ -185,16 +229,27 @@ class MarketStreamCollector:
                     received_at=snapshot_time,
                     source="clob_ws",
                     status="reconnect_snapshot",
+                    event_kind="snapshot",
                     changes=self._book_changes(book),
                     raw_event={"reconnect_snapshot": book},
                 )
         except (OSError, RuntimeError, ValueError):
-            pass
-        return metadata, snapshot.payload
+            logger.exception("market_snapshot_recovery_failed")
+        return metadata, {
+            "events": [event for snap in snapshots for event in snap.payload["events"]]
+        }
 
     def _book_changes(self, event: dict[str, Any]) -> dict[str, float | None]:
-        bids = [item for item in event.get("bids", []) if _number(item.get("price")) is not None]
-        asks = [item for item in event.get("asks", []) if _number(item.get("price")) is not None]
+        bids = [
+            item
+            for item in event.get("bids", [])
+            if _number(item.get("price")) is not None and (_number(item.get("size")) or 0) > 0
+        ]
+        asks = [
+            item
+            for item in event.get("asks", [])
+            if _number(item.get("price")) is not None and (_number(item.get("size")) or 0) > 0
+        ]
         best_bid = max(bids, key=lambda item: float(item["price"])) if bids else None
         best_ask = min(asks, key=lambda item: float(item["price"])) if asks else None
         return {
@@ -204,9 +259,7 @@ class MarketStreamCollector:
             "ask_size": _number(best_ask.get("size")) if best_ask else None,
         }
 
-    def process_message(
-        self, message: str | bytes, metadata: dict[str, TokenMetadata]
-    ) -> int:
+    def process_message(self, message: str | bytes, metadata: dict[str, TokenMetadata]) -> int:
         if isinstance(message, bytes):
             message = message.decode("utf-8")
         if not message.strip() or message.strip().upper() == "PONG":
@@ -219,6 +272,8 @@ class MarketStreamCollector:
                 continue
             received_at = utc_now()
             event_type = str(event.get("event_type", ""))
+            if event_type not in {"book", "price_change", "best_bid_ask", "last_trade_price"}:
+                continue
             if event_type == "price_change":
                 changes = event.get("price_changes", [])
             else:
@@ -259,6 +314,9 @@ class MarketStreamCollector:
                         status="available",
                         changes=values,
                         raw_event=event,
+                        event_kind="trade"
+                        if event_type == "last_trade_price"
+                        else ("snapshot" if event_type == "book" else "quote"),
                     )
                 )
         return saved
@@ -297,7 +355,7 @@ class MarketStreamCollector:
                             next_ping = time.monotonic() + 10
                         if message is not None:
                             self.process_message(message, metadata)
-            except (ConnectionClosed, OSError, ValueError, json.JSONDecodeError) as exc:
+            except (ConnectionClosed, OSError, RuntimeError, ValueError) as exc:
                 disconnected_at = utc_now()
                 for target in metadata.values():
                     self._save(
@@ -306,6 +364,7 @@ class MarketStreamCollector:
                         received_at=disconnected_at,
                         source="clob_ws",
                         status="disconnect",
+                        event_kind="disconnect",
                         changes={},
                         raw_event={"disconnect": type(exc).__name__},
                     )

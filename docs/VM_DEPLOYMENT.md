@@ -1,6 +1,6 @@
 # Ubuntu VM 部署与自动验收
 
-本文以 schema v6 统一部署为 canonical 流程。后续旧 `weather.sqlite3` 双目录命令仅用于回滚参考。
+本文以 schema v7 统一部署为 canonical 流程。后续旧 `weather.sqlite3` 双目录命令仅用于回滚参考。
 
 ## 0. 统一部署摘要
 
@@ -22,6 +22,7 @@ NICE_WEATHER_GIT_SHA=<merged-main-sha>
 ```bash
 sudo systemctl stop nice-weather-r2-sync.timer
 sudo systemctl stop nice-weather-runner.service
+sudo systemctl stop nice-weather-market-stream.service
 sudo systemctl stop nice-weather-collector.service
 sudo systemctl stop nice-weather-r2-sync.service
 sudo systemctl stop nice-weather-dashboard.service
@@ -36,7 +37,7 @@ sudo -u nice-weather /opt/nice-weather/.venv/bin/nice-weather db verify \
   --db /var/lib/nice-weather/nice-weather.sqlite3
 ```
 
-验证结果必须为 schema version 6、`integrity_check=ok` 且无 foreign key error。旧天气原文不在
+验证结果必须为 schema version 7、`integrity_check=ok` 且无 foreign key error。旧天气原文不在
 本次迁移中删除，迁移后的空闲页交给 SQLite 后续写入复用。
 
 确认无 writer 后，备份并迁移：
@@ -63,6 +64,14 @@ sudo systemctl enable --now nice-weather-runner.service
 部署先运行 `repair-settlement-dates --dry-run`，备份验证后执行 `--apply`。至少观察 16 分钟并检查 `version --json`、五个 unit、collector status、R2 ledger、Dashboard health、CLOB tick 和 SHADOW 决策。随后由部署观察服务持续检查 24 小时；关键日期、数据库完整性、服务或锁异常触发恢复上一精确 SHA 与数据库备份。禁止把 Runner 改为任何实盘模式。
 
 旧库处置分两次人工检查：先逐一确认并移动 `/var/lib/nice-weather/live.sqlite3`、`live.sqlite3-wal`、`live.sqlite3-shm` 到固定隔离目录；24 小时后再次列出精确绝对路径并请求删除批准。不得使用 glob 或递归删除。
+
+## Repricing v7 部署补充
+
+1. 记录当前 SHA、服务状态、migration checksums 和 tick 数；核对 v4/v5/v6 校验和与已部署代码一致。校验和不符时停止迁移并调查，禁止直接覆盖记录。
+2. 停止全部 writer，包括 market-stream、collector、runner 和 r2-sync timer/service。通过 SQLite backup API 将统一库复制到带 UTC 时间的独立路径，保留原 SHA 和环境文件副本；不删除历史备份。
+3. 在备份的工作副本上执行 v7 migrate/verify，确认 `event_kind` 可空、旧 tick 数量不变、`integrity_check=ok`、无 foreign key error，再更新线上代码和迁移原库。
+4. 恢复服务后检查版本 SHA/schema7、33 tokens 等实际发现数量、CLOB/Gamma 各自事件类型、最新接收时间，以及 dashboard/collector/market-stream journal 中的 SQLite/WAL/SHM 访问错误。
+5. 浏览器核对今日和未来市场、全部 bin、数据源状态、差值及断流恢复。旧 tick 来源状态仍未经核验；截图中的每个归零需逐条对照原始 tick，不能批量归因或删除。
 
 ## 1. Cloudflare 与 GitHub 检查
 

@@ -6,6 +6,19 @@
 
 项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，Tmax 重定价研究采集进入 schema v6”的阶段。
 
+## 2026-09-05 Repricing 数据链路修复（本地验收，待线上核验）
+
+- 当前实现升级到 schema v7：`market_top_ticks.event_kind` 可空，新增 event/bin/接收游标索引。Gamma、CLOB 按来源和 token 隔离；trade 只保存真实成交，不刷新旧盘口或旧成交时间。同价新成交保留，重复消息幂等。旧 tick 保留并标为未经核验，旧成交不参与五分钟回退。
+- CLOB midpoint 只保持到最后报价/完整快照接收后十分钟；已知断流即时失效，随后依次尝试五分钟真实成交和十分钟 Gamma。内部概率统一 `[0,1]`；零值保留，缺失形成缺口。
+- Market Stream 动态保存所有符合 NYC/KLGA 规则的开放市场。2026-09-05 官方接口实测发现 09-05/06/07 三个市场、33 个 YES tokens，保存 33 条 CLOB 快照及 33 条 Gamma 状态；Runner 原选择及 SHADOW 不变。
+- Repricing 仅显示所选市场日，以纽约当地午夜计算 23/24/25 小时窗口。当天/历史日主图和六组差值共享一分钟 as-of 输入；未来日只显示最新已知 NWS 逐小时预报、当前价格水平线与 Price×100−Forecast，显式标注当前快照，不生成未来历史价格或回测输入。
+- 控件独立 fragment；天气按版本复用，价格按目标窗口及接收游标增量查询，普通 tick 只重算受影响分钟。跳过完整快照后的重复 feed 计算；无数据变化仍推进年龄与过期状态。
+- full/delta 使用选择签名、递增序号和基线序号；缺序重同步、旧选择丢弃、完整快照替换、撤销点使用 tombstone。查询失败保留相同选择最后成功画面；恢复完整重同步。鼠标悬停继续更新，缩放/拖动只关闭 Follow latest。
+- 两图采用真实时间范围和共同透明时间基底，保持不等间隔价格与分钟差值对齐；ResizeObserver 按实际内容通知 iframe 高度，支持隐藏页签、窄屏和全屏退出。
+- 验证：Python 79 项、TypeScript/Vite 构建、桌面/移动端浏览器 8 项通过。测试涵盖来源污染、零值、成交时间、过期/断流、恢复游标、DST、未来快照和全量/增量一致性；v6→v7 备份迁移回归保留旧 tick。
+- 单会话本地复测：已加载 bin 切换 p95 781ms，查询/计算 42ms，渲染 31ms。双会话同时压测：后台查询/计算+渲染 p95 桌面 457ms、移动端 354ms；接收到可见更新 p95 桌面 2347ms、移动端 2395ms；已加载 bin 切换 1616/2029ms，超过 1 秒目标，仍有并发性能限制。测试数据规模不代表线上长期库。
+- 两份旧本地开发库 v6 migration checksum 与当前提交不一致，复制备份后迁移被正确拒绝；未改写校验和。线上部署需先核对 migration 记录、备份及完整性，不能沿用这些开发库的结果。
+
 ## 2026-09-05 Repricing 固定实时差值与视图稳定性
 
 - Repricing 的 Difference 已从 reference/z-score 模型收敛为六组固定普通减法；基础输入固定为 Forecast、Weather.gov Hourly Temp、METAR 和所选 bin 的 Price，NWS Station Observations 只保留为主图可选线。

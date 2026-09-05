@@ -16,11 +16,14 @@ export type RawPoint = {
   captureId?: string;
   ageSeconds?: number;
   binId?: string;
+  quality?: string;
+  reason?: string;
 };
 
 export type PointSeries = {
   id: string;
   name: string;
+  removedTimes?: number[];
   points: RawPoint[];
   binId?: string;
 };

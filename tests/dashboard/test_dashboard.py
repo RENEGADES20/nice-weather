@@ -174,6 +174,7 @@ def test_price_fallback_prefers_valid_clob_then_recent_trade_then_gamma() -> Non
         mid=0.35,
     )
     trade = _tick(now - timedelta(minutes=4), tick_id="t", trade=0.42)
+    trade["event_kind"] = "trade"
     clob = _tick(now - timedelta(seconds=20), tick_id="c", bid=0.4, ask=0.5, mid=0.45)
     assert _select_price([gamma, trade, clob], now)["source"] == "CLOB mid"
     crossed = _tick(
@@ -202,7 +203,7 @@ def test_price_rejects_future_receipts_and_normalizes_display_values() -> None:
     future["received_at"] = (now + timedelta(seconds=1)).isoformat()
     assert _select_price([future], now) is None
     assert _price_display_value(0.45) == 45
-    assert _price_display_value(45) == 45
+    assert _price_display_value(45) is None
     assert _price_display_value(float("inf")) is None
     assert _price_display_value(101) is None
 

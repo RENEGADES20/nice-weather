@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 
 
 def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -24,9 +24,7 @@ def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
     )
 
 
-def _add_column(
-    connection: sqlite3.Connection, table: str, name: str, definition: str
-) -> None:
+def _add_column(connection: sqlite3.Connection, table: str, name: str, definition: str) -> None:
     if name not in _columns(connection, table):
         connection.execute(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}')
 
@@ -434,10 +432,19 @@ def _migration_v6(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migration_v7(connection: sqlite3.Connection) -> None:
+    _add_column(connection, "market_top_ticks", "event_kind", "TEXT")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_market_ticks_bin_receipt "
+        "ON market_top_ticks(event_id,bin_id,received_at,tick_id)"
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (4, "unified_weather_store", _migration_v4),
     (5, "source_capture_ownership", _migration_v5),
     (6, "object_time_market_ticks", _migration_v6),
+    (7, "market_event_kind", _migration_v7),
 )
 
 
