@@ -43,7 +43,7 @@ test("renders 70000 audit points using exact step vertices", async ({page}) => {
     const price = payload.series.find((item: {id: string}) => item.id === "price");
     price.points = Array.from({length: 70000}, (_, index) => ({
       time: payload.windowStart + index / 10,
-      value: Math.floor(index / 1000) % 2 ? 0.002 : 0.05,
+      value: Math.floor(index / 7) % 2 ? 0.002 : 0.05,
       receivedAt: new Date((payload.windowStart + index / 10) * 1000).toISOString(),
       binId: payload.selectedBinId,
     }));
@@ -51,8 +51,24 @@ test("renders 70000 audit points using exact step vertices", async ({page}) => {
   });
   await expect(frame.locator("#app")).toHaveAttribute("data-signature", "large-history");
   await expect(frame.locator("#app")).toHaveAttribute("data-price-point-count", "70000");
-  expect(Number(await frame.locator("#app").getAttribute("data-time-basis-points"))).toBeLessThan(2000);
+  expect(Number(await frame.locator("#app").getAttribute("data-time-basis-points"))).toBeLessThan(12000);
   expect(Date.now() - started).toBeLessThan(5000);
+  for (const id of ["#main-chart", "#difference-chart"]) {
+    const chart = frame.locator(id);
+    await chart.scrollIntoViewIfNeeded();
+    const box = (await chart.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + 50);
+    await page.mouse.wheel(0, -400);
+    await expect(frame.locator("#follow-button")).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(async () => {
+      const ranges = await frame.locator("#app").evaluate((root) => [
+        root.dataset.mainRange, root.dataset.differenceRange,
+      ]);
+      return ranges[0] === ranges[1];
+    }).toBe(true);
+    await page.waitForTimeout(500);
+    await expect(frame.locator("#app")).toHaveAttribute("data-mount-count", "1");
+  }
 });
 
 async function canvasRatio(frame: FrameLocator): Promise<number> {

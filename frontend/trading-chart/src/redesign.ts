@@ -109,6 +109,7 @@ let markers: ISeriesMarkersPluginApi<Time> | null = null;
 let channel: BroadcastChannel | null = null;
 let channelId = "";
 let rangeSyncReady = false;
+let rangeLeader: "main" | "difference" = "main";
 let mainRangeKey = "";
 let differenceRangeKey = "";
 let syncingCrosshair = false;
@@ -210,7 +211,7 @@ function buildShell(): void {
     if (!range) return;
     mainRangeKey = `${range.from}:${range.to}`;
     root.dataset.mainRange = mainRangeKey;
-    if (!rangeSyncReady || mainRangeKey === differenceRangeKey) return;
+    if (!rangeSyncReady || rangeLeader !== "main" || mainRangeKey === differenceRangeKey) return;
     differenceRangeKey = mainRangeKey;
     differenceChart?.timeScale().setVisibleRange(range);
   });
@@ -218,7 +219,7 @@ function buildShell(): void {
     if (!range) return;
     differenceRangeKey = `${range.from}:${range.to}`;
     root.dataset.differenceRange = differenceRangeKey;
-    if (!rangeSyncReady || differenceRangeKey === mainRangeKey) return;
+    if (!rangeSyncReady || rangeLeader !== "difference" || differenceRangeKey === mainRangeKey) return;
     mainRangeKey = differenceRangeKey;
     mainChart?.timeScale().setVisibleRange(range);
   });
@@ -247,12 +248,16 @@ function buildShell(): void {
   });
   for (const selector of ["#main-chart", "#difference-chart"]) {
     const target = document.querySelector(selector);
-    const stopFollowing = () => setFollowing(false);
-    target?.addEventListener("pointerdown", stopFollowing);
-    target?.addEventListener("wheel", stopFollowing, { passive: true });
-    target?.addEventListener("touchstart", stopFollowing, { passive: true });
+    const stopFollowing = () => {
+      rangeLeader = selector === "#main-chart" ? "main" : "difference";
+      setFollowing(false);
+    };
+    target?.addEventListener("pointerdown", stopFollowing, { capture: true });
+    target?.addEventListener("wheel", stopFollowing, { passive: true, capture: true });
+    target?.addEventListener("touchstart", stopFollowing, { passive: true, capture: true });
   }
   document.querySelector("#reset-button")?.addEventListener("click", () => {
+    rangeLeader = "main";
     setFollowing(false);
     mainChart?.timeScale().fitContent();
   });
@@ -284,6 +289,7 @@ function showFeedError(message: string): void {
 
 function followLatest(): void {
   if (!mainChart || !payload || payload.comparisonMode === "future-snapshot") return;
+  rangeLeader = "main";
   const range = mainChart.timeScale().getVisibleRange();
   if (!range) return;
   const end = Math.min(payload.windowEnd, payload.latestActualTime ?? payload.windowEnd);
@@ -873,6 +879,7 @@ function applyPayload(next: Payload): void {
   const previousRange = mainChart?.timeScale().getVisibleRange();
   payload = { ...payload, ...next, mode: next.mode, series: next.series };
   if (next.mode === "full") {
+    rangeLeader = "main";
     resyncPending = false;
     const validDifferenceIds = new Set(next.differenceSpecs.map((spec) => spec.id));
     selectedDifferenceIds = differenceSelectionInitialized && previousMode === next.comparisonMode
