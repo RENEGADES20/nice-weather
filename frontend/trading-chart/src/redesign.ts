@@ -352,20 +352,21 @@ function removeSegment(id: string, key: number): void {
 }
 
 function reconcileSeriesFull(spec: SeriesSpec): void {
-  for (const key of [...(segmentApis.get(spec.id)?.keys() || [])]) removeSegment(spec.id, key);
-  const apis = new Map<number, ISeriesApi<"Line">>();
+  const apis = segmentApis.get(spec.id) || new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
   const normalized = mergeRawPoints([], spec.points);
   for (const rawSegment of nonNullSegments(normalized)) {
     const segment = spec.fill === "forecast" ? rawSegment : stepVertices(rawSegment);
     const key = segment[0].time;
-    const api = mainChart!.addSeries(
+    const api = apis.get(key) || mainChart!.addSeries(
       LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
     );
+    api.applyOptions(seriesOptions(spec));
     api.setData(segment.map(valuedLineData));
     apis.set(key, api);
     times.set(key, segment.map((point) => point.time));
   }
+  for (const key of [...apis.keys()]) if (!times.has(key)) removeSegment(spec.id, key);
   segmentApis.set(spec.id, apis);
   segmentTimes.set(spec.id, times);
   const representative = apis.values().next().value;
@@ -463,18 +464,17 @@ function differenceRawPoints(points: DifferencePoint[]): RawPoint[] {
 }
 
 function reconcileDifferenceFull(spec: DifferenceSpec, points: DifferencePoint[]): void {
-  for (const key of [...(differenceSegmentApis.get(spec.id)?.keys() || [])]) {
-    removeDifferenceSegment(spec.id, key);
-  }
-  const apis = new Map<number, ISeriesApi<"Line">>();
+  const apis = differenceSegmentApis.get(spec.id) || new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
   for (const segment of nonNullSegments(differenceRawPoints(points))) {
     const key = segment[0].time;
-    const api = differenceChart!.addSeries(LineSeries, differenceOptions(spec));
+    const api = apis.get(key) || differenceChart!.addSeries(LineSeries, differenceOptions(spec));
+    api.applyOptions(differenceOptions(spec));
     api.setData(segment.map(valuedLineData));
     apis.set(key, api);
     times.set(key, segment.map((point) => point.time));
   }
+  for (const key of [...apis.keys()]) if (!times.has(key)) removeDifferenceSegment(spec.id, key);
   differenceSegmentApis.set(spec.id, apis);
   differenceSegmentTimes.set(spec.id, times);
   const representative = apis.values().next().value;

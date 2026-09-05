@@ -212,6 +212,28 @@ def test_incremental_inputs_equal_full_reconstruction(monkeypatch):
     )
     assert incremental == full
     assert len(weather_reads) == 1
+    rows.append(
+        tick(
+            start + timedelta(minutes=4, seconds=10),
+            "future-clock",
+            exchange_event_at=(start + timedelta(minutes=5, seconds=20)).isoformat(),
+            mid=0.2,
+            best_bid=0.19,
+            best_ask=0.21,
+        )
+    )
+    series, _, _, _, _ = read()
+    assert next(item for item in series if item["id"] == "price")["currentPrice"]["value"] == 0.1
+    clock[0] += timedelta(minutes=2)
+    series, incremental, _, _, _ = read()
+    assert next(item for item in series if item["id"] == "price")["currentPrice"]["value"] == 0.2
+    assert (
+        dashboard.st.session_state["_repricing_meta"]["latestActualTime"]
+        == (start + timedelta(minutes=5, seconds=20)).timestamp()
+    )
+    assert incremental == dashboard._repricing_difference_inputs(
+        history, rows, start, end, clock[0], "bin", 5400, 21600
+    )
     clock[0] += timedelta(minutes=11)
     _, expired, _, _, _ = read()
     assert expired[-1]["points"][-1]["value"] is None
