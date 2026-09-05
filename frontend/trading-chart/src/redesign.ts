@@ -806,7 +806,7 @@ function flushPendingDelta(): void {
 }
 
 function validPoint(point: RawPoint): boolean {
-  return Number.isInteger(point.time)
+  return Number.isFinite(point.time)
     && point.time >= 0
     && (point.value === null || Number.isFinite(point.value));
 }

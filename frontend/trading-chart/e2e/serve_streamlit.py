@@ -126,7 +126,7 @@ def prepare() -> tuple[dict[str, object], datetime]:
 def write_ticks(metadata: dict[str, object], start: datetime) -> None:
     index = 0
     while True:
-        exchange_time = start + timedelta(minutes=index * 10)
+        exchange_time = start + timedelta(minutes=index * 10, milliseconds=250)
         mid = 0.20 + (index % 12) * 0.025
         tick = MarketTopTick(
             tick_id=stable_id("playwright-tick", index),
