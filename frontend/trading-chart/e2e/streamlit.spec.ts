@@ -68,6 +68,9 @@ test("renders 70000 audit points using exact step vertices", async ({page}) => {
     }).toBe(true);
     await page.waitForTimeout(500);
     await expect(frame.locator("#app")).toHaveAttribute("data-mount-count", "1");
+    await frame.locator("#events-button").hover();
+    await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", "");
+    await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", "");
   }
 });
 

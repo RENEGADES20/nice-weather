@@ -751,11 +751,17 @@ function renderMarkers(): void {
 
 function syncCrosshair(time: Time | undefined, fromMain: boolean): void {
   const target = fromMain ? differenceChart : mainChart;
-  if (!target || time == null) {
-    target?.clearCrosshairPosition();
+  if (!target) return;
+  syncingCrosshair = true;
+  if (time == null) {
+    try {
+      target.clearCrosshairPosition();
+      root.dataset[fromMain ? "differenceCrosshair" : "mainCrosshair"] = "";
+    } finally {
+      syncingCrosshair = false;
+    }
     return;
   }
-  syncingCrosshair = true;
   const basis = fromMain ? differenceTimeBasis : mainTimeBasis;
   if (fromMain) {
     root.dataset.differenceCrosshair = String(time);
