@@ -8,6 +8,10 @@
 
 ## 2026-09-05 Repricing 部署及生产规模补修
 
+- PR #31 五项 CI 通过后合并，`62a621b626e3111bbf801f561912d05542bbd90a` 于 23:16:18 UTC 部署。备份 `/var/lib/nice-weather/backups/repricing-performance-20260905T230204Z/pre-performance-consistent.sqlite3` 经内存副本 full integrity/FK 校验通过，包含 536425 条 tick、schema 7；同目录首次中止的 `pre-performance.sqlite3` 不完整，禁止作为恢复输入。四个主服务及 R2 timer 恢复，进程版本一致，519080 条旧事件类型为空的 tick 保留，部署后首轮 journal 无数据库访问异常。
+- 生产真实库浏览器通过两轮全部 bins、十次后台刷新、页签切换、390px 高度检查和断网恢复，mount 始终为 1。该 VM 同时运行 headless 浏览器，冷启动 47.1 秒；已加载 bin 切换 2.265–8.252 秒，未达到 p95 ≤1 秒目标。后台多数更新低于 500ms，但存在超过目标的尾部延迟；不得用本地 fixture 成绩替代生产结果。两个未来日的早期脚本只等待模式变化，不能单独证明第二个日期已完成切换，后续按日期对应的选择签名验收。
+- 真实库进一步发现 NWS valid_at 与 Weather.gov observed_at 保留本地偏移，旧 SQL 与 UTC 边界作文本比较，漏掉当天凌晨并可混入次日凌晨。天气查询及预报修订事件现按 SQLite julianday 比较实际时刻；UTC 接收截止保持原精度，存量时间及哈希不改写。回归覆盖普通日、23/25 小时 DST 日、两次 01:00、混合 UTC/本地时间、次日午夜排除及接收前一微秒不可见。
+
 - PR #30 在五项 CI 通过后合并，生产版本 `1ec27d7764d787aa5298f3ce74d5ebfdb3063e19` 于 21:34:27 UTC 部署。最终备份位于 `/var/lib/nice-weather/backups/repricing-deploy-20260905T213222Z/pre-v7.sqlite3`；迁移后 full integrity/FK 检查通过，519080 条旧 tick 全部保留，原 active 服务恢复。
 - 21:42 UTC 验证三个开放市场、33 tokens 持续采集；新增 trade 不带旧盘口，dashboard/market-stream/runner 的环境版本一致。完整文本日志在 22:13:54 仍发现 market-stream 因 BEGIN IMMEDIATE 等待五秒后退出，随后 systemd 重启；error 优先级过滤不能代替文本异常检查。
 - 真实浏览器验收暴露额外性能问题：约 69870 个价格点产生约 22 MB 快照；同一快照因 iframe 尺寸更新重复传输四次。服务器首次计算实测 38.8 秒，带 profiler 为 44.3 秒，其中查询 18.6 秒、时间转换 16.4 秒。小型 fixture 的通过结果不能代表该规模。
