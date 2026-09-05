@@ -949,7 +949,26 @@ function render(data: RenderData): void {
 
 }
 
+let pendingRender = Promise.resolve();
+let lastTransport: string | undefined;
 Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, (event) => {
-  render((event as CustomEvent<RenderData>).detail);
+  const data = (event as CustomEvent<RenderData>).detail;
+  const transport = data.args.payload;
+  // Streamlit resends unchanged arguments after iframe size changes.
+  if (transport.gzip && transport.gzip === lastTransport) return;
+  lastTransport = transport.gzip;
+  pendingRender = pendingRender.then(async () => {
+    if (transport.gzip) {
+      const bytes = Uint8Array.from(atob(transport.gzip), (char) => char.charCodeAt(0));
+      const decoded = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+      data.args.payload = { ...await new Response(decoded).json(), sentAt: transport.sentAt };
+      root.dataset.transportBytes = String(transport.gzip.length);
+    }
+    render(data);
+  }).catch(() => {
+    lastTransport = undefined;
+    if (!mainChart) buildShell();
+    showFeedError("Chart update could not be decoded; showing the last successful data.");
+  });
 });
 Streamlit.setComponentReady();

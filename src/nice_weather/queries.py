@@ -304,7 +304,9 @@ class DashboardQuery:
             cursor_sql = "AND (received_at,tick_id)>(?,?)"
             parameters.extend((stamp, identifier))
         rows = self._query(
-            "SELECT * FROM market_top_ticks WHERE event_id=? AND bin_id=? "
+            "SELECT tick_id,event_id,bin_id,token_id,source,exchange_event_at,received_at,"
+            "status,event_kind,best_bid,best_ask,mid,last_trade_price "
+            "FROM market_top_ticks WHERE event_id=? AND bin_id=? "
             "AND received_at>=? AND exchange_event_at<? AND received_at<=? "
             f"{cursor_sql} ORDER BY received_at,tick_id",
             tuple(parameters),

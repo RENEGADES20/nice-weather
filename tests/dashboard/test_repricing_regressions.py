@@ -247,6 +247,24 @@ def test_receipt_cursor_includes_recovery_of_unchanged_old_book(tmp_path):
     )
     assert len(first["ticks"]) == len(later["ticks"]) == 1
     assert later["ticks"][0]["tick_id"] != first["ticks"][0]["tick_id"]
+    assert "event_hash" not in later["ticks"][0]
+    assert later["ticks"][0]["event_kind"] == "snapshot"
+
+
+def test_large_price_delta_compares_fields_without_serializing_history(monkeypatch):
+    points = [{"time": index, "value": 0.05, "receivedAt": "first"} for index in range(70_000)]
+    series = [{"id": "price", "points": points}]
+
+    def unexpected_hash(_):
+        raise AssertionError("Point diff must not serialize and hash the whole day")
+
+    monkeypatch.setattr(dashboard, "content_hash", unexpected_hash)
+    _, previous = dashboard._series_delta(series, {})
+    points[-1]["receivedAt"] = "same-price-new-quote"
+    points.pop(0)
+    delta, _ = dashboard._series_delta(series, previous)
+    assert delta[0]["points"] == [points[-1]]
+    assert delta[0]["removedTimes"] == [0.0]
 
 
 def test_v6_backup_migrates_without_rewriting_legacy_ticks(tmp_path, monkeypatch):

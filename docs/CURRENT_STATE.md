@@ -4,9 +4,16 @@
 
 ## 当前阶段
 
-项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，Tmax 重定价研究采集进入 schema v6”的阶段。
+项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，Tmax 重定价研究采集进入 schema v7，Repricing 继续进行生产验收”的阶段。
 
-## 2026-09-05 Repricing 数据链路修复（本地验收，待线上核验）
+## 2026-09-05 Repricing 部署及生产规模补修
+
+- PR #30 在五项 CI 通过后合并，生产版本 `1ec27d7764d787aa5298f3ce74d5ebfdb3063e19` 于 21:34:27 UTC 部署。最终备份位于 `/var/lib/nice-weather/backups/repricing-deploy-20260905T213222Z/pre-v7.sqlite3`；迁移后 full integrity/FK 检查通过，519080 条旧 tick 全部保留，原 active 服务恢复。
+- 21:42 UTC 验证三个开放市场、33 tokens 持续采集；新增 trade 不带旧盘口，dashboard/market-stream/runner 的环境版本一致。21:36 后服务 journal 的 error 级查询无记录；重启初期曾出现数据库锁，继续观察。
+- 真实浏览器验收暴露额外性能问题：约 69870 个价格点产生约 22 MB 快照；同一快照因 iframe 尺寸更新重复传输四次。服务器首次计算实测 38.8 秒，带 profiler 为 44.3 秒，其中查询 18.6 秒、时间转换 16.4 秒。小型 fixture 的通过结果不能代表该规模。
+- 补修采用标准库 gzip 和浏览器原生 DecompressionStream 无损传输，未丢弃任何点或来源字段；相同传输只解码一次。时间转换使用有上限的缓存，tick 查询只取计算所需列，增量比较直接比较字段，避免每两秒序列化并哈希整日价格。生产复验仍待完成。
+
+## 2026-09-05 Repricing 数据链路修复
 
 - 当前实现升级到 schema v7：`market_top_ticks.event_kind` 可空，新增 event/bin/接收游标索引。Gamma、CLOB 按来源和 token 隔离；trade 只保存真实成交，不刷新旧盘口或旧成交时间。同价新成交保留，重复消息幂等。旧 tick 保留并标为未经核验，旧成交不参与五分钟回退。
 - CLOB midpoint 只保持到最后报价/完整快照接收后十分钟；已知断流即时失效，随后依次尝试五分钟真实成交和十分钟 Gamma。内部概率统一 `[0,1]`；零值保留，缺失形成缺口。

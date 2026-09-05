@@ -7,6 +7,7 @@ import os
 import uuid
 from bisect import bisect_left
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
+from functools import lru_cache
 from html import escape
 from pathlib import Path
 from time import perf_counter
@@ -465,6 +466,8 @@ def _localize_records(records: list[dict[str, Any]], zone: tzinfo) -> list[dict[
     return [_localize_record(record, zone) for record in records]
 
 
+# Reused across tick sorting, expiry, selection and minute reconstruction; bounded across sessions.
+@lru_cache(maxsize=131_072)
 def _epoch(value: object) -> float:
     parsed = _display_datetime(value, UTC)
     if parsed is None:
@@ -874,7 +877,7 @@ def _repricing_difference_inputs(
 
     for target in grid:
         # Empty history is the price-only incremental path.
-        for source_id, rows in (sources.items() if history else []):
+        for source_id, rows in sources.items() if history else []:
             while source_index[source_id] < len(rows):
                 row = rows[source_index[source_id]]
                 if max(_epoch(row["received_at"]), _epoch(row["observed_at"])) > target:
@@ -931,13 +934,9 @@ def _repricing_difference_inputs(
                 )
             ):
                 latest_trade = tick
-            if (
-                tick.get("source") == "gamma_fallback"
-                and (
-                    latest_gamma is None
-                    or receipt_key
-                    > (_epoch(latest_gamma["received_at"]), str(latest_gamma["tick_id"]))
-                )
+            if tick.get("source") == "gamma_fallback" and (
+                latest_gamma is None
+                or receipt_key > (_epoch(latest_gamma["received_at"]), str(latest_gamma["tick_id"]))
             ):
                 latest_gamma = tick
             tick_index += 1
@@ -1320,14 +1319,15 @@ def _timeline_data(
 
 
 def _series_delta(
-    series: list[dict[str, Any]], previous: dict[str, dict[str, str]]
-) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+    series: list[dict[str, Any]], previous: dict[str, dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     delta: list[dict[str, Any]] = []
-    current: dict[str, dict[str, str]] = {}
+    current: dict[str, dict[str, Any]] = {}
     for item in series:
         series_id = str(item["id"])
         prior = previous.get(series_id, {})
-        hashes = {str(point["time"]): content_hash(point) for point in item["points"]}
+        # Scalar point fields can be compared directly without serializing the entire day.
+        hashes = {str(point["time"]): dict(point) for point in item["points"]}
         changed = [
             point
             for point in item["points"]
