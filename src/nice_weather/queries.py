@@ -98,7 +98,6 @@ class DashboardQuery:
         return rows
 
     def get_weather_path(self, decision_id: str) -> dict[str, list[dict[str, Any]]]:
-        # Source object times retain offsets; compare instants, not ISO text ordering.
         observations = self._query(
             """
             WITH weather_ids(capture_id) AS (
@@ -202,6 +201,7 @@ class DashboardQuery:
         object_timezone: str,
     ) -> dict[str, list[dict[str, Any]]]:
         start, end = object_day_bounds(object_local_date, horizon_days, object_timezone)
+        # Source object times retain offsets; compare instants, not ISO text ordering.
         as_of_text = as_of.astimezone(UTC).isoformat()
         observations = self._query(
             """
