@@ -3,6 +3,7 @@ import {
   CrosshairMode,
   LineSeries,
   LineStyle,
+  LineType,
   createChart,
   createSeriesMarkers,
   type IChartApi,
@@ -15,34 +16,44 @@ import {
 import { Expand, Eye, LocateFixed, RotateCcw, createIcons } from "lucide";
 import { Streamlit, type RenderData } from "streamlit-component-lib";
 import {
-  alignToMinuteGrid,
   differencePoints,
   mergeRawPoints,
   nonNullSegments,
-  zAnchor,
-  type AlignableSeries,
-  type AlignedPoint,
   type DifferencePoint,
+  type PointSeries,
   type RawPoint,
-  type ZAnchor,
 } from "./difference";
 import { formatAxisTime } from "./series";
 import "./redesign.css";
 
-type SeriesSpec = AlignableSeries & {
-  name: string;
+type SeriesSpec = PointSeries & {
   description: string;
   group: "Weather" | "Market";
   pane: "weather" | "market";
   format: "temperature" | "probability";
+  fill: "forecast" | "step-fresh" | "step-day" | "price";
   color: string;
   lineStyle?: "solid" | "dashed" | "dotted";
+  maxAgeSeconds?: number | null;
+  validTo?: number | null;
   currentPrice?: {
     value: number;
+    display_value?: number | null;
     source: string;
     time?: string;
     received_at?: string;
+    bin_id?: string;
   } | null;
+};
+
+type DifferenceSpec = {
+  id: string;
+  name: string;
+  leftId: string;
+  rightId: string;
+  unit: "°F" | "display spread";
+  axis: "left" | "right";
+  color: string;
 };
 
 type EventSpec = { id: string; type: string; time: number; title: string };
@@ -50,13 +61,15 @@ type Payload = {
   mode: "full" | "delta" | "feed";
   channelId: string;
   revision: string;
-  signature?: string;
+  signature: string;
   timezone?: string;
   selectedBinId: string;
-  referenceSeriesId: string;
+  selectedDifferenceIds?: string[];
   windowStart: number;
   windowEnd: number;
   series: SeriesSpec[];
+  differenceInputs: PointSeries[];
+  differenceSpecs: DifferenceSpec[];
   events?: EventSpec[];
 };
 
@@ -65,18 +78,18 @@ const seriesApis = new Map<string, ISeriesApi<"Line">>();
 const seriesData = new Map<string, RawPoint[]>();
 const segmentApis = new Map<string, Map<number, ISeriesApi<"Line">>>();
 const segmentTimes = new Map<string, Map<number, number[]>>();
+const differenceInputData = new Map<string, RawPoint[]>();
 const differenceApis = new Map<string, ISeriesApi<"Line">>();
+const differenceSegmentApis = new Map<string, Map<number, ISeriesApi<"Line">>>();
+const differenceSegmentTimes = new Map<string, Map<number, number[]>>();
 const differenceData = new Map<string, DifferencePoint[]>();
-const aligned = new Map<string, AlignedPoint[]>();
-const anchors = new Map<string, ZAnchor | null>();
+let selectedDifferenceIds = new Set<string>();
 let mainChart: IChartApi | null = null;
 let differenceChart: IChartApi | null = null;
 let mainTimeBasis: ISeriesApi<"Line"> | null = null;
 let differenceTimeBasis: ISeriesApi<"Line"> | null = null;
 let payload: Payload | null = null;
 let signature = "";
-let referenceSeriesId = "forecast";
-let referenceUserSelected = false;
 let eventsVisible = false;
 let markers: ISeriesMarkersPluginApi<Time> | null = null;
 let channel: BroadcastChannel | null = null;
@@ -128,8 +141,18 @@ function escapeHtml(value: string): string {
 }
 
 function formatRaw(value: number, unit?: string): string {
-  if (unit === "probability") return `${(value * 100).toFixed(0)}%`;
+  if (unit === "probability") return `${(value * 100).toFixed(1)}%`;
   return `${value.toFixed(1)}${unit || ""}`;
+}
+
+function formatEt(value?: string): string {
+  const epoch = value ? Date.parse(value) / 1000 : Number.NaN;
+  return Number.isFinite(epoch) ? `${formatAxisTime(epoch, 3, "America/New_York")} ET` : "Unavailable";
+}
+
+function setFollowing(value: boolean): void {
+  following = value;
+  document.querySelector("#follow-button")?.setAttribute("aria-pressed", String(value));
 }
 
 function buildShell(): void {
@@ -139,17 +162,19 @@ function buildShell(): void {
         <button id="events-button" class="toolbar-command" aria-pressed="false"><i data-lucide="eye"></i><span>Events</span></button>
         <span class="price-readout" id="price-readout">Price Unavailable</span>
         <span class="spacer"></span>
-        <button id="follow-button" class="tool-button" title="Follow latest"><i data-lucide="locate-fixed"></i></button>
-        <button id="reset-button" class="tool-button" title="Reset view"><i data-lucide="rotate-ccw"></i></button>
-        <button id="fullscreen-button" class="tool-button" title="Full screen"><i data-lucide="expand"></i></button>
+        <button id="follow-button" class="tool-button" title="Follow latest" aria-label="Follow latest" aria-pressed="true"><i data-lucide="locate-fixed"></i></button>
+        <button id="reset-button" class="tool-button" title="Reset view" aria-label="Reset view"><i data-lucide="rotate-ccw"></i></button>
+        <button id="fullscreen-button" class="tool-button" title="Full screen" aria-label="Full screen"><i data-lucide="expand"></i></button>
       </div>
       <div id="channel-warning" class="notice hidden">Live updates are unavailable in this browser. Manual controls remain available.</div>
+      <div id="payload-warning" class="notice hidden">A chart update was rejected because its data was invalid or belonged to another selection.</div>
       <div class="legend" id="main-legend"></div>
       <div id="main-chart"></div>
-      <div class="difference-title"><strong>Difference</strong><span>Zero means equal relative position within each series window.</span></div>
-      <div class="legend reference-legend" id="difference-legend"></div>
-      <div class="difference-wrap"><div id="difference-chart"></div><div id="difference-empty" class="empty hidden">Insufficient overlapping data</div></div>
-      <div class="disclaimer">Difference shows co-movement and divergence only. It does not establish causality or true response delay.</div>
+      <div class="difference-title"><strong>Difference</strong><span>Six fixed real-time subtractions on a one-minute as-of grid.</span></div>
+      <div class="legend difference-controls" id="difference-controls"></div>
+      <div class="legend difference-detail" id="difference-detail"><span class="legend-time">ET</span></div>
+      <div class="difference-wrap"><div id="difference-chart"></div><div id="difference-empty" class="empty hidden">No selected difference has two valid inputs</div></div>
+      <div class="disclaimer">Weather differences use °F. Price comparisons are display spreads without a shared physical unit and are only for visual research.</div>
     </div>`;
   createIcons({ icons: { Expand, Eye, LocateFixed, RotateCcw } });
   mainChart = createChart(document.querySelector<HTMLElement>("#main-chart")!, chartOptions());
@@ -158,7 +183,10 @@ function buildShell(): void {
   differenceChart = createChart(
     document.querySelector<HTMLElement>("#difference-chart")!, chartOptions(),
   );
+  root.dataset.mountCount = "1";
   root.dataset.feedPaused = "false";
+  setFollowing(true);
+
   mainChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
     if (!range) return;
     mainRangeKey = `${range.from}:${range.to}`;
@@ -176,20 +204,18 @@ function buildShell(): void {
     mainChart?.timeScale().setVisibleLogicalRange(range);
   });
   mainChart.subscribeCrosshairMove((param) => {
+    if (syncingCrosshair) return;
     root.dataset.mainCrosshair = param.time == null ? "" : String(param.time);
-    renderMainLegend(param.time, param.seriesData);
-    if (!syncingCrosshair) {
-      crosshairTime = param.time;
-      syncCrosshair(param.time, true);
-    }
+    renderMainLegend(param.time);
+    crosshairTime = param.time;
+    syncCrosshair(param.time, true);
   });
   differenceChart.subscribeCrosshairMove((param) => {
+    if (syncingCrosshair) return;
     root.dataset.differenceCrosshair = param.time == null ? "" : String(param.time);
-    renderDifferenceLegend(param.time, param.seriesData);
-    if (!syncingCrosshair) {
-      crosshairTime = param.time;
-      syncCrosshair(param.time, false);
-    }
+    renderDifferenceDetails(param.time);
+    crosshairTime = param.time;
+    syncCrosshair(param.time, false);
   });
   document.querySelector("#events-button")?.addEventListener("click", () => {
     eventsVisible = !eventsVisible;
@@ -197,12 +223,15 @@ function buildShell(): void {
     renderMarkers();
   });
   document.querySelector("#follow-button")?.addEventListener("click", () => {
-    following = true;
+    setFollowing(true);
     mainChart?.timeScale().scrollToRealTime();
   });
-  document.querySelector("#main-chart")?.addEventListener("pointerdown", () => { following = false; });
   for (const selector of ["#main-chart", "#difference-chart"]) {
     const target = document.querySelector(selector);
+    const stopFollowing = () => setFollowing(false);
+    target?.addEventListener("pointerdown", stopFollowing);
+    target?.addEventListener("wheel", stopFollowing, { passive: true });
+    target?.addEventListener("touchstart", stopFollowing, { passive: true });
     target?.addEventListener("pointerenter", () => {
       chartPointerActive = true;
       root.dataset.feedPaused = "true";
@@ -214,7 +243,7 @@ function buildShell(): void {
     });
   }
   document.querySelector("#reset-button")?.addEventListener("click", () => {
-    following = false;
+    setFollowing(false);
     mainChart?.timeScale().fitContent();
   });
   document.querySelector("#fullscreen-button")?.addEventListener("click", () => {
@@ -226,6 +255,7 @@ function setupChannel(nextId: string): void {
   if (nextId === channelId) return;
   channel?.close();
   channelId = nextId;
+  root.dataset.channelSubscriptions = "0";
   if (!("BroadcastChannel" in window)) {
     document.querySelector("#channel-warning")?.classList.remove("hidden");
     return;
@@ -233,6 +263,7 @@ function setupChannel(nextId: string): void {
   document.querySelector("#channel-warning")?.classList.add("hidden");
   channel = new BroadcastChannel(`nice-weather-${nextId}`);
   channel.addEventListener("message", (event) => applyPayload(event.data as Payload));
+  root.dataset.channelSubscriptions = "1";
 }
 
 function seriesOptions(spec: SeriesSpec) {
@@ -241,6 +272,7 @@ function seriesOptions(spec: SeriesSpec) {
     color: spec.color,
     lineWidth: spec.id === "price" ? 3 as const : 2 as const,
     lineStyle: style(spec.lineStyle),
+    lineType: spec.fill === "forecast" ? LineType.Simple : LineType.WithSteps,
     priceScaleId: spec.pane === "weather" ? "left" : "right",
     priceLineVisible: false,
     lastValueVisible: false,
@@ -252,7 +284,9 @@ function seriesOptions(spec: SeriesSpec) {
 }
 
 function valuedLineData(point: RawPoint): LineData {
-  if (point.value === null) throw new Error("Chart segment cannot contain a null point");
+  if (point.value === null || !Number.isFinite(point.value)) {
+    throw new Error("Chart segment requires a finite point");
+  }
   return { time: point.time as UTCTimestamp, value: point.value };
 }
 
@@ -345,9 +379,7 @@ function reconcileFull(specs: SeriesSpec[]): void {
     for (const key of [...(segmentApis.get(id)?.keys() || [])]) removeSegment(id, key);
     seriesData.delete(id);
   }
-  for (const spec of specs) {
-    reconcileSeriesFull(spec);
-  }
+  for (const spec of specs) reconcileSeriesFull(spec);
 }
 
 function reconcileDelta(specs: SeriesSpec[]): void {
@@ -358,27 +390,109 @@ function reconcileDelta(specs: SeriesSpec[]): void {
   }
 }
 
-function windowBounds(): { start: number; end: number } | null {
-  const times = [...seriesData.values()].flatMap((points) => points.map((point) => point.time));
-  return times.length ? { start: Math.min(...times), end: Math.max(...times) } : null;
-}
-
-function rebuildAlignment(resetAnchors: boolean): void {
-  if (!payload) return;
-  const bounds = windowBounds();
-  if (!bounds) return;
-  for (const spec of payload.series) {
-    const points = alignToMinuteGrid({ ...spec, points: seriesData.get(spec.id) || [] }, bounds.start, bounds.end);
-    aligned.set(spec.id, points);
-    if (resetAnchors) anchors.set(spec.id, zAnchor(points));
+function reconcileDifferenceInputs(specs: PointSeries[], full: boolean): void {
+  if (full) differenceInputData.clear();
+  for (const spec of specs) {
+    const previous = differenceInputData.get(spec.id) || [];
+    differenceInputData.set(spec.id, mergeRawPoints(full ? [] : previous, spec.points));
   }
 }
 
-function differenceOptions(spec: SeriesSpec) {
+function removeDifferenceSegment(id: string, key: number): void {
+  const apis = differenceSegmentApis.get(id);
+  const times = differenceSegmentTimes.get(id);
+  const api = apis?.get(key);
+  if (api) differenceChart?.removeSeries(api);
+  if (api && differenceApis.get(id) === api) differenceApis.delete(id);
+  apis?.delete(key);
+  times?.delete(key);
+  if (apis?.size === 0) differenceSegmentApis.delete(id);
+  if (times?.size === 0) differenceSegmentTimes.delete(id);
+}
+
+function differenceRawPoints(points: DifferencePoint[]): RawPoint[] {
+  return points.map((point) => ({ time: point.time, value: point.value }));
+}
+
+function reconcileDifferenceFull(spec: DifferenceSpec, points: DifferencePoint[]): void {
+  for (const key of [...(differenceSegmentApis.get(spec.id)?.keys() || [])]) {
+    removeDifferenceSegment(spec.id, key);
+  }
+  const apis = new Map<number, ISeriesApi<"Line">>();
+  const times = new Map<number, number[]>();
+  for (const segment of nonNullSegments(differenceRawPoints(points))) {
+    const key = segment[0].time;
+    const api = differenceChart!.addSeries(LineSeries, differenceOptions(spec));
+    api.setData(segment.map(valuedLineData));
+    apis.set(key, api);
+    times.set(key, segment.map((point) => point.time));
+  }
+  differenceSegmentApis.set(spec.id, apis);
+  differenceSegmentTimes.set(spec.id, times);
+  const representative = apis.values().next().value;
+  if (representative) differenceApis.set(spec.id, representative);
+}
+
+function reconcileDifferenceDelta(
+  spec: DifferenceSpec,
+  previous: DifferencePoint[],
+  points: DifferencePoint[],
+): void {
+  const previousByTime = new Map(previous.map((point) => [point.time, point.value]));
+  const validKeys = new Set<number>();
+  for (const segment of nonNullSegments(differenceRawPoints(points))) {
+    const key = segment[0].time;
+    validKeys.add(key);
+    const nextTimes = segment.map((point) => point.time);
+    const oldTimes = differenceSegmentTimes.get(spec.id)?.get(key) || [];
+    const keepsPrefix = oldTimes.every((time, index) => nextTimes[index] === time);
+    if (differenceSegmentApis.get(spec.id)?.has(key) && !keepsPrefix) {
+      removeDifferenceSegment(spec.id, key);
+    }
+    let api = differenceSegmentApis.get(spec.id)?.get(key);
+    if (!api) {
+      api = differenceChart!.addSeries(LineSeries, differenceOptions(spec));
+      if (!differenceSegmentApis.has(spec.id)) differenceSegmentApis.set(spec.id, new Map());
+      differenceSegmentApis.get(spec.id)!.set(key, api);
+      for (const point of segment) api.update(valuedLineData(point));
+    } else {
+      const oldSet = new Set(oldTimes);
+      let lastTime = oldTimes.at(-1) ?? Number.NEGATIVE_INFINITY;
+      for (const point of segment) {
+        const changed = previousByTime.has(point.time)
+          && !Object.is(previousByTime.get(point.time), point.value);
+        if (oldSet.has(point.time) && !changed) continue;
+        api.update(valuedLineData(point), point.time < lastTime);
+        lastTime = Math.max(lastTime, point.time);
+      }
+    }
+    if (!differenceSegmentTimes.has(spec.id)) {
+      differenceSegmentTimes.set(spec.id, new Map());
+    }
+    differenceSegmentTimes.get(spec.id)!.set(key, nextTimes);
+  }
+  for (const key of [...(differenceSegmentApis.get(spec.id)?.keys() || [])]) {
+    if (!validKeys.has(key)) removeDifferenceSegment(spec.id, key);
+  }
+  const representative = differenceSegmentApis.get(spec.id)?.values().next().value;
+  if (representative) differenceApis.set(spec.id, representative);
+  else differenceApis.delete(spec.id);
+}
+
+function differenceOptions(spec: DifferenceSpec) {
   return {
-    title: "", color: spec.color, lineWidth: 2 as const,
-    priceLineVisible: false, lastValueVisible: false,
-    priceFormat: { type: "custom" as const, minMove: 0.01, formatter: (v: number) => `${v >= 0 ? "+" : ""}${v.toFixed(2)}σ` },
+    title: "",
+    color: spec.color,
+    lineWidth: 2 as const,
+    priceScaleId: spec.axis,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    crosshairMarkerVisible: true,
+    priceFormat: {
+      type: "custom" as const,
+      minMove: 0.01,
+      formatter: (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}`,
+    },
   };
 }
 
@@ -388,112 +502,170 @@ function setTimeBasis(start: number, end: number): void {
   for (let current = Math.floor(start / 60) * 60; current <= end; current += 60) {
     points.push({ time: current as UTCTimestamp, value: 0 });
   }
-  const options = { visible: false, priceLineVisible: false, lastValueVisible: false };
+  const options = {
+    color: "rgba(0,0,0,0)",
+    crosshairMarkerVisible: false,
+    priceLineVisible: false,
+    lastValueVisible: false,
+    priceScaleId: "time-basis",
+  };
   if (!mainTimeBasis) mainTimeBasis = mainChart.addSeries(LineSeries, options, 0);
-  if (!differenceTimeBasis) differenceTimeBasis = differenceChart.addSeries(LineSeries, options);
+  if (!differenceTimeBasis) {
+    differenceTimeBasis = differenceChart.addSeries(LineSeries, options);
+  }
   mainTimeBasis.setData(points);
   differenceTimeBasis.setData(points);
 }
 
+function renderDifferenceControls(): void {
+  if (!payload) return;
+  const target = document.querySelector<HTMLElement>("#difference-controls")!;
+  target.innerHTML = payload.differenceSpecs.map((spec) => `
+    <label title="${escapeHtml(spec.unit)}">
+      <input type="checkbox" name="difference" value="${escapeHtml(spec.id)}" ${selectedDifferenceIds.has(spec.id) ? "checked" : ""}/>
+      <i style="background:${spec.color}"></i>${escapeHtml(spec.name)}
+    </label>`).join("");
+  target.querySelectorAll<HTMLInputElement>("input[name='difference']").forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) selectedDifferenceIds.add(input.value);
+      else selectedDifferenceIds.delete(input.value);
+      renderDifferences(true);
+      Streamlit.setComponentValue({ selectedDifferenceIds: [...selectedDifferenceIds] });
+    });
+  });
+}
+
 function renderDifferences(fullReplace: boolean): void {
   if (!payload || !differenceChart) return;
-  const reference = aligned.get(referenceSeriesId) || [];
   const validIds = new Set<string>();
-  for (const spec of payload.series) {
-    if (spec.id === referenceSeriesId) continue;
+  for (const spec of payload.differenceSpecs) {
+    if (!selectedDifferenceIds.has(spec.id)) continue;
     const points = differencePoints(
-      aligned.get(spec.id) || [], reference, anchors.get(spec.id) || null,
-      anchors.get(referenceSeriesId) || null,
+      differenceInputData.get(spec.leftId) || [],
+      differenceInputData.get(spec.rightId) || [],
     );
-    if (!points) continue;
+    if (!points.some((point) => point.value != null)) continue;
     validIds.add(spec.id);
-    let api = differenceApis.get(spec.id);
-    if (!api) {
-      api = differenceChart.addSeries(LineSeries, differenceOptions(spec));
-      differenceApis.set(spec.id, api);
-    }
     const previous = differenceData.get(spec.id) || [];
-    if (fullReplace) api.setData(points.map((point) => ({ time: point.time as UTCTimestamp, value: point.value })));
-    else {
-      const previousByTime = new Map(previous.map((point) => [point.time, point.value]));
-      for (const point of points) {
-        if (previousByTime.get(point.time) === point.value) continue;
-        api.update(
-          { time: point.time as UTCTimestamp, value: point.value },
-          previous.length > 0 && point.time < previous.at(-1)!.time,
-        );
-      }
-    }
+    if (fullReplace) reconcileDifferenceFull(spec, points);
+    else reconcileDifferenceDelta(spec, previous, points);
     differenceData.set(spec.id, points);
   }
-  for (const [id, api] of differenceApis) {
+  for (const id of [...differenceSegmentApis.keys()]) {
     if (validIds.has(id)) continue;
-    differenceChart.removeSeries(api);
-    differenceApis.delete(id);
+    for (const key of [...(differenceSegmentApis.get(id)?.keys() || [])]) {
+      removeDifferenceSegment(id, key);
+    }
     differenceData.delete(id);
   }
   document.querySelector("#difference-empty")?.classList.toggle("hidden", validIds.size > 0);
-  renderDifferenceLegend();
+  root.dataset.differenceSeriesCount = String(
+    [...differenceSegmentApis.values()].reduce((count, apis) => count + apis.size, 0),
+  );
+  renderDifferenceDetails(crosshairTime);
 }
 
-function latestPoint(id: string): RawPoint | undefined {
-  return seriesData.get(id)?.filter((point) => point.value !== null).at(-1);
+function pointAt(points: RawPoint[] | undefined, time: number): RawPoint | undefined {
+  return points?.find((point) => point.time === time);
+}
+
+function mainPointAt(spec: SeriesSpec, time: number): RawPoint | undefined {
+  const points = seriesData.get(spec.id) || [];
+  const exact = pointAt(points, time);
+  if (exact) return exact.value == null ? undefined : exact;
+  const rightIndex = points.findIndex((point) => point.time > time);
+  if (rightIndex <= 0) return undefined;
+  const left = points[rightIndex - 1];
+  const right = points[rightIndex];
+  if (left.value == null || right.value == null) return undefined;
+  if (spec.validTo != null && time >= spec.validTo) return undefined;
+  if (spec.fill !== "forecast") {
+    if (spec.maxAgeSeconds != null && time - left.time > spec.maxAgeSeconds) return undefined;
+    return { ...left, time };
+  }
+  if (right.time === left.time) return undefined;
+  const ratio = (time - left.time) / (right.time - left.time);
+  return {
+    ...left,
+    time,
+    value: left.value + (right.value - left.value) * ratio,
+    objectTime: new Date(time * 1000).toISOString(),
+    validFrom: left.objectTime || left.object_time,
+    validTo: right.objectTime || right.object_time,
+  };
+}
+
+function pointAudit(point: RawPoint): string {
+  const objectTime = formatEt(point.objectTime || point.object_time);
+  const receivedAt = formatEt(point.receivedAt || point.received_at);
+  const source = point.priceSource || point.source || "Unknown source";
+  const age = point.ageSeconds == null ? "age unavailable" : `${Math.round(point.ageSeconds)}s old`;
+  const valid = point.validFrom || point.validTo
+    ? `; valid bracket ${formatEt(point.validFrom)} to ${formatEt(point.validTo)}`
+    : "";
+  const issued = point.issuedAt ? `; issued ${formatEt(point.issuedAt)}` : "";
+  const price = point.priceSource
+    ? `; raw ${point.rawValue ?? "Unavailable"}; display ${point.displayValue ?? point.value}; bin ${point.binId ?? "Unavailable"}`
+    : "";
+  return `${source}; object ${objectTime}; received ${receivedAt}; ${age}${valid}${issued}${price}`;
 }
 
 function renderPrice(): void {
-  const point = payload?.series.find((spec) => spec.id === "price")?.currentPrice;
+  const spec = payload?.series.find((item) => item.id === "price");
+  const point = spec?.currentPrice;
   const target = document.querySelector<HTMLElement>("#price-readout")!;
-  if (!point) {
+  if (!point || spec?.binId !== payload?.selectedBinId) {
     target.textContent = "Price Unavailable";
     return;
   }
   const receivedAt = Date.parse(point.received_at || point.time || "") / 1000;
   const age = receivedAt ? Math.max(0, Math.round(Date.now() / 1000 - receivedAt)) : 0;
-  target.textContent = `Price ${(point.value * 100).toFixed(1)}% · ${point.source} · ${age < 60 ? `${age}s` : `${Math.floor(age / 60)}m`} old`;
+  const display = point.display_value ?? (point.value <= 1 ? point.value * 100 : point.value);
+  target.textContent = `Price ${display.toFixed(1)}% · ${point.source} · ${age < 60 ? `${age}s` : `${Math.floor(age / 60)}m`} old`;
+  target.title = `Bin ${payload?.selectedBinId}; raw ${point.value}; display ${display.toFixed(1)}; event ${formatEt(point.time)}; received ${formatEt(point.received_at)}`;
 }
 
-function renderMainLegend(time?: Time, values?: ReadonlyMap<unknown, unknown>): void {
+function renderMainLegend(time?: Time): void {
   if (!payload) return;
-  const stamp = time == null ? "ET" : `${formatAxisTime(Number(time), 3, "America/New_York")} ET`;
+  const numericTime = time == null ? null : Number(time);
+  const stamp = numericTime == null ? "ET" : `${formatAxisTime(numericTime, 3, "America/New_York")} ET`;
   const items = payload.series.map((spec) => {
-    const apis = apisFor(spec.id);
-    const crosshair = values
-      ? apis.map((api) => values.get(api) as LineData | undefined)
-        .find((point) => point != null && "value" in point)
-      : undefined;
-    const point = crosshair && "value" in crosshair ? crosshair.value : latestPoint(spec.id)?.value;
-    const value = point == null ? "Unavailable" : formatRaw(point, spec.format === "probability" ? "probability" : "°F");
-    return `<span class="legend-item"><i style="background:${spec.color}"></i>${escapeHtml(spec.name)} <button class="info" title="${escapeHtml(spec.description)}">i</button><strong>${value}</strong></span>`;
+    const point = numericTime == null
+      ? seriesData.get(spec.id)?.filter((item) => item.value !== null).at(-1)
+      : mainPointAt(spec, numericTime);
+    const value = point?.value == null
+      ? "Unavailable"
+      : formatRaw(point.value, spec.format === "probability" ? "probability" : "°F");
+    const details = point
+      ? `${spec.description} ${pointAudit(point)}`
+      : `${spec.description} Unavailable at the crosshair time.`;
+    return `<span class="legend-item"><i style="background:${spec.color}"></i>${escapeHtml(spec.name)} <button class="info" title="${escapeHtml(details)}">i</button><strong>${value}</strong></span>`;
   }).join("");
   document.querySelector<HTMLElement>("#main-legend")!.innerHTML = `<span class="legend-time">${stamp}</span>${items}`;
 }
 
-function renderDifferenceLegend(time?: Time, values?: ReadonlyMap<unknown, unknown>): void {
+function renderDifferenceDetails(time?: Time): void {
   if (!payload) return;
-  const radios = payload.series.map((spec) => `
-    <label><input type="radio" name="reference" value="${escapeHtml(spec.id)}" ${spec.id === referenceSeriesId ? "checked" : ""}/><i style="background:${spec.color}"></i>${escapeHtml(spec.name)}</label>`).join("");
-  let detail = "";
-  if (time != null && values) {
-    for (const spec of payload.series) {
-      const api = differenceApis.get(spec.id);
-      const line = api ? values.get(api) as LineData | undefined : undefined;
-      const point = differenceData.get(spec.id)?.find((item) => item.time === Number(time));
-      if (!line || !("value" in line) || !point) continue;
-      const reference = payload.series.find((item) => item.id === referenceSeriesId)!;
-      detail = `${spec.name} ${formatRaw(point.rawValue, point.rawUnit)} / ${reference.name} ${formatRaw(point.referenceRawValue, point.referenceRawUnit)} / Difference ${line.value >= 0 ? "+" : ""}${line.value.toFixed(2)}σ`;
-      break;
-    }
+  const target = document.querySelector<HTMLElement>("#difference-detail")!;
+  if (time == null) {
+    target.innerHTML = '<span class="legend-time">ET</span><span>Move the crosshair to audit both inputs.</span>';
+    return;
   }
-  const target = document.querySelector<HTMLElement>("#difference-legend")!;
-  target.innerHTML = `<span class="reference-label">Reference</span>${radios}<strong>${escapeHtml(detail)}</strong>`;
-  target.querySelectorAll<HTMLInputElement>("input[name='reference']").forEach((input) => {
-    input.addEventListener("change", () => {
-      referenceSeriesId = input.value;
-      referenceUserSelected = true;
-      renderDifferences(true);
-      Streamlit.setComponentValue({ referenceSeriesId });
-    });
-  });
+  const numericTime = Number(time);
+  const stamp = `${formatAxisTime(numericTime, 3, "America/New_York")} ET`;
+  const items = payload.differenceSpecs
+    .filter((spec) => selectedDifferenceIds.has(spec.id))
+    .map((spec) => {
+      const point = differenceData.get(spec.id)?.find((item) => item.time === numericTime);
+      if (!point || point.value == null || !point.left || !point.right) {
+        return `<span class="difference-value"><i style="background:${spec.color}"></i>${escapeHtml(spec.name)} <strong>Unavailable</strong></span>`;
+      }
+      const title = `Left: ${pointAudit(point.left)}; right: ${pointAudit(point.right)}`;
+      const left = point.left.value == null ? "Unavailable" : point.left.value.toFixed(2);
+      const right = point.right.value == null ? "Unavailable" : point.right.value.toFixed(2);
+      return `<span class="difference-value" title="${escapeHtml(title)}"><i style="background:${spec.color}"></i>${escapeHtml(spec.name)} <strong>${point.value >= 0 ? "+" : ""}${point.value.toFixed(2)} ${escapeHtml(spec.unit)}</strong><small>${left} − ${right}</small></span>`;
+    }).join("");
+  target.innerHTML = `<span class="legend-time">${stamp}</span>${items}`;
 }
 
 function renderMarkers(): void {
@@ -502,8 +674,13 @@ function renderMarkers(): void {
   const api = anchor ? seriesApis.get(anchor.id) : undefined;
   if (!api) return;
   const items = eventsVisible ? (payload.events || []).map((event) => ({
-    id: event.id, time: event.time as UTCTimestamp, position: "aboveBar" as const,
-    color: "#667085", shape: "circle" as const, text: "", size: 0.6,
+    id: event.id,
+    time: event.time as UTCTimestamp,
+    position: "aboveBar" as const,
+    color: "#667085",
+    shape: "circle" as const,
+    text: "",
+    size: 0.6,
   })) : [];
   if (markers) markers.setMarkers(items);
   else markers = createSeriesMarkers(api, items);
@@ -511,53 +688,38 @@ function renderMarkers(): void {
 
 function syncCrosshair(time: Time | undefined, fromMain: boolean): void {
   const target = fromMain ? differenceChart : mainChart;
-  const apis = fromMain ? differenceApis : seriesApis;
   if (!target || time == null) {
     target?.clearCrosshairPosition();
     return;
   }
   syncingCrosshair = true;
   const basis = fromMain ? differenceTimeBasis : mainTimeBasis;
-  if (basis) {
-    target.setCrosshairPosition(0, time, basis);
-    if (fromMain) root.dataset.differenceCrosshair = String(time);
-    else root.dataset.mainCrosshair = String(time);
+  if (fromMain) {
+    root.dataset.differenceCrosshair = String(time);
+    renderDifferenceDetails(time);
+  } else {
+    root.dataset.mainCrosshair = String(time);
+    renderMainLegend(time);
+  }
+  try {
+    if (basis) target.setCrosshairPosition(0, time, basis);
+  } catch {
+    requestAnimationFrame(() => restoreCrosshair(Number(time), fromMain));
+  } finally {
     syncingCrosshair = false;
-    return;
   }
-  const values = fromMain ? differenceData : aligned;
-  for (const [id, api] of apis) {
-    const point = values.get(id)?.find((item) => item.time === Number(time));
-    if (!point || !Number.isFinite(point.value)) continue;
-    target.setCrosshairPosition(point.value, time, api);
-    break;
-  }
-  syncingCrosshair = false;
 }
 
 function restoreCrosshair(time: number, onDifference: boolean): boolean {
   const chart = onDifference ? differenceChart : mainChart;
-  const apis = onDifference ? differenceApis : seriesApis;
-  const values = onDifference ? differenceData : aligned;
-  if (!chart) return false;
+  const basis = onDifference ? differenceTimeBasis : mainTimeBasis;
+  if (!chart || !basis) return false;
   try {
-    const basis = onDifference ? differenceTimeBasis : mainTimeBasis;
-    if (basis) {
-      chart.setCrosshairPosition(0, time as UTCTimestamp, basis);
-      return true;
-    }
-    for (const [id, api] of apis) {
-      const point = values.get(id)?.find((item) => item.time === time);
-      if (!point || !Number.isFinite(point.value)) continue;
-      chart.setCrosshairPosition(point.value, time as UTCTimestamp, api);
-      return true;
-    }
+    chart.setCrosshairPosition(0, time as UTCTimestamp, basis);
+    return true;
   } catch {
-    // Lightweight Charts 5.2 can retain a stale hovered row until a later paint after
-    // series.update(). Retry after another frame without leaking its internal null error.
     return false;
   }
-  return false;
 }
 
 function restoreCrosshairsAfterPaint(time: number, attempt = 0): void {
@@ -575,37 +737,59 @@ function restoreCrosshairsAfterPaint(time: number, attempt = 0): void {
   }));
 }
 
+function mergeSeriesMessages<T extends PointSeries>(existing: T[], incoming: T[]): T[] {
+  const result = new Map(existing.map((spec) => [spec.id, spec]));
+  for (const spec of incoming) {
+    const previous = result.get(spec.id);
+    result.set(spec.id, {
+      ...previous,
+      ...spec,
+      points: mergeRawPoints(previous?.points || [], spec.points),
+    });
+  }
+  return [...result.values()];
+}
+
+function mergePending(existing: Payload | null, next: Payload): Payload {
+  if (!existing) return next;
+  return {
+    ...existing,
+    ...next,
+    series: mergeSeriesMessages(existing.series, next.series) as SeriesSpec[],
+    differenceInputs: mergeSeriesMessages(existing.differenceInputs, next.differenceInputs),
+  };
+}
+
 function updateIncrementally(next: Payload): void {
   const savedCrosshair = crosshairTime == null ? undefined : Number(crosshairTime);
-
-  // Lightweight Charts can reuse stale hovered pane rows while several series update and the
-  // time scale changes. Clear the transient cursor and allow that invalidation to paint before
-  // the batch, then restore it after later paints. This keeps deltas on series.update() while
-  // avoiding the library's asynchronous `Value is null` race in its hovered pane cache.
   syncingCrosshair = true;
   mainChart?.clearCrosshairPosition();
   differenceChart?.clearCrosshairPosition();
   requestAnimationFrame(() => {
     if (chartPointerActive) {
-      pendingDelta = next;
+      pendingDelta = mergePending(pendingDelta, next);
       root.dataset.pendingRevision = String(next.revision);
       syncingCrosshair = false;
       return;
     }
     reconcileDelta(next.series);
-    rebuildAlignment(false);
+    reconcileDifferenceInputs(next.differenceInputs, false);
     renderDifferences(false);
+    root.dataset.pricePointCount = String(
+      seriesData.get("price")?.filter((point) => point.value !== null).length || 0,
+    );
     if (following) mainChart?.timeScale().scrollToRealTime();
     root.dataset.appliedRevision = String(next.revision);
     if (String(next.revision) === flushingRevision) {
       root.dataset.flushedRevision = flushingRevision;
       flushingRevision = "";
     }
-
-    if (savedCrosshair != null && Number.isFinite(savedCrosshair)) {
-      restoreCrosshairsAfterPaint(savedCrosshair);
+    const restoreTime = crosshairTime == null ? savedCrosshair : Number(crosshairTime);
+    if (restoreTime != null && Number.isFinite(restoreTime)) {
+      restoreCrosshairsAfterPaint(restoreTime);
+    } else {
+      syncingCrosshair = false;
     }
-    else syncingCrosshair = false;
   });
 }
 
@@ -621,35 +805,100 @@ function flushPendingDelta(): void {
   root.dataset.pendingRevision = "";
 }
 
+function validPoint(point: RawPoint): boolean {
+  return Number.isInteger(point.time)
+    && point.time >= 0
+    && (point.value === null || Number.isFinite(point.value));
+}
+
+function validatePayload(next: Payload): boolean {
+  if (!next || typeof next.channelId !== "string" || typeof next.selectedBinId !== "string") {
+    return false;
+  }
+  if (next.mode !== "feed" && (!next.signature || !Number.isFinite(next.windowStart)
+    || !Number.isFinite(next.windowEnd))) return false;
+  if (![...next.series, ...next.differenceInputs].every(
+    (spec) => Array.isArray(spec.points) && spec.points.every(validPoint),
+  )) return false;
+  const price = next.series.find((spec) => spec.id === "price");
+  const differencePrice = next.differenceInputs.find((spec) => spec.id === "price");
+  const differenceInputIds = [...next.differenceInputs.map((spec) => spec.id)].sort().join("|");
+  const differenceIds = [...next.differenceSpecs.map((spec) => spec.id)].sort().join("|");
+  const pricePointsMatch = differencePrice?.points.every(
+    (point) => point.binId === next.selectedBinId,
+  );
+  return price?.binId === next.selectedBinId
+    && (!price.currentPrice || price.currentPrice.bin_id === next.selectedBinId)
+    && differencePrice?.binId === next.selectedBinId
+    && pricePointsMatch === true
+    && differenceInputIds === "forecast|metar|price|weather-gov"
+    && differenceIds === [
+      "metar-minus-forecast",
+      "price-minus-forecast",
+      "price-minus-metar",
+      "price-minus-weather-gov",
+      "weather-gov-minus-forecast",
+      "weather-gov-minus-metar",
+    ].join("|");
+}
+
+function rejectPayload(): void {
+  document.querySelector("#payload-warning")?.classList.remove("hidden");
+  root.dataset.rejectedUpdates = String(Number(root.dataset.rejectedUpdates || "0") + 1);
+}
+
 function applyPayload(next: Payload): void {
   if (next.channelId !== channelId || next.mode === "feed") return;
+  if (!validatePayload(next)) {
+    rejectPayload();
+    return;
+  }
+  if (next.mode === "delta" && (next.signature !== signature
+    || next.selectedBinId !== payload?.selectedBinId)) {
+    rejectPayload();
+    return;
+  }
+  document.querySelector("#payload-warning")?.classList.add("hidden");
   if (next.mode === "delta" && chartPointerActive) {
-    pendingDelta = next;
+    pendingDelta = mergePending(pendingDelta, next);
     root.dataset.pendingRevision = String(next.revision);
     return;
   }
+
   const signatureChanged = signature !== next.signature;
   payload = { ...payload, ...next, mode: next.mode, series: next.series };
-  if (!referenceUserSelected || (next.mode === "full" && signatureChanged)) {
-    referenceSeriesId = next.referenceSeriesId || referenceSeriesId;
-    if (next.mode === "full" && signatureChanged) referenceUserSelected = false;
-  }
   if (next.mode === "full") {
-    const changed = signatureChanged;
-    if (changed) {
+    selectedDifferenceIds = new Set(
+      (next.selectedDifferenceIds || []).filter(
+        (id) => next.differenceSpecs.some((spec) => spec.id === id),
+      ),
+    );
+    renderDifferenceControls();
+    if (signatureChanged) {
       rangeSyncReady = false;
-      signature = next.signature || "";
+      signature = next.signature;
       setTimeBasis(next.windowStart, next.windowEnd);
       reconcileFull(next.series);
-      rebuildAlignment(true);
+      reconcileDifferenceInputs(next.differenceInputs, true);
       renderDifferences(true);
       rangeSyncReady = true;
       mainChart?.timeScale().fitContent();
+    } else {
+      renderDifferences(true);
     }
-  } else updateIncrementally(next);
+  } else {
+    updateIncrementally(next);
+  }
   renderPrice();
-  renderMainLegend();
+  renderMainLegend(crosshairTime);
   renderMarkers();
+  root.dataset.signature = signature;
+  root.dataset.selectedBinId = next.selectedBinId;
+  root.dataset.payloadBytes = String(JSON.stringify(next).length);
+  root.dataset.mainSeriesCount = String(seriesApis.size);
+  root.dataset.pricePointCount = String(
+    seriesData.get("price")?.filter((point) => point.value !== null).length || 0,
+  );
   if (next.mode === "full") root.dataset.appliedRevision = String(next.revision);
 }
 
@@ -667,6 +916,10 @@ function render(data: RenderData): void {
   }
   root.style.display = "block";
   if (!mainChart) buildShell();
+  if (!validatePayload(next)) {
+    rejectPayload();
+    return;
+  }
   setupChannel(next.channelId);
   applyPayload(next);
 }

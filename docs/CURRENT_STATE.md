@@ -1,10 +1,20 @@
 # 当前状态
 
-最后更新：2026-09-04
+最后更新：2026-09-05
 
 ## 当前阶段
 
 项目处于“KLGA 统一天气存储与阶段 A Shadow Runner 已部署，Tmax 重定价研究采集进入 schema v6”的阶段。
+
+## 2026-09-05 Repricing 固定实时差值与视图稳定性
+
+- Repricing 的 Difference 已从 reference/z-score 模型收敛为六组固定普通减法；基础输入固定为 Forecast、Weather.gov Hourly Temp、METAR 和所选 bin 的 Price，NWS Station Observations 只保留为主图可选线。
+- 小图按纽约市场窗口建立一分钟 as-of 网格。Forecast 使用当时已经收到的最新 snapshot 并只在同一 capture 的相邻 valid-time 点之间插值；METAR 与 Weather.gov 使用当时最新且未超过 90 分钟的当前温度；Weather.gov 小图直接读取 settlement row 的 Temp，不使用 Running Tmax。
+- Price 同时要求 `exchange_event_at <= t` 与 `received_at <= t`，沿用 CLOB midpoint、五分钟内 last trade、十分钟内 Gamma approximate probability 的回退顺序。主图、摘要、小图和两秒 feed 共享唯一 `selected_bin_id`，payload 以 bin ID 和 signature 拒绝旧选择消息。
+- 前端删除 reference、冻结均值、标准差和 z-score 状态。六个复选框默认开启 `METAR − Forecast`、`Price × 100 − Forecast`、`Price × 100 − METAR`；Price 相关结果标记为 `display spread`，仅用于人工观察。
+- 可见 Lightweight Charts 继续单次挂载。主图和 Difference 的拖动、滚轮与触摸会退出 Follow latest；暂停期间的 delta 按 series/time 合并，真实缺口使用有限值分段，增量期间不调用 `setData`、`fitContent` 或可见范围重置。
+- iframe 固定高度提高到 930px，内部 shell 不再用纵向 `overflow:hidden` 裁切 Difference 时间轴。主图维持 65/35 pane 比例，实况与 Price 使用阶梯线，透明 time-basis 使用独立 overlay scale。
+- 两秒 feed 和首个 Dashboard 数据库打开失败现在记录有限上下文与异常堆栈。2026-09-05 线上出现的 `unable to open database file` 仍需结合 VM journal、SQLite/WAL/SHM 权限和部署观察日志确认操作系统根因；本次没有基于推测修改 systemd 或数据库。
 
 ## 2026-09-04 Dashboard 来源差值与稳定刷新
 

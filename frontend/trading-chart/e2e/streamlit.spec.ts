@@ -2,7 +2,7 @@ import { expect, test, type FrameLocator, type Page } from "@playwright/test";
 
 async function openRepricing(page: Page): Promise<FrameLocator> {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       await page.goto("/");
       await expect(page.getByText("Polymarket NYC / KLGA Trader Dashboard")).toBeVisible({
@@ -62,10 +62,16 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     (node, index) => node.setAttribute("data-identity", `stable-canvas-${index}`),
   ));
   await frame.locator("#events-button").click();
-  await frame.locator("input[name='reference'][value='price']").check();
+  await expect(frame.locator("input[name='difference']")).toHaveCount(6);
+  await expect(
+    frame.locator("input[name='difference'][value='price-minus-forecast']"),
+  ).toBeChecked();
+  await expect(frame.locator("input[name='difference'][value='weather-gov-minus-metar']"))
+    .not.toBeChecked();
   await frame.locator("#reset-button").click();
   await frame.locator("#main-chart").hover();
   await page.mouse.wheel(0, -500);
+  await expect(frame.locator("#follow-button")).toHaveAttribute("aria-pressed", "false");
   await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "true");
   await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", /.+/);
   await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", /.+/);
@@ -86,6 +92,9 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   const initialRange = await frame.locator("#app").getAttribute("data-main-range");
   const [initialStart, initialEnd] = rangeValues(initialRange);
   const initialSpan = initialEnd - initialStart;
+  const initialPricePoints = Number(
+    await frame.locator("#app").getAttribute("data-price-point-count"),
+  );
 
   for (let cycle = 0; cycle < 10; cycle += 1) {
     await page.waitForTimeout(2_100);
@@ -96,7 +105,9 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     ))).toEqual(Array.from({ length: canvasCount }, (_, index) => `stable-canvas-${index}`));
     await expect(frame.locator("#shell")).toHaveCSS("opacity", "1");
     await expect(frame.locator("#events-button")).toHaveAttribute("aria-pressed", "true");
-    await expect(frame.locator("input[name='reference'][value='price']")).toBeChecked();
+    await expect(
+      frame.locator("input[name='difference'][value='price-minus-forecast']"),
+    ).toBeChecked();
     await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "true");
     await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", /.+/);
     await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", /.+/);
@@ -118,13 +129,15 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
   );
   await frame.locator("#main-legend").hover();
   await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "false");
-  await expect(frame.locator("#app")).toHaveAttribute("data-flushed-revision", pendingRevision!);
+  await expect(frame.locator("#app")).toHaveAttribute("data-flushed-revision", /.+/);
   await expect(frame.locator("#app")).toHaveAttribute("data-pending-revision", "");
+  expect(Number(await frame.locator("#app").getAttribute("data-price-point-count")))
+    .toBeGreaterThan(initialPricePoints);
   expect(pageErrors).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("dashboard-repricing.png"), fullPage: true });
 });
 
-test("fits the requested viewport and exposes ET source tooltips", async ({ page }, testInfo) => {
+test("keeps one bin state and fits the requested viewport", async ({ page }, testInfo) => {
   const frame = await openRepricing(page);
   await expect(frame.locator("#main-legend")).toContainText("ET");
   await expect(frame.locator("#main-legend")).toContainText("NWS Hourly Forecast");
@@ -139,7 +152,18 @@ test("fits the requested viewport and exposes ET source tooltips", async ({ page
   const componentDimensions = await frame.locator("html").evaluate((element) => ({
     viewport: element.clientWidth,
     scroll: element.scrollWidth,
+    height: element.clientHeight,
+    scrollHeight: element.scrollHeight,
   }));
   expect(componentDimensions.scroll).toBeLessThanOrEqual(componentDimensions.viewport);
+  expect(componentDimensions.scrollHeight).toBeLessThanOrEqual(componentDimensions.height);
+  await expect(frame.locator("#difference-chart canvas").first()).toBeVisible();
+  await expect(frame.locator("input[name='reference']")).toHaveCount(0);
+  const firstBin = await frame.locator("#app").getAttribute("data-selected-bin-id");
+  await page.getByTestId("stRadioGroup").getByText("68-69°F", { exact: true }).click();
+  await expect.poll(async () => frame.locator("#app").getAttribute("data-selected-bin-id"))
+    .not.toBe(firstBin);
+  await expect(frame.locator("#price-readout")).toContainText("Unavailable");
+  await expect(frame.locator("#app")).toHaveAttribute("data-price-point-count", "0");
   await page.screenshot({ path: testInfo.outputPath("dashboard-layout.png"), fullPage: true });
 });

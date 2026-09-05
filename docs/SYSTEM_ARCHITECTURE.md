@@ -1,6 +1,6 @@
 # 系统架构概览
 
-最后更新：2026-09-04
+最后更新：2026-09-05
 
 本文描述模块职责、输入、输出和主要失败方式。具体模型权重、风险比例、交易阈值、数据库字段和运行参数留给后续技术设计。
 
@@ -29,9 +29,10 @@ Dashboard Lightweight Charts <- BroadcastChannel 数据泵 -----+
 
 - 市场流只保存 best bid/ask、顶层数量、mid、last trade、交易所事件时间和接收时间；A→B→A 状态完整保留，完全重复消息去重。
 - 断线重连先以批量 CLOB book 恢复状态，Gamma 只作发现和 fallback，不进入可交易延迟统计。
-- 图表组件使用随 Python 包发布的静态资源；Repricing 在同一浅色 Lightweight Charts 实例内用双 pane 分离天气温度与单温度档 Price。下方 Difference 图与主图双向同步时间范围和十字线，并按 `z_other - z_reference` 显示标准化偏离。
-- 可见组件只挂载一次；独立零高度两秒 Streamlit fragment 查询当前窗口，通过 session channel ID 对应的 `BroadcastChannel` 发送 feed。前端仅按 series ID 增量更新，市场日、范围、温度档或来源集合改变时才全量协调并重算标准化锚点。浏览器缺少 `BroadcastChannel` 时停止自动 feed，不采用周期性重建回退。
-- Difference 在纽约一分钟网格上对齐：forecast 线性插值，METAR/NWS observation 按新鲜度上限保持，Weather.gov 累计 Tmax 只在目标市场日保持，市场价格保持到断线或明确失效。零方差、共同有效点少于五个或无共同范围均视为数据不足。该指标不进入研究延迟标签、阶段 A 或交易逻辑。
+- 图表组件使用随 Python 包发布的静态资源；Repricing 在同一浅色 Lightweight Charts 实例内用双 pane 分离天气温度与唯一所选温度档的 Price。下方 Difference 图与主图双向同步时间范围和十字线，显示六组固定普通差值。
+- 可见组件只挂载一次；独立零高度两秒 Streamlit fragment 查询当前窗口，通过 session channel ID 对应的单个 `BroadcastChannel` 发送 feed。前端按 series ID 和 timestamp 合并增量，使用 signature 与 `selectedBinId` 拒绝旧选择消息；市场日、范围、温度档或主图来源集合改变时才全量协调。浏览器缺少 `BroadcastChannel` 时停止自动 feed，不采用周期性重建回退。
+- Difference 的基础输入固定为 Forecast、Weather.gov Hourly Temp、METAR 和 Price。后端在纽约一分钟网格上重建每个 t 当时已收到的最新有效值：Forecast 只在同一已知 capture 内线性插值，METAR 与 Weather.gov Hourly Temp 按对象时间和 90 分钟新鲜度保持，Price 按 CLOB midpoint、五分钟内成交、十分钟内 Gamma approximate probability 回退。Weather.gov Running Tmax 与 NWS Station Observations 只服务主图或其他既有路径，不进入 Difference。
+- Difference 固定计算三个天气 `°F` 差值和三个 Price `display spread`；任一输入缺失时保留真实断线。它只供人工研究展示，不进入研究延迟标签、阶段 A、风险、Paper、历史标签或交易逻辑。
 - 对象时间决定纽约市场日、Tmax、forecast 覆盖、日落和结算。Dashboard 展示统一固定 `America/New_York` 并标注 `ET`；浏览器时区只在 Overview 显示当前 DST 时差。
 
 - Collector 写 `poll_attempts` 和内容变化后的 `source_captures`；天气原文只在该表压缩保存，

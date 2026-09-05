@@ -13,6 +13,13 @@ def _rows(rows: list[Any]) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _object_day(value: object, object_timezone: str) -> str:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(ZoneInfo(object_timezone)).date().isoformat()
+
+
 def object_day_bounds(
     object_local_date: date, horizon_days: int, object_timezone: str
 ) -> tuple[datetime, datetime]:
@@ -235,28 +242,84 @@ class DashboardQuery:
         settlement = self._query(
             """
             SELECT * FROM settlement_rows
-            WHERE COALESCE(object_local_date,local_date)=? AND received_at<=?
+            WHERE station_id='KLGA' AND observed_at>=? AND observed_at<? AND received_at<=?
             ORDER BY received_at,observed_at
             """,
-            (object_local_date.isoformat(), as_of_text),
+            (start.isoformat(), end.isoformat(), as_of_text),
         )
-        running = None
+        running_by_day: dict[str, float] = {}
         running_tmax = []
         for item in settlement:
             value = float(item["temperature_f"])
+            local_day = str(
+                item.get("object_local_date")
+                or item.get("local_date")
+                or _object_day(item["observed_at"], object_timezone)
+            )
+            running = running_by_day.get(local_day)
             if running is None or value > running:
-                running = value
+                running_by_day[local_day] = value
                 running_tmax.append(
                     {
                         "observed_at": item["observed_at"],
                         "received_at": item["received_at"],
                         "temperature_f": value,
+                        "object_local_date": local_day,
                     }
                 )
         return {
             "observations": observations,
             "forecasts": forecasts,
             "running_tmax": running_tmax,
+        }
+
+    def get_repricing_weather_history(
+        self,
+        object_local_date: date,
+        horizon_days: int,
+        as_of: datetime,
+        object_timezone: str,
+        observation_age_seconds: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Return versioned raw inputs used to rebuild the information known at each minute."""
+        start, end = object_day_bounds(object_local_date, horizon_days, object_timezone)
+        as_of_text = as_of.astimezone(UTC).isoformat()
+        observation_start = start - timedelta(seconds=observation_age_seconds)
+        observations = self._query(
+            """
+            SELECT * FROM weather_observations
+            WHERE station_id='KLGA' AND observed_at>=? AND observed_at<? AND received_at<=?
+              AND source='aviationweather'
+            ORDER BY received_at,observed_at,revision,observation_id
+            """,
+            (observation_start.isoformat(), end.isoformat(), as_of_text),
+        )
+        forecasts = self._query(
+            """
+            SELECT p.*
+            FROM forecast_points p
+            WHERE p.source='nws' AND p.valid_at>=? AND p.valid_at<? AND p.received_at<=?
+            ORDER BY p.received_at,p.capture_id,p.legacy_snapshot_id,p.valid_at,
+                     p.forecast_point_id
+            """,
+            (
+                (start - timedelta(days=1)).isoformat(),
+                (end + timedelta(days=1)).isoformat(),
+                as_of_text,
+            ),
+        )
+        settlement = self._query(
+            """
+            SELECT * FROM settlement_rows
+            WHERE station_id='KLGA' AND observed_at>=? AND observed_at<? AND received_at<=?
+            ORDER BY received_at,observed_at,row_id
+            """,
+            (observation_start.isoformat(), end.isoformat(), as_of_text),
+        )
+        return {
+            "observations": observations,
+            "forecasts": forecasts,
+            "settlement_rows": settlement,
         }
 
     def get_forecast_revision_events(
@@ -296,34 +359,47 @@ class DashboardQuery:
         start_at: datetime,
         end_at: datetime,
         after_cursor: str | None = None,
+        as_of: datetime | None = None,
     ) -> dict[str, Any]:
         if not bin_ids:
             return {"ticks": [], "cursor": after_cursor}
         placeholders = ",".join("?" for _ in bin_ids)
-        parameters: list[Any] = [
-            event_id,
-            *bin_ids,
-            start_at.astimezone(UTC).isoformat(),
-            end_at.astimezone(UTC).isoformat(),
-        ]
-        cursor_sql = ""
-        if after_cursor:
-            cursor_time, cursor_id = after_cursor.split("|", 1)
-            cursor_sql = "AND (received_at>? OR (received_at=? AND tick_id>?))"
-            parameters.extend((cursor_time, cursor_time, cursor_id))
-        rows = self._query(
-            f"""
-            SELECT * FROM market_top_ticks
-            WHERE event_id=? AND bin_id IN ({placeholders})
-              AND exchange_event_at>=? AND exchange_event_at<? {cursor_sql}
-            ORDER BY received_at,tick_id LIMIT 20000
-            """,
-            tuple(parameters),
-        )
+        page_size = 20_000
         cursor = after_cursor
-        if rows:
+        result: list[dict[str, Any]] = []
+        while True:
+            parameters: list[Any] = [
+                event_id,
+                *bin_ids,
+                start_at.astimezone(UTC).isoformat(),
+                end_at.astimezone(UTC).isoformat(),
+            ]
+            as_of_sql = ""
+            if as_of is not None:
+                as_of_sql = "AND received_at<=?"
+                parameters.append(as_of.astimezone(UTC).isoformat())
+            cursor_sql = ""
+            if cursor:
+                cursor_time, cursor_id = cursor.split("|", 1)
+                cursor_sql = "AND (received_at>? OR (received_at=? AND tick_id>?))"
+                parameters.extend((cursor_time, cursor_time, cursor_id))
+            rows = self._query(
+                f"""
+                SELECT * FROM market_top_ticks
+                WHERE event_id=? AND bin_id IN ({placeholders})
+                  AND exchange_event_at>=? AND exchange_event_at<?
+                  {as_of_sql} {cursor_sql}
+                ORDER BY received_at,tick_id LIMIT {page_size}
+                """,
+                tuple(parameters),
+            )
+            result.extend(rows)
+            if not rows:
+                break
             cursor = f"{rows[-1]['received_at']}|{rows[-1]['tick_id']}"
-        return {"ticks": rows, "cursor": cursor}
+            if len(rows) < page_size:
+                break
+        return {"ticks": result, "cursor": cursor}
 
     def get_tmax_knowledge_events(
         self, object_local_date: date, as_of: datetime

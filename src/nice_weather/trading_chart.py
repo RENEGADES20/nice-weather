@@ -10,7 +10,7 @@ _component = components.declare_component("nice_weather_trading_chart", path=str
 
 
 def trading_chart(payload: dict[str, Any], *, key: str) -> Any:
-    return _component(payload=payload, height=790, key=key, default=None)
+    return _component(payload=payload, height=930, key=key, default=None)
 
 
 def trading_chart_feed(payload: dict[str, Any], *, key: str) -> Any:
