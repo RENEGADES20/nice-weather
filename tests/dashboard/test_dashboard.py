@@ -10,12 +10,15 @@ from streamlit.testing.v1 import AppTest
 from nice_weather.adapters.fixture import load_fixture
 from nice_weather.config import load_city_config
 from nice_weather.dashboard import (
+    _DIFFERENCE_SPECS,
     _age,
     _browser_timezone_note,
     _default_timeline_bin,
     _display_timezone,
     _format_timestamp,
     _localize_record,
+    _price_display_value,
+    _repricing_difference_inputs,
     _resolution_source_matches,
     _select_price,
     _series_delta,
@@ -191,6 +194,100 @@ def test_price_fallback_prefers_valid_clob_then_recent_trade_then_gamma() -> Non
         mid=0.3,
     )
     assert _select_price([old_gamma], now) is None
+
+
+def test_price_rejects_future_receipts_and_normalizes_display_values() -> None:
+    now = datetime(2026, 9, 4, 12, tzinfo=UTC)
+    future = _tick(now - timedelta(seconds=1), tick_id="future", mid=0.55)
+    future["received_at"] = (now + timedelta(seconds=1)).isoformat()
+    assert _select_price([future], now) is None
+    assert _price_display_value(0.45) == 45
+    assert _price_display_value(45) == 45
+    assert _price_display_value(float("inf")) is None
+    assert _price_display_value(101) is None
+
+
+def test_repricing_inputs_use_as_of_forecast_observations_and_selected_bin() -> None:
+    start = datetime(2026, 9, 4, 12, tzinfo=UTC)
+
+    def forecast_row(capture: str, received: datetime, valid: datetime, value: float) -> dict:
+        return {
+            "forecast_point_id": f"{capture}-{valid.minute}",
+            "capture_id": capture,
+            "legacy_snapshot_id": None,
+            "issued_at": (received - timedelta(minutes=1)).isoformat(),
+            "received_at": received.isoformat(),
+            "valid_at": valid.isoformat(),
+            "temperature_f": value,
+        }
+
+    history = {
+        "forecasts": [
+            forecast_row("known", start - timedelta(minutes=5), start, 70),
+            forecast_row("known", start - timedelta(minutes=5), start + timedelta(hours=1), 76),
+            forecast_row("future", start + timedelta(minutes=2), start, 90),
+            forecast_row("future", start + timedelta(minutes=2), start + timedelta(hours=1), 96),
+        ],
+        "observations": [
+            {
+                "observation_id": "metar",
+                "source": "aviationweather",
+                "observed_at": (start - timedelta(seconds=10)).isoformat(),
+                "received_at": (start + timedelta(seconds=30)).isoformat(),
+                "temperature_f": 72,
+                "revision": 1,
+            }
+        ],
+        "settlement_rows": [
+            {
+                "row_id": "weather-gov",
+                "observed_at": start.isoformat(),
+                "received_at": start.isoformat(),
+                "temperature_f": 71,
+            }
+        ],
+    }
+    tick = _tick(
+        start + timedelta(seconds=10),
+        tick_id="price",
+        bid=0.4,
+        ask=0.5,
+        mid=0.45,
+    )
+    tick["received_at"] = (start + timedelta(seconds=20)).isoformat()
+    tick["bin_id"] = "selected"
+
+    inputs = _repricing_difference_inputs(
+        history,
+        [tick],
+        start,
+        start + timedelta(minutes=3),
+        start + timedelta(minutes=3),
+        "selected",
+        observation_age_seconds=90,
+        forecast_issue_seconds=21_600,
+    )
+    by_id = {item["id"]: item for item in inputs}
+
+    assert [point["value"] for point in by_id["forecast"]["points"]] == [70, 70.1, 90.2]
+    assert [point["value"] for point in by_id["metar"]["points"]] == [None, 72, None]
+    assert [point["value"] for point in by_id["weather-gov"]["points"]] == [71, 71, None]
+    assert [point["value"] for point in by_id["price"]["points"]] == [None, 45, 45]
+    assert by_id["price"]["binId"] == "selected"
+
+
+def test_difference_specs_are_the_six_fixed_left_minus_right_pairs() -> None:
+    assert [
+        (item["id"], item["leftId"], item["rightId"], item["unit"])
+        for item in _DIFFERENCE_SPECS
+    ] == [
+        ("metar-minus-forecast", "metar", "forecast", "°F"),
+        ("weather-gov-minus-forecast", "weather-gov", "forecast", "°F"),
+        ("weather-gov-minus-metar", "weather-gov", "metar", "°F"),
+        ("price-minus-forecast", "price", "forecast", "display spread"),
+        ("price-minus-metar", "price", "metar", "display spread"),
+        ("price-minus-weather-gov", "price", "weather-gov", "display spread"),
+    ]
 
 
 def test_repricing_feed_only_emits_new_or_revised_points() -> None:

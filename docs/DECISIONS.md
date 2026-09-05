@@ -567,6 +567,43 @@ Paper 或历史标签。浏览器不支持 `BroadcastChannel` 时停止自动数
 浏览器兼容性不足、可见组件在十个以上更新周期中发生身份变化、标准化差值无法解释，或一分钟
 网格在长窗口产生明显性能问题时，重新评估通信协议、采样粒度和指标表达。
 
+## D-032：Repricing 使用四项 as-of 输入与六组固定普通差值
+
+日期：2026-09-05
+
+决定：
+
+Repricing Difference 固定使用 Forecast、Weather.gov Hourly Temp、METAR 和当前所选 Polymarket
+bin 的 Price，按一分钟网格生成六组方向固定的普通减法。Weather.gov 小图直接读取
+`settlement_rows.temperature_f`；Running Tmax 与 NWS Station Observations 不进入小图。Price 主图、
+摘要、Difference 和增量 feed 共享唯一 `selected_bin_id`。D-031 中 reference、z-score、冻结均值与
+标准差、Forecast 标准化差值的决定从本决策生效时终止。
+
+原因：
+
+标准化 reference 模型改变了数值含义，也让来源集合、锚点、增量重算和 UI 状态彼此耦合；它无法
+直接回答交易员对当前温度、Forecast 与所选 bin Price 在相同信息边界下的方向和大致幅度观察。
+固定四项输入与普通减法可以直接审计两侧原始值，并在更少状态下满足研究展示目的。
+
+影响：
+
+Forecast 在历史分钟 t 选择 `received_at <= t` 的最新 snapshot，并只在同一 capture 的相邻
+valid-time 点之间插值。METAR 与 Weather.gov 使用当时已收到、对象时间不晚于 t 且仍在新鲜度
+上限内的当前温度。Price 同时约束交易所事件时间和接收时间，并保留 CLOB、last trade、Gamma
+回退顺序。任一输入缺失时对应差值形成缺口。Price 比较标为 `display spread`，没有统一物理单位。
+Difference 继续只供人工研究展示，不进入阶段 A、历史标签、风险、Paper 或交易信号。数据库
+schema、Collector、Runner 和原始记录均不改变。
+
+替代方案：
+
+继续修补动态 reference 与 z-score，或建立可配置公式与统计框架。两者都会保留当前语义歧义并
+增加状态、测试和同步路径，当前研究阶段没有相应需求。
+
+重新评估条件：
+
+一分钟 as-of 重建在真实 5D 窗口持续超过 500ms、完整 payload 超过 5MB、数据源时间字段无法
+可靠审计，或交易员验证表明固定普通差值无法支持人工观察时，再评估压缩、采样或展示方式。
+
 ```markdown
 ## D-XXX：决策标题
 

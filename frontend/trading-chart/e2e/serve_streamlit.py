@@ -53,7 +53,7 @@ def source_capture(
 def add_chart_weather(database: Path, local_day: datetime) -> None:
     zone = ZoneInfo("America/New_York")
     start = local_day.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
-    received_at = start - timedelta(hours=12)
+    received_at = start - timedelta(hours=1)
     forecast = source_capture("nws", "forecast", received_at, local_day)
     forecast_periods = [
         {
@@ -137,7 +137,7 @@ def write_ticks(metadata: dict[str, object], start: datetime) -> None:
             token_id=str(metadata["yes_token_id"]),
             label=str(metadata["label"]),
             exchange_event_at=exchange_time.astimezone(UTC),
-            received_at=datetime.now(UTC),
+            received_at=exchange_time + timedelta(seconds=1),
             object_timezone=str(metadata["timezone"]),
             object_local_date=exchange_time.astimezone(UTC).date(),
             best_bid=mid - 0.01,

@@ -139,6 +139,54 @@ def test_settlement_repair_rebuilds_rows_from_immutable_capture(tmp_path) -> Non
     assert [row["object_local_date"] for row in rows] == ["2026-09-01", "2026-09-02"]
 
 
+def test_dashboard_repricing_reads_raw_hourly_temp_and_resets_main_tmax_by_day(
+    tmp_path,
+) -> None:
+    database = tmp_path / "dashboard-hourly.sqlite3"
+    target = date(2026, 9, 1)
+    received = datetime(2026, 9, 1, 3, tzinfo=UTC)
+    capture = _settlement_capture("dashboard-hourly", target, received)
+    with WeatherStore(database) as store:
+        store.init_schema()
+        store.save_source_capture(capture, payload={})
+        store.save_settlement_evidence(
+            SettlementEvidence(
+                evidence_id="dashboard-hourly-evidence",
+                capture_id=capture.capture_id,
+                station_id="KLGA",
+                local_date=target,
+                received_at=received,
+                table_text="Hourly fixture",
+                parse_status="parsed",
+                tmax_f=80,
+                object_timezone="America/New_York",
+            ),
+            (
+                (datetime(2026, 9, 1, 12, tzinfo=UTC), 80.0),
+                (datetime(2026, 9, 2, 12, tzinfo=UTC), 70.0),
+            ),
+        )
+
+    query = DashboardQuery(database)
+    history = query.get_repricing_weather_history(
+        target,
+        2,
+        datetime(2026, 9, 3, tzinfo=UTC),
+        "America/New_York",
+        observation_age_seconds=5_400,
+    )
+    timeline = query.get_weather_timeline(
+        target, 2, datetime(2026, 9, 3, tzinfo=UTC), "America/New_York"
+    )
+
+    assert [row["temperature_f"] for row in history["settlement_rows"]] == [80, 70]
+    assert [row["temperature_f"] for row in timeline["running_tmax"]] == [80, 70]
+    assert [row["object_local_date"] for row in timeline["running_tmax"]] == [
+        "2026-09-01",
+        "2026-09-02",
+    ]
+
+
 def test_market_ticks_keep_a_b_a_and_drop_identical_repeat(tmp_path) -> None:
     database = tmp_path / "market.sqlite3"
     config = load_city_config()
@@ -229,3 +277,26 @@ def test_market_cursor_uses_receipt_order_for_late_event_ticks(tmp_path) -> None
     )
 
     assert [item["best_bid"] for item in incremental["ticks"]] == [0.45]
+
+
+def test_market_history_paginates_past_twenty_thousand_rows(tmp_path, monkeypatch) -> None:
+    query = DashboardQuery(tmp_path / "unused.sqlite3")
+    received = "2026-09-03T12:00:00+00:00"
+    pages = [
+        [{"tick_id": f"tick-{index:05d}", "received_at": received} for index in range(20_000)],
+        [{"tick_id": "tick-20000", "received_at": received}],
+    ]
+
+    def fake_query(_sql, _parameters=()):
+        return pages.pop(0) if pages else []
+
+    monkeypatch.setattr(query, "_query", fake_query)
+    result = query.get_market_bin_history(
+        "event",
+        ["bin"],
+        datetime(2026, 9, 3, 11, tzinfo=UTC),
+        datetime(2026, 9, 3, 13, tzinfo=UTC),
+    )
+
+    assert len(result["ticks"]) == 20_001
+    assert result["cursor"] == f"{received}|tick-20000"
