@@ -27,7 +27,7 @@ def object_day_bounds(
         raise ValueError("horizon_days must be one of 1, 2, 3 or 5")
     zone = ZoneInfo(object_timezone)
     start = datetime.combine(object_local_date, time.min, zone).astimezone(UTC)
-    end = (datetime.combine(object_local_date, time.min, zone) + timedelta(days=horizon_days))
+    end = datetime.combine(object_local_date, time.min, zone) + timedelta(days=horizon_days)
     return start, end.astimezone(UTC)
 
 
@@ -247,6 +247,7 @@ class DashboardQuery:
             """,
             (start.isoformat(), end.isoformat(), as_of_text),
         )
+
         running_by_day: dict[str, float] = {}
         running_tmax = []
         for item in settlement:
@@ -273,6 +274,45 @@ class DashboardQuery:
             "running_tmax": running_tmax,
         }
 
+    def repricing_weather_version(self) -> tuple[int, ...]:
+        rows = self._query(
+            "SELECT (SELECT COALESCE(MAX(rowid),0) FROM weather_observations) AS observations,"
+            "(SELECT COALESCE(MAX(rowid),0) FROM forecast_points) AS forecasts,"
+            "(SELECT COALESCE(MAX(rowid),0) FROM settlement_rows) AS settlement"
+        )
+        return tuple(rows[0].values())
+
+    def get_repricing_ticks(
+        self,
+        event_id: str,
+        bin_id: str,
+        start: datetime,
+        end: datetime,
+        as_of: datetime,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        parameters: list[Any] = [
+            event_id,
+            bin_id,
+            start.isoformat(),
+            end.isoformat(),
+            as_of.isoformat(),
+        ]
+        cursor_sql = ""
+        if cursor:
+            stamp, identifier = cursor.split("|", 1)
+            cursor_sql = "AND (received_at,tick_id)>(?,?)"
+            parameters.extend((stamp, identifier))
+        rows = self._query(
+            "SELECT * FROM market_top_ticks WHERE event_id=? AND bin_id=? "
+            "AND received_at>=? AND exchange_event_at<? AND received_at<=? "
+            f"{cursor_sql} ORDER BY received_at,tick_id",
+            tuple(parameters),
+        )
+        if rows:
+            cursor = f"{rows[-1]['received_at']}|{rows[-1]['tick_id']}"
+        return {"ticks": rows, "cursor": cursor}
+
     def get_repricing_weather_history(
         self,
         object_local_date: date,
@@ -289,7 +329,7 @@ class DashboardQuery:
             """
             SELECT * FROM weather_observations
             WHERE station_id='KLGA' AND observed_at>=? AND observed_at<? AND received_at<=?
-              AND source='aviationweather'
+              AND source IN ('aviationweather','nws')
             ORDER BY received_at,observed_at,revision,observation_id
             """,
             (observation_start.isoformat(), end.isoformat(), as_of_text),
@@ -501,13 +541,9 @@ class DashboardQuery:
             "SELECT * FROM model_predictions WHERE decision_id=? LIMIT 1", (decision_id,)
         )
         if features:
-            features[0]["input_capture_ids"] = json.loads(
-                features[0].pop("input_capture_ids_json")
-            )
+            features[0]["input_capture_ids"] = json.loads(features[0].pop("input_capture_ids_json"))
             features[0]["features"] = json.loads(features[0].pop("features_json"))
-            features[0]["missing_flags"] = json.loads(
-                features[0].pop("missing_flags_json")
-            )
+            features[0]["missing_flags"] = json.loads(features[0].pop("missing_flags_json"))
         return {
             "features": features[0] if features else None,
             "prediction": prediction[0] if prediction else None,

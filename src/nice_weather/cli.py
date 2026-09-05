@@ -468,6 +468,8 @@ def main(argv: list[str] | None = None) -> int:
             collector.run_forever()
         except KeyboardInterrupt:
             print(json.dumps({"status": "stopped"}))
+        finally:
+            collector.close()
         return 0
     if args.command == "db":
         if args.db_command == "clone-migrate":

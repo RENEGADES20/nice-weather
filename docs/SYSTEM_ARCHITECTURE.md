@@ -27,11 +27,11 @@ Gamma 合约发现 -> CLOB WebSocket 全部 YES token -> market_top_ticks
 Dashboard Lightweight Charts <- BroadcastChannel 数据泵 -----+
 ```
 
-- 市场流只保存 best bid/ask、顶层数量、mid、last trade、交易所事件时间和接收时间；A→B→A 状态完整保留，完全重复消息去重。
-- 断线重连先以批量 CLOB book 恢复状态，Gamma 只作发现和 fallback，不进入可交易延迟统计。
+- schema v7 市场流保存 nullable event_kind、独立来源/token 的报价或真实成交及双时间。Gamma 与 CLOB 状态隔离；A→B→A 与同价新成交保留，重复消息幂等。旧无类型记录保留核验限制，旧成交不参与近期成交回退。
+- 断线重连先以批量 CLOB book 恢复状态，Gamma 只作发现和 fallback，不进入可交易延迟统计。Market Stream 保留单个 SQLite 连接，各 tick 仍独立提交，避免逐 tick 关闭最后连接、清理 WAL/SHM 导致只读 Dashboard 无法打开数据库；进程退出时关闭连接。
 - 图表组件使用随 Python 包发布的静态资源；Repricing 在同一浅色 Lightweight Charts 实例内用双 pane 分离天气温度与唯一所选温度档的 Price。下方 Difference 图与主图双向同步时间范围和十字线，显示六组固定普通差值。
-- 可见组件只挂载一次；独立零高度两秒 Streamlit fragment 查询当前窗口，通过 session channel ID 对应的单个 `BroadcastChannel` 发送 feed。前端按 series ID 和 timestamp 合并增量，使用 signature 与 `selectedBinId` 拒绝旧选择消息；市场日、范围、温度档或主图来源集合改变时才全量协调。浏览器缺少 `BroadcastChannel` 时停止自动 feed，不采用周期性重建回退。
-- Difference 的基础输入固定为 Forecast、Weather.gov Hourly Temp、METAR 和 Price。后端在纽约一分钟网格上重建每个 t 当时已收到的最新有效值：Forecast 只在同一已知 capture 内线性插值，METAR 与 Weather.gov Hourly Temp 按对象时间和 90 分钟新鲜度保持，Price 按 CLOB midpoint、五分钟内成交、十分钟内 Gamma approximate probability 回退。Weather.gov Running Tmax 与 NWS Station Observations 只服务主图或其他既有路径，不进入 Difference。
+- 可见组件只挂载一次；独立零高度两秒 Streamlit fragment 查询当前窗口，通过 session channel ID 对应的单个 `BroadcastChannel` 发送 feed。前端按 series ID 和 timestamp 合并增量，使用 signature 与 `selectedBinId` 拒绝旧选择消息；单一市场日、温度档或主图来源集合改变时全量协调。选择签名和 full/delta 序号/基线共同验证消息，缺序请求 full；完整快照替换，撤销点显式移除。天气版本缓存与价格接收游标减少重算，失败保留最后成功画面。ResizeObserver 通知父 iframe 实际高度，两图使用真实时间范围和共同透明时间基底。浏览器缺少 `BroadcastChannel` 时停止自动 feed，不采用周期性重建回退。
+- Difference 的基础输入固定为 Forecast、Weather.gov Hourly Temp、METAR 和 Price。后端在纽约一分钟网格上重建每个 t 当时已收到的最新有效值：Forecast 只在同一已知 capture 内线性插值，METAR 与 Weather.gov Hourly Temp 按对象时间和 90 分钟新鲜度保持，Price 按十分钟内 CLOB 报价/快照接收时间、五分钟内真实成交、十分钟内 Gamma 回退，断流即时失效。主图历史温度复用差值输入；NWS Station Observations 仍为可选线。未来日只使用当前已知 NWS 预报与当前 Price 水平线，计算单一快照差值，不生成历史价格或回测数据。
 - Difference 固定计算三个天气 `°F` 差值和三个 Price `display spread`；任一输入缺失时保留真实断线。它只供人工研究展示，不进入研究延迟标签、阶段 A、风险、Paper、历史标签或交易逻辑。
 - 对象时间决定纽约市场日、Tmax、forecast 覆盖、日落和结算。Dashboard 展示统一固定 `America/New_York` 并标注 `ET`；浏览器时区只在 Overview 显示当前 DST 时差。
 

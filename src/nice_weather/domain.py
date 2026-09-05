@@ -184,6 +184,7 @@ class MarketTopTick:
     ask_size: float | None = None
     mid: float | None = None
     last_trade_price: float | None = None
+    event_kind: str | None = None
 
     def __post_init__(self) -> None:
         require_aware(self.exchange_event_at, "exchange_event_at")

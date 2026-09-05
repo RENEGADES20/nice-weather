@@ -36,6 +36,7 @@ type SeriesSpec = PointSeries & {
   lineStyle?: "solid" | "dashed" | "dotted";
   maxAgeSeconds?: number | null;
   validTo?: number | null;
+  status?: string;
   currentPrice?: {
     value: number;
     display_value?: number | null;
@@ -43,6 +44,7 @@ type SeriesSpec = PointSeries & {
     time?: string;
     received_at?: string;
     bin_id?: string;
+    quality?: string;
   } | null;
 };
 
@@ -58,7 +60,17 @@ type DifferenceSpec = {
 
 type EventSpec = { id: string; type: string; time: number; title: string };
 type Payload = {
-  mode: "full" | "delta" | "feed";
+  mode: "full" | "delta" | "feed" | "status";
+  delivery?: "full" | "delta" | "status";
+  sequence?: number;
+  baseSequence?: number;
+  comparisonMode?: "as-of" | "future-snapshot";
+  asOf?: number;
+  latestActualTime?: number;
+  queryMs?: number;
+  sentAt?: number;
+  legacyWarning?: boolean;
+  error?: string;
   channelId: string;
   revision: string;
   signature: string;
@@ -101,9 +113,10 @@ let differenceRangeKey = "";
 let syncingCrosshair = false;
 let crosshairTime: Time | undefined;
 let following = true;
-let chartPointerActive = false;
-let pendingDelta: Payload | null = null;
-let flushingRevision = "";
+let lastSequence = 0;
+let resyncPending = false;
+let lastFeedAt = Date.now();
+let timeBasisKey = "";
 
 const style = (value?: string): LineStyle => value === "dashed"
   ? LineStyle.Dashed
@@ -126,6 +139,7 @@ function chartOptions() {
       borderColor: "#E2E7EE",
       timeVisible: true,
       secondsVisible: false,
+      shiftVisibleRangeOnNewBar: false,
       tickMarkFormatter: (time: Time, type: number) => formatAxisTime(
         Number(time), type, "America/New_York",
       ),
@@ -168,6 +182,9 @@ function buildShell(): void {
         <button id="fullscreen-button" class="tool-button" title="Full screen" aria-label="Full screen"><i data-lucide="expand"></i></button>
       </div>
       <div id="channel-warning" class="notice hidden">Live updates are unavailable in this browser. Manual controls remain available.</div>
+      <div id="feed-warning" class="notice hidden"></div>
+      <div id="mode-notice" class="notice hidden"></div>
+      <div id="legacy-warning" class="notice hidden">Legacy market records have unverified source state; original records are preserved.</div>
       <div id="payload-warning" class="notice hidden">A chart update was rejected because its data was invalid or belonged to another selection.</div>
       <div class="legend" id="main-legend"></div>
       <div id="main-chart"></div>
@@ -188,21 +205,21 @@ function buildShell(): void {
   root.dataset.feedPaused = "false";
   setFollowing(true);
 
-  mainChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+  mainChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
     if (!range) return;
     mainRangeKey = `${range.from}:${range.to}`;
     root.dataset.mainRange = mainRangeKey;
     if (!rangeSyncReady || mainRangeKey === differenceRangeKey) return;
     differenceRangeKey = mainRangeKey;
-    differenceChart?.timeScale().setVisibleLogicalRange(range);
+    differenceChart?.timeScale().setVisibleRange(range);
   });
-  differenceChart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+  differenceChart.timeScale().subscribeVisibleTimeRangeChange((range) => {
     if (!range) return;
     differenceRangeKey = `${range.from}:${range.to}`;
     root.dataset.differenceRange = differenceRangeKey;
     if (!rangeSyncReady || differenceRangeKey === mainRangeKey) return;
     mainRangeKey = differenceRangeKey;
-    mainChart?.timeScale().setVisibleLogicalRange(range);
+    mainChart?.timeScale().setVisibleRange(range);
   });
   mainChart.subscribeCrosshairMove((param) => {
     if (syncingCrosshair) return;
@@ -225,7 +242,7 @@ function buildShell(): void {
   });
   document.querySelector("#follow-button")?.addEventListener("click", () => {
     setFollowing(true);
-    mainChart?.timeScale().scrollToRealTime();
+    followLatest();
   });
   for (const selector of ["#main-chart", "#difference-chart"]) {
     const target = document.querySelector(selector);
@@ -233,15 +250,6 @@ function buildShell(): void {
     target?.addEventListener("pointerdown", stopFollowing);
     target?.addEventListener("wheel", stopFollowing, { passive: true });
     target?.addEventListener("touchstart", stopFollowing, { passive: true });
-    target?.addEventListener("pointerenter", () => {
-      chartPointerActive = true;
-      root.dataset.feedPaused = "true";
-    });
-    target?.addEventListener("pointerleave", () => flushPendingDelta());
-    target?.addEventListener("pointercancel", () => flushPendingDelta());
-    target?.addEventListener("pointerup", (event) => {
-      if ((event as PointerEvent).pointerType !== "mouse") flushPendingDelta();
-    });
   }
   document.querySelector("#reset-button")?.addEventListener("click", () => {
     setFollowing(false);
@@ -249,6 +257,38 @@ function buildShell(): void {
   });
   document.querySelector("#fullscreen-button")?.addEventListener("click", () => {
     void document.querySelector<HTMLElement>("#shell")?.requestFullscreen();
+  });
+  let lastHeight = 0;
+  const reportSize = () => {
+    if (document.fullscreenElement || root.clientWidth === 0) return;
+    const height = Math.ceil(document.querySelector<HTMLElement>("#shell")!.getBoundingClientRect().height);
+    if (height > 0 && height !== lastHeight) {
+      lastHeight = height;
+      Streamlit.setFrameHeight(height);
+    }
+  };
+  new ResizeObserver(reportSize).observe(document.querySelector("#shell")!);
+  document.addEventListener("fullscreenchange", () => requestAnimationFrame(reportSize));
+  reportSize();
+  window.setInterval(() => {
+    if (Date.now() - lastFeedAt > 10_000) showFeedError("Updates interrupted; showing the last successful data.");
+  }, 2_000);
+
+}
+
+function showFeedError(message: string): void {
+  const target = document.querySelector<HTMLElement>("#feed-warning");
+  if (target) { target.textContent = message; target.classList.toggle("hidden", !message); }
+}
+
+function followLatest(): void {
+  if (!mainChart || !payload || payload.comparisonMode === "future-snapshot") return;
+  const range = mainChart.timeScale().getVisibleRange();
+  if (!range) return;
+  const end = Math.min(payload.windowEnd, payload.latestActualTime ?? payload.windowEnd);
+  const span = Math.min(Number(range.to) - Number(range.from), payload.windowEnd - payload.windowStart);
+  mainChart.timeScale().setVisibleRange({
+    from: Math.max(payload.windowStart, end - span) as UTCTimestamp, to: end as UTCTimestamp,
   });
 }
 
@@ -386,7 +426,8 @@ function reconcileFull(specs: SeriesSpec[]): void {
 function reconcileDelta(specs: SeriesSpec[]): void {
   for (const spec of specs) {
     const previous = seriesData.get(spec.id) || [];
-    const merged = mergeRawPoints(previous, spec.points);
+    const removed = new Set(spec.removedTimes || []);
+    const merged = mergeRawPoints(previous.filter((point) => !removed.has(point.time)), spec.points);
     reconcileSeriesDelta(spec, previous, merged);
   }
 }
@@ -395,7 +436,10 @@ function reconcileDifferenceInputs(specs: PointSeries[], full: boolean): void {
   if (full) differenceInputData.clear();
   for (const spec of specs) {
     const previous = differenceInputData.get(spec.id) || [];
-    differenceInputData.set(spec.id, mergeRawPoints(full ? [] : previous, spec.points));
+    const removed = new Set(spec.removedTimes || []);
+    differenceInputData.set(spec.id, mergeRawPoints(full ? [] : previous.filter(
+      (point) => !removed.has(point.time),
+    ), spec.points));
   }
 }
 
@@ -499,10 +543,16 @@ function differenceOptions(spec: DifferenceSpec) {
 
 function setTimeBasis(start: number, end: number): void {
   if (!mainChart || !differenceChart) return;
-  const points: LineData[] = [];
-  for (let current = Math.floor(start / 60) * 60; current <= end; current += 60) {
-    points.push({ time: current as UTCTimestamp, value: 0 });
+  const times = new Set<number>();
+  for (let current = Math.floor(start / 60) * 60; current <= end; current += 60) times.add(current);
+  for (const data of [...seriesData.values(), ...differenceInputData.values()]) {
+    for (const point of data) times.add(point.time);
   }
+  const ordered = [...times].sort((a, b) => a - b);
+  const key = ordered.join(",");
+  if (key === timeBasisKey) return;
+  timeBasisKey = key;
+  const points: LineData[] = ordered.map((time) => ({ time: time as UTCTimestamp, value: 0 }));
   const options = {
     color: "rgba(0,0,0,0)",
     crosshairMarkerVisible: false,
@@ -521,7 +571,8 @@ function setTimeBasis(start: number, end: number): void {
 function renderDifferenceControls(): void {
   if (!payload) return;
   const target = document.querySelector<HTMLElement>("#difference-controls")!;
-  target.innerHTML = payload.differenceSpecs.map((spec) => `
+  target.innerHTML = payload.differenceSpecs.filter((spec) => payload?.comparisonMode !== "future-snapshot"
+    || spec.id === "price-minus-forecast").map((spec) => `
     <label title="${escapeHtml(spec.unit)}">
       <input type="checkbox" name="difference" value="${escapeHtml(spec.id)}" ${selectedDifferenceIds.has(spec.id) ? "checked" : ""}/>
       <i style="background:${spec.color}"></i>${escapeHtml(spec.name)}
@@ -574,16 +625,18 @@ function mainPointAt(spec: SeriesSpec, time: number): RawPoint | undefined {
   const points = seriesData.get(spec.id) || [];
   const exact = pointAt(points, time);
   if (exact) return exact.value == null ? undefined : exact;
-  const rightIndex = points.findIndex((point) => point.time > time);
-  if (rightIndex <= 0) return undefined;
-  const left = points[rightIndex - 1];
-  const right = points[rightIndex];
-  if (left.value == null || right.value == null) return undefined;
   if (spec.validTo != null && time >= spec.validTo) return undefined;
+  const rightIndex = points.findIndex((point) => point.time > time);
+  const left = rightIndex < 0 ? points.at(-1) : points[rightIndex - 1];
+  const right = rightIndex < 0 ? undefined : points[rightIndex];
+  if (!left || left.value == null) return undefined;
   if (spec.fill !== "forecast") {
-    if (spec.maxAgeSeconds != null && time - left.time > spec.maxAgeSeconds) return undefined;
+    const observed = Date.parse(left.objectTime || left.object_time || "") / 1000;
+    const basis = Number.isFinite(observed) ? observed : left.time;
+    if (spec.maxAgeSeconds != null && time - basis > spec.maxAgeSeconds) return undefined;
     return { ...left, time };
   }
+  if (!right || right.value == null) return undefined;
   if (right.time === left.time) return undefined;
   const ratio = (time - left.time) / (right.time - left.time);
   return {
@@ -616,12 +669,12 @@ function renderPrice(): void {
   const point = spec?.currentPrice;
   const target = document.querySelector<HTMLElement>("#price-readout")!;
   if (!point || spec?.binId !== payload?.selectedBinId) {
-    target.textContent = "Price Unavailable";
+    target.textContent = `Price unavailable · ${spec?.status || "no-records"}`;
     return;
   }
   const receivedAt = Date.parse(point.received_at || point.time || "") / 1000;
   const age = receivedAt ? Math.max(0, Math.round(Date.now() / 1000 - receivedAt)) : 0;
-  const display = point.display_value ?? (point.value <= 1 ? point.value * 100 : point.value);
+  const display = point.display_value ?? point.value * 100;
   target.textContent = `Price ${display.toFixed(1)}% · ${point.source} · ${age < 60 ? `${age}s` : `${Math.floor(age / 60)}m`} old`;
   target.title = `Bin ${payload?.selectedBinId}; raw ${point.value}; display ${display.toFixed(1)}; event ${formatEt(point.time)}; received ${formatEt(point.received_at)}`;
 }
@@ -631,11 +684,10 @@ function renderMainLegend(time?: Time): void {
   const numericTime = time == null ? null : Number(time);
   const stamp = numericTime == null ? "ET" : `${formatAxisTime(numericTime, 3, "America/New_York")} ET`;
   const items = payload.series.map((spec) => {
-    const point = numericTime == null
-      ? seriesData.get(spec.id)?.filter((item) => item.value !== null).at(-1)
-      : mainPointAt(spec, numericTime);
+    const point = mainPointAt(spec, numericTime ?? (payload?.comparisonMode === "future-snapshot"
+      ? payload.windowStart : Math.min(payload?.asOf || Date.now() / 1000, payload!.windowEnd - 60)));
     const value = point?.value == null
-      ? "Unavailable"
+      ? `Unavailable (${spec.status === "available" ? "no valid input at this time" : spec.status || "no-records"})`
       : formatRaw(point.value, spec.format === "probability" ? "probability" : "°F");
     const details = point
       ? `${spec.description} ${pointAudit(point)}`
@@ -652,7 +704,7 @@ function renderDifferenceDetails(time?: Time): void {
     target.innerHTML = '<span class="legend-time">ET</span><span>Move the crosshair to audit both inputs.</span>';
     return;
   }
-  const numericTime = Number(time);
+  const numericTime = Math.floor(Number(time) / 60) * 60;
   const stamp = `${formatAxisTime(numericTime, 3, "America/New_York")} ET`;
   const items = payload.differenceSpecs
     .filter((spec) => selectedDifferenceIds.has(spec.id))
@@ -705,7 +757,7 @@ function syncCrosshair(time: Time | undefined, fromMain: boolean): void {
   try {
     if (basis) target.setCrosshairPosition(0, time, basis);
   } catch {
-    requestAnimationFrame(() => restoreCrosshair(Number(time), fromMain));
+    restoreCrosshair(Number(time), fromMain);
   } finally {
     syncingCrosshair = false;
   }
@@ -723,87 +775,21 @@ function restoreCrosshair(time: number, onDifference: boolean): boolean {
   }
 }
 
-function restoreCrosshairsAfterPaint(time: number, attempt = 0): void {
-  requestAnimationFrame(() => requestAnimationFrame(() => {
-    const mainRestored = restoreCrosshair(time, false);
-    const differenceRestored = restoreCrosshair(time, true);
-    if ((!mainRestored || !differenceRestored) && attempt < 2) {
-      window.setTimeout(() => restoreCrosshairsAfterPaint(time, attempt + 1), 32);
-      return;
-    }
-    root.dataset.mainCrosshair = String(time);
-    root.dataset.differenceCrosshair = String(time);
-    crosshairTime = time as UTCTimestamp;
-    syncingCrosshair = false;
-  }));
-}
-
-function mergeSeriesMessages<T extends PointSeries>(existing: T[], incoming: T[]): T[] {
-  const result = new Map(existing.map((spec) => [spec.id, spec]));
-  for (const spec of incoming) {
-    const previous = result.get(spec.id);
-    result.set(spec.id, {
-      ...previous,
-      ...spec,
-      points: mergeRawPoints(previous?.points || [], spec.points),
-    });
-  }
-  return [...result.values()];
-}
-
-function mergePending(existing: Payload | null, next: Payload): Payload {
-  if (!existing) return next;
-  return {
-    ...existing,
-    ...next,
-    series: mergeSeriesMessages(existing.series, next.series) as SeriesSpec[],
-    differenceInputs: mergeSeriesMessages(existing.differenceInputs, next.differenceInputs),
-  };
-}
-
 function updateIncrementally(next: Payload): void {
-  const savedCrosshair = crosshairTime == null ? undefined : Number(crosshairTime);
-  syncingCrosshair = true;
-  mainChart?.clearCrosshairPosition();
-  differenceChart?.clearCrosshairPosition();
-  requestAnimationFrame(() => {
-    if (chartPointerActive) {
-      pendingDelta = mergePending(pendingDelta, next);
-      root.dataset.pendingRevision = String(next.revision);
-      syncingCrosshair = false;
-      return;
-    }
-    reconcileDelta(next.series);
-    reconcileDifferenceInputs(next.differenceInputs, false);
-    renderDifferences(false);
-    root.dataset.pricePointCount = String(
-      seriesData.get("price")?.filter((point) => point.value !== null).length || 0,
-    );
-    if (following) mainChart?.timeScale().scrollToRealTime();
-    root.dataset.appliedRevision = String(next.revision);
-    if (String(next.revision) === flushingRevision) {
-      root.dataset.flushedRevision = flushingRevision;
-      flushingRevision = "";
-    }
-    const restoreTime = crosshairTime == null ? savedCrosshair : Number(crosshairTime);
-    if (restoreTime != null && Number.isFinite(restoreTime)) {
-      restoreCrosshairsAfterPaint(restoreTime);
-    } else {
-      syncingCrosshair = false;
-    }
-  });
-}
-
-function flushPendingDelta(): void {
-  chartPointerActive = false;
-  root.dataset.feedPaused = "false";
-  const next = pendingDelta;
-  pendingDelta = null;
-  if (next) {
-    flushingRevision = String(next.revision);
-    applyPayload(next);
+  const visible = mainChart?.timeScale().getVisibleRange();
+  rangeSyncReady = false;
+  reconcileDelta(next.series);
+  reconcileDifferenceInputs(next.differenceInputs, false);
+  renderDifferences(false);
+  setTimeBasis(next.windowStart, next.windowEnd);
+  if (visible) {
+    mainChart?.timeScale().setVisibleRange(visible);
+    differenceChart?.timeScale().setVisibleRange(visible);
   }
-  root.dataset.pendingRevision = "";
+  rangeSyncReady = true;
+  if (following) followLatest();
+  root.dataset.appliedRevision = String(next.revision);
+  if (crosshairTime != null) syncCrosshair(crosshairTime, true);
 }
 
 function validPoint(point: RawPoint): boolean {
@@ -849,7 +835,23 @@ function rejectPayload(): void {
 }
 
 function applyPayload(next: Payload): void {
+  const renderStarted = performance.now();
   if (next.channelId !== channelId || next.mode === "feed") return;
+  if (next.mode === "status") {
+    if (next.signature === signature) showFeedError(next.error || "Updates interrupted");
+    return;
+  }
+  if (next.mode === "delta" && (next.signature !== signature
+    || next.selectedBinId !== payload?.selectedBinId)) return;
+  if (next.sequence != null && next.sequence <= lastSequence) return;
+  if (next.mode === "delta" && next.baseSequence != null && next.baseSequence !== lastSequence) {
+    if (!resyncPending) {
+      resyncPending = true;
+      Streamlit.setComponentValue({ resync: Date.now(), selectedDifferenceIds: [...selectedDifferenceIds] });
+    }
+    showFeedError("Synchronizing a missed update…");
+    return;
+  }
   if (!validatePayload(next)) {
     rejectPayload();
     return;
@@ -860,36 +862,51 @@ function applyPayload(next: Payload): void {
     return;
   }
   document.querySelector("#payload-warning")?.classList.add("hidden");
-  if (next.mode === "delta" && chartPointerActive) {
-    pendingDelta = mergePending(pendingDelta, next);
-    root.dataset.pendingRevision = String(next.revision);
-    return;
-  }
 
   const signatureChanged = signature !== next.signature;
+  const windowChanged = !payload || next.windowStart !== payload.windowStart || next.windowEnd !== payload.windowEnd;
+  const previousMode = payload?.comparisonMode;
+  const previousRange = mainChart?.timeScale().getVisibleRange();
   payload = { ...payload, ...next, mode: next.mode, series: next.series };
   if (next.mode === "full") {
+    resyncPending = false;
     const validDifferenceIds = new Set(next.differenceSpecs.map((spec) => spec.id));
-    selectedDifferenceIds = differenceSelectionInitialized
+    selectedDifferenceIds = differenceSelectionInitialized && previousMode === next.comparisonMode
       ? new Set([...selectedDifferenceIds].filter((id) => validDifferenceIds.has(id)))
       : new Set((next.selectedDifferenceIds || []).filter((id) => validDifferenceIds.has(id)));
+    if (next.comparisonMode === "future-snapshot") selectedDifferenceIds = new Set(["price-minus-forecast"]);
     differenceSelectionInitialized = true;
     renderDifferenceControls();
-    if (signatureChanged) {
-      rangeSyncReady = false;
-      signature = next.signature;
-      setTimeBasis(next.windowStart, next.windowEnd);
-      reconcileFull(next.series);
-      reconcileDifferenceInputs(next.differenceInputs, true);
-      renderDifferences(true);
-      rangeSyncReady = true;
-      mainChart?.timeScale().fitContent();
-    } else {
-      renderDifferences(true);
+    rangeSyncReady = false;
+    signature = next.signature;
+    if (signatureChanged) crosshairTime = undefined;
+
+    reconcileFull(next.series);
+    reconcileDifferenceInputs(next.differenceInputs, true);
+    renderDifferences(true);
+    setTimeBasis(next.windowStart, next.windowEnd);
+    if (!windowChanged && previousRange) {
+      mainChart?.timeScale().setVisibleRange(previousRange);
+      differenceChart?.timeScale().setVisibleRange(previousRange);
     }
+    rangeSyncReady = true;
+    if (windowChanged) mainChart?.timeScale().fitContent();
   } else {
     updateIncrementally(next);
   }
+  lastSequence = next.sequence ?? lastSequence;
+  lastFeedAt = Date.now();
+  showFeedError(next.error || "");
+  const notice = document.querySelector<HTMLElement>("#mode-notice")!;
+  notice.classList.toggle("hidden", next.comparisonMode !== "future-snapshot");
+  document.querySelector(".difference-title span")!.textContent = next.comparisonMode === "future-snapshot"
+    ? "Current Price × 100 − hourly Forecast" : "Six fixed subtractions on a one-minute as-of grid.";
+  notice.textContent = `Current snapshot comparison · ${formatEt(new Date((next.asOf || 0) * 1000).toISOString())}. The price line is the current quote, not future price history.`;
+  document.querySelector("#legacy-warning")?.classList.toggle("hidden", !next.legacyWarning);
+  root.dataset.sequence = String(lastSequence);
+  root.dataset.queryMs = String(next.queryMs || 0);
+  root.dataset.transportMs = String(next.sentAt ? Math.max(0, Date.now() - next.sentAt * 1000) : 0);
+  root.dataset.comparisonMode = next.comparisonMode || "as-of";
   renderPrice();
   renderMainLegend(crosshairTime);
   renderMarkers();
@@ -900,6 +917,11 @@ function applyPayload(next: Payload): void {
   root.dataset.pricePointCount = String(
     seriesData.get("price")?.filter((point) => point.value !== null).length || 0,
   );
+  const currentPrice = next.series.find((item) => item.id === "price")?.currentPrice;
+  root.dataset.priceReceivedAt = currentPrice?.received_at || "";
+  root.dataset.receivedToVisibleMs = String(currentPrice?.received_at
+    ? Math.max(0, Date.now() - Date.parse(currentPrice.received_at)) : 0);
+  root.dataset.renderMs = String(performance.now() - renderStarted);
   if (next.mode === "full") root.dataset.appliedRevision = String(next.revision);
 }
 
@@ -908,9 +930,10 @@ function render(data: RenderData): void {
   if (next.mode === "feed") {
     root.replaceChildren();
     root.style.display = "none";
+    Streamlit.setFrameHeight(0);
     if ("BroadcastChannel" in window) {
       const feed = new BroadcastChannel(`nice-weather-${next.channelId}`);
-      feed.postMessage({ ...next, mode: "delta" });
+      feed.postMessage({ ...next, mode: next.delivery || "delta" });
       feed.close();
     }
     return;
@@ -923,6 +946,7 @@ function render(data: RenderData): void {
   }
   setupChannel(next.channelId);
   applyPayload(next);
+
 }
 
 Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, (event) => {

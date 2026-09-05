@@ -9,6 +9,7 @@ from bisect import bisect_left
 from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from html import escape
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from urllib.parse import parse_qsl, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -504,9 +505,19 @@ def _finite_float(value: object) -> float | None:
 
 def _price_display_value(raw_value: object) -> float | None:
     value = _finite_float(raw_value)
-    if value is None or value < 0 or value > 100:
+    if value is None or value < 0 or value > 1:
         return None
-    return value * 100 if value <= 1 else value
+    return value * 100
+
+
+def _price_kind(tick: dict[str, Any]) -> str | None:
+    if tick.get("event_kind") == "trade":
+        return "trade" if tick.get("source") == "clob_ws" else None
+    if tick.get("source") == "clob_ws":
+        return "clob"
+    if tick.get("source") == "gamma_fallback":
+        return "gamma"
+    return None
 
 
 def _price_state_selection(
@@ -525,7 +536,8 @@ def _price_state_selection(
             latest_clob.get("status") in {"available", "reconnect_snapshot"}
             and bid is not None
             and ask is not None
-            and bid <= ask
+            and 0 <= bid <= ask <= 1
+            and 0 <= cutoff - _epoch(latest_clob["received_at"]) <= 600
             and mid is not None
             and display is not None
         ):
@@ -537,6 +549,7 @@ def _price_state_selection(
                 "received_at": latest_clob.get("received_at"),
                 "age_seconds": max(0.0, cutoff - _epoch(latest_clob["exchange_event_at"])),
                 "bin_id": latest_clob.get("bin_id"),
+                "quality": "verified" if latest_clob.get("event_kind") else "legacy-unverified",
             }
     if latest_trade:
         trade = _finite_float(latest_trade.get("last_trade_price"))
@@ -583,10 +596,16 @@ def _select_price(ticks: list[dict[str, Any]], at: datetime) -> dict[str, Any] |
             return False
 
     eligible = [item for item in ticks if known(item)]
+
     def receipt_key(item: dict[str, Any]) -> tuple[float, str]:
         return _epoch(item["received_at"]), str(item["tick_id"])
-    clob = [item for item in eligible if item.get("source") == "clob_ws"]
-    trades = [item for item in eligible if item.get("last_trade_price") is not None]
+
+    clob = [item for item in eligible if _price_kind(item) == "clob"]
+    trades = [
+        item
+        for item in eligible
+        if _price_kind(item) == "trade" and item.get("last_trade_price") is not None
+    ]
     gamma = [
         item
         for item in eligible
@@ -603,67 +622,74 @@ def _select_price(ticks: list[dict[str, Any]], at: datetime) -> dict[str, Any] |
 
 
 def _price_points(
-    ticks: list[dict[str, Any]], selected_bin_id: str, start_at: datetime
+    ticks: list[dict[str, Any]],
+    selected_bin_id: str,
+    start_at: datetime,
+    end_at: datetime | None = None,
+    as_of: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    points: list[dict[str, Any]] = []
-    previous: tuple[float, str] | None = None
-    ordered = sorted(ticks, key=lambda item: (_epoch(item["received_at"]), item["tick_id"]))
-    latest_clob: dict[str, Any] | None = None
-    latest_trade: dict[str, Any] | None = None
-    latest_gamma: dict[str, Any] | None = None
-    for tick in ordered:
-        if tick.get("source") == "clob_ws":
-            latest_clob = tick
-        if tick.get("last_trade_price") is not None:
-            latest_trade = tick
-        if (
-            tick.get("source") == "gamma_fallback"
-            and tick.get("mid") is not None
-            and tick.get("status") not in {"crossed", "disconnect", "missing"}
-        ):
-            latest_gamma = tick
-        at = _display_datetime(tick["received_at"], UTC)
-        candidates = [item for item in (latest_clob, latest_trade, latest_gamma) if item]
-        selected = _select_price(candidates, at) if at is not None else None
-        if _epoch(tick["exchange_event_at"]) < start_at.timestamp():
-            previous = (
-                (selected["value"], selected["source"]) if selected is not None else None
-            )
-            continue
-        if selected is None:
-            if previous is not None:
-                points.append(
-                    {
-                        "time": _epoch(tick["exchange_event_at"]),
-                        "value": None,
-                        "rawValue": None,
-                        "rawUnit": "probability",
-                        "priceSource": "Unavailable",
-                        "received_at": tick.get("received_at"),
-                        "binId": selected_bin_id,
-                    }
-                )
-                previous = None
-            continue
-        display = float(selected["display_value"])
-        current = (display, selected["source"])
-        if current == previous:
-            continue
-        points.append(
+    """Price changes when known, including expiration without new ticks."""
+    stop = min(
+        (end_at or datetime.max.replace(tzinfo=UTC)).timestamp(),
+        (as_of or datetime.now(UTC)).timestamp(),
+    )
+    ordered = sorted(
+        ticks,
+        key=lambda row: (
+            max(_epoch(row["received_at"]), _epoch(row["exchange_event_at"])),
+            row["received_at"],
+            row["tick_id"],
+        ),
+    )
+    times = {start_at.timestamp(), stop}
+    for row in ordered:
+        known = max(_epoch(row["received_at"]), _epoch(row["exchange_event_at"]))
+        times.add(known)
+        kind = _price_kind(row)
+        expiry = (
+            _epoch(row["received_at"]) + 600
+            if kind == "clob"
+            else _epoch(row["exchange_event_at"]) + (300 if kind == "trade" else 600)
+        )
+        times.add(expiry + 0.001)
+    state: dict[str, dict[str, Any]] = {}
+    index = 0
+    result = []
+    for target in sorted(t for t in times if start_at.timestamp() <= t <= stop):
+        while index < len(ordered):
+            row = ordered[index]
+            if max(_epoch(row["received_at"]), _epoch(row["exchange_event_at"])) > target:
+                break
+            kind = _price_kind(row)
+            if kind:
+                current = state.get(kind)
+                if current is None or (row["received_at"], row["tick_id"]) > (
+                    current["received_at"],
+                    current["tick_id"],
+                ):
+                    state[kind] = row
+            index += 1
+        selected = _price_state_selection(
+            state.get("clob"),
+            state.get("trade"),
+            state.get("gamma"),
+            datetime.fromtimestamp(target, UTC),
+        )
+        result.append(
             {
-                "time": _epoch(tick["exchange_event_at"]),
-                "value": display / 100,
-                "rawValue": selected["value"],
+                "time": target,
+                "value": selected["value"] if selected else None,
+                "rawValue": selected["value"] if selected else None,
                 "rawUnit": "probability",
-                "priceSource": selected["source"],
-                "object_time": selected.get("time"),
-                "received_at": selected.get("received_at"),
-                "displayValue": selected.get("display_value"),
+                "priceSource": selected["source"] if selected else "Unavailable",
+                "objectTime": selected["time"] if selected else None,
+                "receivedAt": selected.get("received_at") if selected else None,
+                "displayValue": selected["display_value"] if selected else None,
+                "quality": selected.get("quality") if selected else None,
                 "binId": selected_bin_id,
             }
         )
-        previous = current
-    return points
+    return result
 
 
 def _minute_grid(start: datetime, end: datetime, as_of: datetime) -> list[int]:
@@ -677,12 +703,16 @@ def _temperature_point(
     row: dict[str, Any] | None, target: int, freshness_seconds: int, source: str
 ) -> dict[str, Any]:
     if row is None:
-        return {"time": target, "value": None}
+        return {"time": target, "value": None, "reason": "no-records"}
     observed = _epoch(row["observed_at"])
     age = target - observed
     value = _finite_float(row.get("temperature_f"))
     if value is None or age < 0 or age > freshness_seconds:
-        return {"time": target, "value": None}
+        return {
+            "time": target,
+            "value": None,
+            "reason": "expired" if age > freshness_seconds else "invalid-input",
+        }
     return {
         "time": target,
         "value": value,
@@ -698,29 +728,33 @@ def _temperature_point(
 def _forecast_point(
     snapshots: list[dict[str, Any]], target: int, max_issue_age_seconds: int
 ) -> dict[str, Any]:
+    reason = "no-records"
     for snapshot in reversed(snapshots):
         received = snapshot["received_epoch"]
         issued = snapshot["issued_epoch"]
-        if received > target or issued > target or target - issued > max_issue_age_seconds:
+        if received > target or issued > target:
             continue
+        reason = "expired" if target - issued > max_issue_age_seconds else "missing-forecast"
+        if reason == "expired":
+            break
         times: list[int] = snapshot["times"]
         index = bisect_left(times, target)
         if index < len(times) and times[index] == target:
             left = right = snapshot["points"][index]
             value = _finite_float(left.get("temperature_f"))
         elif index == 0 or index >= len(times):
-            continue
+            break
         else:
             left = snapshot["points"][index - 1]
             right = snapshot["points"][index]
             left_value = _finite_float(left.get("temperature_f"))
             right_value = _finite_float(right.get("temperature_f"))
             if left_value is None or right_value is None or times[index] == times[index - 1]:
-                continue
+                break
             ratio = (target - times[index - 1]) / (times[index] - times[index - 1])
             value = left_value + (right_value - left_value) * ratio
         if value is None or not math.isfinite(value):
-            continue
+            break
         return {
             "time": target,
             "value": value,
@@ -735,7 +769,7 @@ def _forecast_point(
             "captureId": snapshot["capture_id"],
             "ageSeconds": target - received,
         }
-    return {"time": target, "value": None}
+    return {"time": target, "value": None, "reason": reason}
 
 
 def _forecast_snapshots(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -755,7 +789,6 @@ def _forecast_snapshots(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if item.get("valid_at") is not None
             and item.get("received_at") is not None
             and item.get("issued_at") is not None
-            and _finite_float(item.get("temperature_f")) is not None
         ]
         if not valid:
             continue
@@ -840,7 +873,8 @@ def _repricing_difference_inputs(
     }
 
     for target in grid:
-        for source_id, rows in sources.items():
+        # Empty history is the price-only incremental path.
+        for source_id, rows in (sources.items() if history else []):
             while source_index[source_id] < len(rows):
                 row = rows[source_index[source_id]]
                 if max(_epoch(row["received_at"]), _epoch(row["observed_at"])) > target:
@@ -874,27 +908,31 @@ def _repricing_difference_inputs(
                 )
             )
 
-        points["forecast"].append(_forecast_point(snapshots, target, forecast_issue_seconds))
+        if history:
+            points["forecast"].append(_forecast_point(snapshots, target, forecast_issue_seconds))
 
         while tick_index < len(ordered_ticks):
             tick = ordered_ticks[tick_index]
             if max(_epoch(tick["received_at"]), _epoch(tick["exchange_event_at"])) > target:
                 break
             receipt_key = (_epoch(tick["received_at"]), str(tick["tick_id"]))
-            if tick.get("source") == "clob_ws" and (
+            if _price_kind(tick) == "clob" and (
                 latest_clob is None
                 or receipt_key > (_epoch(latest_clob["received_at"]), str(latest_clob["tick_id"]))
             ):
                 latest_clob = tick
-            if tick.get("last_trade_price") is not None and (
-                latest_trade is None
-                or receipt_key > (_epoch(latest_trade["received_at"]), str(latest_trade["tick_id"]))
+            if (
+                _price_kind(tick) == "trade"
+                and tick.get("last_trade_price") is not None
+                and (
+                    latest_trade is None
+                    or receipt_key
+                    > (_epoch(latest_trade["received_at"]), str(latest_trade["tick_id"]))
+                )
             ):
                 latest_trade = tick
             if (
                 tick.get("source") == "gamma_fallback"
-                and tick.get("mid") is not None
-                and tick.get("status") not in {"crossed", "disconnect", "missing"}
                 and (
                     latest_gamma is None
                     or receipt_key
@@ -1020,11 +1058,56 @@ def _timeline_series(
             "binId": selected_bin_id,
             "color": "#2563EB",
             "lineStyle": "solid",
-            "points": _price_points(ticks, selected_bin_id, start),
+            "points": _price_points(ticks, selected_bin_id, start, as_of=now),
             "currentPrice": current_price,
         }
     )
     return result
+
+
+def _merge_input_points(previous: list[dict], incoming: list[dict]) -> list[dict]:
+    points = {point["time"]: point for point in previous}
+    points.update({point["time"]: point for point in incoming})
+    return [points[stamp] for stamp in sorted(points)]
+
+
+def _future_inputs(
+    history: dict,
+    price: dict | None,
+    start: datetime,
+    end: datetime,
+    now: datetime,
+    forecast_age: int,
+    bin_id: str,
+) -> list[dict]:
+    snapshots = [
+        snapshot
+        for snapshot in _forecast_snapshots(history["forecasts"])
+        if snapshot["received_epoch"] <= now.timestamp()
+        and 0 <= now.timestamp() - snapshot["issued_epoch"] <= forecast_age
+    ]
+    snapshots = snapshots[-1:]
+    forecast, prices = [], []
+    for target in _minute_grid(start, end, end):
+        forecast.append(_forecast_point(snapshots, target, 10**9))
+        prices.append(
+            {
+                "time": target,
+                "value": price["display_value"] if price else None,
+                "rawValue": price["value"] if price else None,
+                "rawUnit": "probability",
+                "binId": bin_id,
+                "priceSource": price["source"] if price else None,
+                "objectTime": price["time"] if price else None,
+                "receivedAt": price.get("received_at") if price else None,
+            }
+        )
+    return [
+        {"id": "forecast", "name": "Forecast", "points": forecast},
+        {"id": "weather-gov", "name": "Weather.gov Hourly Temp", "points": []},
+        {"id": "metar", "name": "METAR", "points": []},
+        {"id": "price", "name": "Price × 100", "binId": bin_id, "points": prices},
+    ]
 
 
 def _timeline_data(
@@ -1035,74 +1118,205 @@ def _timeline_data(
     horizon: int,
     selected_bin_id: str,
     visible_sources: list[str],
-) -> tuple[
-    list[dict[str, Any]],
-    list[dict[str, Any]],
-    list[dict[str, Any]],
-    datetime,
-    datetime,
-]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], datetime, datetime]:
+    started = perf_counter()
     query = DashboardQuery(db)
     now = datetime.now(UTC)
     zone = ZoneInfo(object_timezone)
     start = datetime.combine(object_day, time.min, zone).astimezone(UTC)
-    end = (datetime.combine(object_day, time.min, zone) + timedelta(days=horizon)).astimezone(UTC)
-    timeline = query.get_weather_timeline(object_day, horizon, now, object_timezone)
+    end = (datetime.combine(object_day, time.min, zone) + timedelta(days=1)).astimezone(UTC)
+    future = start > now
+    cutoff = min(now, end - timedelta(microseconds=1))
     config = load_city_config()
-    market = query.get_market_bin_history(
-        event_id,
-        [selected_bin_id],
-        datetime(1970, 1, 1, tzinfo=UTC),
-        end,
-        as_of=now,
-    )
-    difference_history = query.get_repricing_weather_history(
-        object_day,
-        horizon,
-        now,
-        object_timezone,
-        config.freshness.observation_age_seconds,
-    )
-    series = _timeline_series(
-        timeline,
-        market["ticks"],
-        visible_sources,
-        config.freshness.observation_age_seconds,
-        now,
-        selected_bin_id,
-        start,
-    )
-    difference_inputs = _repricing_difference_inputs(
-        difference_history,
-        market["ticks"],
-        start,
-        end,
-        now,
-        selected_bin_id,
-        config.freshness.observation_age_seconds,
-        config.freshness.forecast_issue_seconds,
-    )
-    price_series = next(item for item in series if item["id"] == "price")
-    price_input = next(item for item in difference_inputs if item["id"] == "price")
-    if price_series.get("binId") != selected_bin_id or price_input.get("binId") != selected_bin_id:
-        raise ValueError("Repricing selected bin is inconsistent across chart inputs")
-    market_day_end = (datetime.combine(object_day, time.min, zone) + timedelta(days=1)).astimezone(
-        UTC
-    )
-    for item in series:
-        if item["id"] == "weather-gov":
-            item["validTo"] = market_day_end.timestamp()
-    revisions = query.get_forecast_revision_events(object_day, now, object_timezone)
-    events = [
-        {
-            "id": f"forecast:{item['capture_id']}",
-            "type": "forecast_revised",
-            "time": _epoch(item["received_at"]),
-            "title": f"Forecast revised to {float(item['forecast_tmax_f']):.0f}°F",
+    age = config.freshness.observation_age_seconds
+    issue_age = config.freshness.forecast_issue_seconds
+    key = (str(db.resolve()), event_id, object_day.isoformat())
+    cache = st.session_state.setdefault("_repricing_data_cache", {})
+    # ponytail: keep only the selected day; add a bounded day LRU if day switching warrants it.
+    if cache.get("key") != key:
+        cache.clear()
+        cache.update(key=key, bins={})
+    version = query.repricing_weather_version()
+    minute = int(cutoff.timestamp() // 60)
+    weather_changed = cache.get("version") != version
+    if weather_changed:
+        cache["history"] = query.get_repricing_weather_history(
+            object_day, 1, now, object_timezone, age
+        )
+        cache["timeline"] = query.get_weather_timeline(object_day, 1, now, object_timezone)
+        cache["events"] = [
+            {
+                "id": f"forecast:{row['capture_id']}",
+                "type": "forecast_revised",
+                "time": _epoch(row["received_at"]),
+                "title": f"Forecast revised to {row['forecast_tmax_f']:.0f}°F",
+            }
+            for row in query.get_forecast_revision_events(object_day, now, object_timezone)
+        ]
+        cache["version"] = version
+    if weather_changed or cache.get("minute") != minute:
+        weather_start = (
+            start
+            if weather_changed or "weather" not in cache
+            else datetime.fromtimestamp(cache["minute"] * 60, UTC)
+        )
+        updated = _repricing_difference_inputs(
+            cache["history"], [], weather_start, end, cutoff, selected_bin_id, age, issue_age
+        )
+        nws_history = {
+            "observations": [
+                {**row, "source": "aviationweather"}
+                for row in cache["history"]["observations"]
+                if row.get("source") == "nws"
+            ]
         }
-        for item in revisions
-    ]
-    return series, difference_inputs, events, start, end
+        nws_points = _repricing_difference_inputs(
+            nws_history, [], weather_start, end, cutoff, selected_bin_id, age, issue_age
+        )[2]["points"]
+        cache["nws"] = _merge_input_points(
+            [] if weather_changed else cache.get("nws", []),
+            [{**point, "source": "NWS Station Observations"} for point in nws_points],
+        )
+        previous = {item["id"]: item for item in cache.get("weather", [])}
+        cache["weather"] = [
+            {
+                **item,
+                "points": _merge_input_points(
+                    previous.get(item["id"], {}).get("points", []), item["points"]
+                ),
+            }
+            if not weather_changed
+            else item
+            for item in updated
+            if item["id"] != "price"
+        ]
+        cache["minute"] = minute
+    market = cache["bins"].setdefault(selected_bin_id, {"ticks": [], "cursor": None})
+    market_start = (now if future else start) - timedelta(seconds=600)
+    incoming = query.get_repricing_ticks(
+        event_id, selected_bin_id, market_start, end, now if future else cutoff, market["cursor"]
+    )
+    market["ticks"].extend(incoming["ticks"])
+    market["cursor"] = incoming["cursor"]
+    ticks = market["ticks"]
+    current_price = _select_price(ticks, now if future else cutoff)
+    if future:
+        inputs = _future_inputs(
+            cache["history"], current_price, start, end, now, issue_age, selected_bin_id
+        )
+    else:
+        # Recompute only minutes affected by newly received events, plus the advancing boundary.
+        dirty = market.get("minute", int(start.timestamp() // 60)) * 60
+        if incoming["ticks"]:
+            dirty = min(
+                dirty,
+                min(
+                    max(_epoch(row["received_at"]), _epoch(row["exchange_event_at"]))
+                    for row in incoming["ticks"]
+                ),
+            )
+        dirty = max(start.timestamp(), math.floor(dirty / 60) * 60)
+        tail = [row for row in ticks if _epoch(row["received_at"]) >= dirty - 600]
+        if incoming["ticks"] or market.get("minute") != minute or "price_input" not in market:
+            price_input = _repricing_difference_inputs(
+                {},
+                tail,
+                datetime.fromtimestamp(dirty, UTC),
+                end,
+                cutoff,
+                selected_bin_id,
+                age,
+                issue_age,
+            )[-1]
+            price_input["points"] = _merge_input_points(
+                market.get("price_input", {}).get("points", []), price_input["points"]
+            )
+            market["price_input"] = price_input
+            market["minute"] = minute
+        inputs = [*cache["weather"], market["price_input"]]
+        old_main = market.get("main_points", [])
+        main_tail = _price_points(
+            tail, selected_bin_id, datetime.fromtimestamp(dirty, UTC), end, cutoff
+        )
+        market["main_points"] = [point for point in old_main if point["time"] < dirty] + main_tail
+
+    series = _timeline_series(
+        cache["timeline"], [], visible_sources, age, cutoff, selected_bin_id, start
+    )
+    by_id = {item["id"]: item for item in inputs}
+    for item in series:
+        if item["id"] == "nws-observations":
+            item["points"] = cache["nws"]
+        if item["id"] in {"forecast", "weather-gov", "metar"}:
+            item["points"] = list(by_id[item["id"]]["points"])
+            if item["id"] == "weather-gov":
+                item.update(
+                    name="Weather.gov Hourly Temp",
+                    fill="step-fresh",
+                    maxAgeSeconds=age,
+                    description="Official hourly temperature, as known at each minute.",
+                )
+            if item["id"] == "forecast" and not future and now < end:
+                forward = _future_inputs(
+                    cache["history"], None, now, end, now, issue_age, selected_bin_id
+                )[0]["points"]
+                item["points"] = [
+                    *item["points"],
+                    *[point for point in forward if point["time"] > now.timestamp()],
+                ]
+        if item["id"] == "price":
+            item["currentPrice"] = current_price
+            item["points"] = (
+                [
+                    {**point, "value": point["value"] / 100 if point["value"] is not None else None}
+                    for point in by_id["price"]["points"]
+                ]
+                if future
+                else market["main_points"]
+            )
+            item["status"] = (
+                "available"
+                if current_price
+                else "no-records"
+                if not ticks
+                else "disconnected"
+                if ticks[-1].get("status") == "disconnect"
+                else "expired"
+            )
+        else:
+            item["status"] = (
+                "available"
+                if any(p["value"] is not None for p in item["points"])
+                else ("not-yet-observed" if future else "no-records")
+            )
+        item["validTo"] = end.timestamp()
+    revisions = cache["events"]
+    st.session_state["_repricing_meta"] = {
+        "comparisonMode": "future-snapshot" if future else "as-of",
+        "asOf": now.timestamp(),
+        "latestActualTime": max(
+            [start.timestamp()]
+            + [
+                _epoch(p["objectTime"])
+                for item in series
+                if item["id"] != "forecast"
+                for p in item["points"]
+                if p.get("value") is not None
+                and p["time"] <= min(now.timestamp(), end.timestamp())
+                and p.get("objectTime") is not None
+                and _epoch(p["objectTime"]) >= start.timestamp()
+            ]
+            + [
+                max(_epoch(row["exchange_event_at"]), _epoch(row["received_at"]))
+                for row in ticks
+                if _epoch(row["received_at"]) <= cutoff.timestamp()
+                and _epoch(row["exchange_event_at"]) <= cutoff.timestamp()
+            ]
+        ),
+        "queryMs": round((perf_counter() - started) * 1000, 2),
+        "legacyWarning": any(row.get("event_kind") is None for row in ticks),
+    }
+    return series, inputs, revisions, start, end
 
 
 def _series_delta(
@@ -1119,7 +1333,13 @@ def _series_delta(
             for point in item["points"]
             if prior.get(str(point["time"])) != hashes[str(point["time"])]
         ]
-        delta.append({**item, "points": changed})
+        delta.append(
+            {
+                **item,
+                "points": changed,
+                "removedTimes": [float(t) for t in prior if t not in hashes],
+            }
+        )
         current[series_id] = hashes
     return delta, current
 
@@ -1136,6 +1356,10 @@ def _render_repricing_feed(
     channel_id: str,
     signature: str,
 ) -> None:
+    if st.session_state.get("_repricing_feed_signature") != signature:
+        return
+    if perf_counter() - st.session_state.get("_repricing_full_at", 0) < 1:
+        return
     try:
         series, difference_inputs, events, start, end = _timeline_data(
             db,
@@ -1173,23 +1397,42 @@ def _render_repricing_feed(
                 ],
             }
         )
+        base_sequence = st.session_state.get("_repricing_sequence", 0)
+        st.session_state["_repricing_sequence"] = base_sequence + 1
+        recovering = st.session_state.pop("_repricing_feed_failed", False)
         trading_chart_feed(
             {
                 "mode": "feed",
+                "delivery": "full" if recovering else "delta",
+                "sequence": base_sequence + 1,
+                "baseSequence": base_sequence,
+                **st.session_state.get("_repricing_meta", {}),
                 "channelId": channel_id,
                 "revision": revision,
                 "signature": signature,
                 "selectedBinId": selected_bin_id,
                 "windowStart": start.timestamp(),
                 "windowEnd": end.timestamp(),
-                "series": series_delta,
-                "differenceInputs": difference_delta,
+                "series": series if recovering else series_delta,
+                "differenceInputs": difference_inputs if recovering else difference_delta,
                 "differenceSpecs": list(_DIFFERENCE_SPECS),
                 "events": events,
             },
             key=f"klga-repricing-feed-{channel_id}",
         )
     except Exception:
+        st.session_state["_repricing_feed_failed"] = True
+        trading_chart_feed(
+            {
+                "mode": "feed",
+                "delivery": "status",
+                "channelId": channel_id,
+                "signature": signature,
+                "selectedBinId": selected_bin_id,
+                "error": "Database query failed; showing the last successful update.",
+            },
+            key=f"klga-repricing-feed-{channel_id}",
+        )
         logger.exception(
             "repricing_feed_failed event=%s day=%s range=%s bin=%s signature=%s",
             event_id,
@@ -1200,6 +1443,7 @@ def _render_repricing_feed(
         )
 
 
+@st.fragment
 def _render_trading_timeline(db: Path) -> None:
     query = DashboardQuery(db)
     days = query.list_market_days()
@@ -1208,30 +1452,35 @@ def _render_trading_timeline(db: Path) -> None:
         return
     st.subheader("KLGA Tmax and market repricing")
     day_labels = {f"{item['local_day']} · {item['event_title']}": item for item in days}
-    controls = st.columns((2.2, 1, 3.2, 3.2))
-    selected_label = controls[0].selectbox("Market day", list(day_labels), key="market_day")
-    selected_day = day_labels[selected_label]
-    horizon = int(
-        controls[1].selectbox(
-            "Range", (1, 2, 3, 5), index=1, format_func=lambda value: f"{value}D", key="range"
-        )
+    controls = st.columns((2.2, 3.2, 3.2))
+    labels = list(day_labels)
+    today = datetime.now(_NEW_YORK).date().isoformat()
+    default_day = next(
+        (i for i, label in enumerate(labels) if str(day_labels[label]["local_day"]) == today), 0
     )
+    selected_label = controls[0].selectbox(
+        "Market day", labels, index=default_day, key="market_day"
+    )
+    selected_day = day_labels[selected_label]
+    horizon = 1
     event_id = str(selected_day["event_id"])
     object_day = date.fromisoformat(str(selected_day["local_day"]))
     object_timezone = str(selected_day["timezone"])
     bins = query.get_event_bins(event_id)
-    running = query.get_weather_timeline(object_day, 1, datetime.now(UTC), object_timezone)[
-        "running_tmax"
-    ]
-    latest_tmax = float(running[-1]["temperature_f"]) if running else None
-    default_bin = _default_timeline_bin(
-        bins, latest_tmax, query.get_latest_event_probabilities(event_id)
-    )
     bin_ids = [str(item["bin_id"]) for item in bins]
+    if not bin_ids:
+        st.info("No verified bins are available for this market.")
+        return
     if st.session_state.get("selected_bin_id") not in bin_ids:
-        st.session_state["selected_bin_id"] = default_bin
+        running = query.get_weather_timeline(object_day, 1, datetime.now(UTC), object_timezone)[
+            "running_tmax"
+        ]
+        latest_tmax = float(running[-1]["temperature_f"]) if running else None
+        st.session_state["selected_bin_id"] = _default_timeline_bin(
+            bins, latest_tmax, query.get_latest_event_probabilities(event_id)
+        )
     selected_bin_id = str(
-        controls[2].radio(
+        controls[1].radio(
             "Temperature interval",
             bin_ids,
             format_func=lambda value: next(
@@ -1241,14 +1490,18 @@ def _render_trading_timeline(db: Path) -> None:
             key="selected_bin_id",
         )
     )
-    source_ids = list(_SOURCE_SPECS)
-    selected_sources = controls[3].multiselect(
-        "Weather data sources",
-        source_ids,
-        default=list(_DEFAULT_SOURCES),
-        format_func=lambda value: str(_SOURCE_SPECS[value]["name"]),
-        key="visible_source_ids",
-    )
+    future = object_day > datetime.now(ZoneInfo(object_timezone)).date()
+    if future:
+        controls[2].caption("Future market: NWS Forecast and current Price snapshot")
+        selected_sources = ["forecast"]
+    else:
+        selected_sources = controls[2].multiselect(
+            "Weather data sources",
+            list(_SOURCE_SPECS),
+            default=list(_DEFAULT_SOURCES),
+            format_func=lambda value: str(_SOURCE_SPECS[value]["name"]),
+            key="visible_source_ids",
+        )
     valid_difference_ids = {str(item["id"]) for item in _DIFFERENCE_SPECS}
     selected_differences = [
         str(item)
@@ -1259,9 +1512,25 @@ def _render_trading_timeline(db: Path) -> None:
     ]
     st.session_state["selected_difference_ids"] = selected_differences
     channel_id = st.session_state.setdefault("_repricing_channel_id", uuid.uuid4().hex)
-    series, difference_inputs, events, start, end = _timeline_data(
-        db, event_id, object_day, object_timezone, horizon, selected_bin_id, selected_sources
-    )
+    view_key = (str(db), event_id, object_day, selected_bin_id, tuple(selected_sources))
+    view_error = None
+    try:
+        view = _timeline_data(
+            db, event_id, object_day, object_timezone, horizon, selected_bin_id, selected_sources
+        )
+        st.session_state["_repricing_last_view"] = (view_key, view)
+    except Exception:
+        logger.exception(
+            "repricing_initial_query_failed event=%s bin=%s", event_id, selected_bin_id
+        )
+        previous = st.session_state.get("_repricing_last_view")
+        view_error = "Database query failed; showing the last successful update."
+        if previous is None or previous[0] != view_key:
+            st.error("Database query failed for this selection. Retry when the database recovers.")
+            return
+        view = previous[1]
+        st.session_state["_repricing_feed_failed"] = True
+    series, difference_inputs, events, start, end = view
     signature = content_hash(
         {
             "event": event_id,
@@ -1272,14 +1541,20 @@ def _render_trading_timeline(db: Path) -> None:
             "end": end.isoformat(),
         }
     )
+    base_sequence = st.session_state.get("_repricing_sequence", 0)
+    st.session_state["_repricing_sequence"] = base_sequence + 1
     payload = {
         "mode": "full",
+        "error": view_error,
+        "sequence": base_sequence + 1,
+        "baseSequence": base_sequence,
+        **st.session_state.get("_repricing_meta", {}),
         "channelId": channel_id,
-        "revision": content_hash({"series": series, "differenceInputs": difference_inputs}),
+        "revision": f"{signature}:{base_sequence + 1}",
         "signature": signature,
         "timezone": "America/New_York",
         "selectedBinId": selected_bin_id,
-        "selectedDifferenceIds": selected_differences,
+        "selectedDifferenceIds": ["price-minus-forecast"] if future else selected_differences,
         "windowStart": start.timestamp(),
         "windowEnd": end.timestamp(),
         "series": series,
@@ -1287,18 +1562,18 @@ def _render_trading_timeline(db: Path) -> None:
         "differenceSpecs": list(_DIFFERENCE_SPECS),
         "events": events,
     }
-    if st.session_state.get("_repricing_feed_signature") != signature:
-        _, series_hashes = _series_delta(series, {})
-        _, difference_hashes = _series_delta(difference_inputs, {})
-        st.session_state["_repricing_feed_signature"] = signature
-        st.session_state["_repricing_feed_hashes"] = {
-            "series": series_hashes,
-            "difference": difference_hashes,
-        }
+    _, series_hashes = _series_delta(series, {})
+    _, difference_hashes = _series_delta(difference_inputs, {})
+    st.session_state["_repricing_feed_signature"] = signature
+    st.session_state["_repricing_feed_hashes"] = {
+        "series": series_hashes,
+        "difference": difference_hashes,
+    }
+    st.session_state["_repricing_full_at"] = perf_counter()
     component_state = trading_chart(payload, key="klga-tmax-trading-chart-v4")
     if isinstance(component_state, dict):
         candidates = component_state.get("selectedDifferenceIds")
-        if isinstance(candidates, list):
+        if isinstance(candidates, list) and not future:
             st.session_state["selected_difference_ids"] = [
                 str(item) for item in candidates if str(item) in valid_difference_ids
             ]
