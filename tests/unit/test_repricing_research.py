@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import gzip
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from nice_weather.config import load_city_config
 from nice_weather.domain import SettlementEvidence, SourceCapture, content_hash, stable_id
@@ -9,6 +11,68 @@ from nice_weather.market_stream import MarketStreamCollector, TokenMetadata, _ev
 from nice_weather.queries import DashboardQuery
 from nice_weather.research import _persistent_threshold, repair_settlement_dates
 from nice_weather.store import WeatherStore
+
+
+def test_weather_queries_use_instants_for_offset_timestamps_and_dst(tmp_path) -> None:
+    zone = ZoneInfo("America/New_York")
+    for target in (date(2026, 9, 5), date(2026, 3, 8), date(2026, 11, 1)):
+        start = datetime.combine(target, datetime.min.time(), zone)
+        end = start + timedelta(days=1)
+        received = (end + timedelta(days=2)).astimezone(UTC)
+        database = tmp_path / f"offset-{target}.sqlite3"
+        # Mixed source offsets, both repeated fall-back hours, and excluded next midnight.
+        times = [
+            start - timedelta(hours=2),
+            start,
+            start + timedelta(hours=1),
+            (start + timedelta(hours=1)).replace(fold=1),
+            (end - timedelta(hours=1)).astimezone(UTC),
+            end,
+        ]
+        times = list(dict.fromkeys(item.isoformat() for item in times))
+        rows = [(datetime.fromisoformat(stamp), float(index)) for index, stamp in enumerate(times)]
+        expected = [
+            value
+            for stamp, value in rows
+            if start.timestamp() <= stamp.timestamp() < end.timestamp()
+        ]
+        with WeatherStore(database) as store:
+            store.init_schema()
+            capture = replace(_settlement_capture(str(target), target, received), source="nws")
+            store.save_source_capture(
+                capture,
+                payload={},
+                observations=[
+                    {"observed_at": stamp, "temperature_f": value, "zone": zone}
+                    for stamp, value in rows
+                ],
+                forecast_periods=[
+                    {"valid_at": stamp, "temperature_f": value} for stamp, value in rows
+                ],
+            )
+            store.save_settlement_evidence(
+                SettlementEvidence(
+                    evidence_id=str(target),
+                    capture_id=capture.capture_id,
+                    station_id="KLGA",
+                    local_date=target,
+                    received_at=received,
+                    table_text="offset fixture",
+                    parse_status="parsed",
+                ),
+                tuple(rows),
+            )
+        query = DashboardQuery(database)
+        timeline = query.get_weather_timeline(target, 1, received, zone.key)
+        history = query.get_repricing_weather_history(target, 1, received, zone.key, 0)
+        for key in ("observations", "forecasts", "running_tmax"):
+            assert [row["temperature_f"] for row in timeline[key]] == expected
+        for key in ("observations", "settlement_rows"):
+            assert [row["temperature_f"] for row in history[key]] == expected
+        before = query.get_weather_timeline(
+            target, 1, received - timedelta(microseconds=1), zone.key
+        )
+        assert all(not values for values in before.values())
 
 
 def _settlement_capture(identity: str, local_day: date, received_at: datetime) -> SourceCapture:
@@ -193,9 +257,7 @@ def test_market_ticks_keep_a_b_a_and_drop_identical_repeat(tmp_path) -> None:
     with WeatherStore(database) as store:
         store.init_schema()
     collector = MarketStreamCollector(config, str(database))
-    metadata = {
-        "token": TokenMetadata("event", "condition", "market", "bin", "token", "80 F")
-    }
+    metadata = {"token": TokenMetadata("event", "condition", "market", "bin", "token", "80 F")}
     messages = [
         '{"event_type":"price_change","timestamp":"1788364800000",'
         '"price_changes":[{"asset_id":"token","best_bid":"0.2","best_ask":"0.4"}]}',

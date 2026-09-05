@@ -98,6 +98,7 @@ class DashboardQuery:
         return rows
 
     def get_weather_path(self, decision_id: str) -> dict[str, list[dict[str, Any]]]:
+        # Source object times retain offsets; compare instants, not ISO text ordering.
         observations = self._query(
             """
             WITH weather_ids(capture_id) AS (
@@ -209,9 +210,10 @@ class DashboardQuery:
                 PARTITION BY station_id,source,observed_at ORDER BY revision DESC,received_at DESC
               ) AS rank
               FROM weather_observations w
-              WHERE station_id='KLGA' AND observed_at>=? AND observed_at<? AND received_at<=?
+              WHERE station_id='KLGA' AND julianday(observed_at)>=julianday(?)
+              AND julianday(observed_at)<julianday(?) AND received_at<=?
             )
-            SELECT * FROM ranked WHERE rank=1 ORDER BY observed_at,source
+            SELECT * FROM ranked WHERE rank=1 ORDER BY julianday(observed_at),source
             """,
             (start.isoformat(), end.isoformat(), as_of_text),
         )
@@ -221,7 +223,8 @@ class DashboardQuery:
             WHERE f.source='nws' AND f.station_id='KLGA' AND f.received_at<=?
               AND EXISTS(
                 SELECT 1 FROM forecast_points p
-                WHERE p.capture_id=f.capture_id AND p.valid_at>=? AND p.valid_at<?
+                WHERE p.capture_id=f.capture_id AND julianday(p.valid_at)>=julianday(?)
+                  AND julianday(p.valid_at)<julianday(?)
               )
             ORDER BY f.received_at DESC LIMIT 1
             """,
@@ -231,8 +234,9 @@ class DashboardQuery:
             self._query(
                 """
                 SELECT * FROM forecast_points
-                WHERE capture_id=? AND valid_at>=? AND valid_at<? AND received_at<=?
-                ORDER BY valid_at
+                WHERE capture_id=? AND julianday(valid_at)>=julianday(?)
+                  AND julianday(valid_at)<julianday(?) AND received_at<=?
+                ORDER BY julianday(valid_at)
                 """,
                 (captures[0]["capture_id"], start.isoformat(), end.isoformat(), as_of_text),
             )
@@ -242,8 +246,9 @@ class DashboardQuery:
         settlement = self._query(
             """
             SELECT * FROM settlement_rows
-            WHERE station_id='KLGA' AND observed_at>=? AND observed_at<? AND received_at<=?
-            ORDER BY received_at,observed_at
+            WHERE station_id='KLGA' AND julianday(observed_at)>=julianday(?)
+              AND julianday(observed_at)<julianday(?) AND received_at<=?
+            ORDER BY received_at,julianday(observed_at)
             """,
             (start.isoformat(), end.isoformat(), as_of_text),
         )
@@ -330,9 +335,10 @@ class DashboardQuery:
         observations = self._query(
             """
             SELECT * FROM weather_observations
-            WHERE station_id='KLGA' AND observed_at>=? AND observed_at<? AND received_at<=?
+            WHERE station_id='KLGA' AND julianday(observed_at)>=julianday(?)
+              AND julianday(observed_at)<julianday(?) AND received_at<=?
               AND source IN ('aviationweather','nws')
-            ORDER BY received_at,observed_at,revision,observation_id
+            ORDER BY received_at,julianday(observed_at),revision,observation_id
             """,
             (observation_start.isoformat(), end.isoformat(), as_of_text),
         )
@@ -340,8 +346,9 @@ class DashboardQuery:
             """
             SELECT p.*
             FROM forecast_points p
-            WHERE p.source='nws' AND p.valid_at>=? AND p.valid_at<? AND p.received_at<=?
-            ORDER BY p.received_at,p.capture_id,p.legacy_snapshot_id,p.valid_at,
+            WHERE p.source='nws' AND julianday(p.valid_at)>=julianday(?)
+              AND julianday(p.valid_at)<julianday(?) AND p.received_at<=?
+            ORDER BY p.received_at,p.capture_id,p.legacy_snapshot_id,julianday(p.valid_at),
                      p.forecast_point_id
             """,
             (
@@ -353,8 +360,9 @@ class DashboardQuery:
         settlement = self._query(
             """
             SELECT * FROM settlement_rows
-            WHERE station_id='KLGA' AND observed_at>=? AND observed_at<? AND received_at<=?
-            ORDER BY received_at,observed_at,row_id
+            WHERE station_id='KLGA' AND julianday(observed_at)>=julianday(?)
+              AND julianday(observed_at)<julianday(?) AND received_at<=?
+            ORDER BY received_at,julianday(observed_at),row_id
             """,
             (observation_start.isoformat(), end.isoformat(), as_of_text),
         )
@@ -379,7 +387,7 @@ class DashboardQuery:
                    GROUP_CONCAT(p.valid_at || ':' || p.temperature_f,'|') AS path
             FROM weather_forecasts f JOIN forecast_points p USING(capture_id)
             WHERE f.station_id='KLGA' AND f.received_at<=?
-              AND p.valid_at>=? AND p.valid_at<?
+              AND julianday(p.valid_at)>=julianday(?) AND julianday(p.valid_at)<julianday(?)
             GROUP BY f.capture_id,f.issued_at,f.received_at,f.content_hash
             ORDER BY f.received_at
             """,
