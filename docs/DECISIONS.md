@@ -620,7 +620,7 @@ schema、Collector、Runner 和原始记录均不改变。
 
 影响：
 
-schema v7 为加列和加索引，不删除历史记录；旧数据有明确核验限制。天气版本缓存与接收游标减少全量工作，完整快照后的首次重复 feed 跳过。序号缺口请求 full，旧选择丢弃，点撤销显式传递。两图保留现有 Lightweight Charts，使用共同时间基底、实际时间范围与 ResizeObserver；悬停继续接收数据。差值仍仅供人工研究展示。
+schema v7 为加列和加索引，不删除历史记录；旧数据有明确核验限制。Market Stream 复用进程生命周期内的短事务连接，避免最后连接关闭后 WAL/SHM 消失与 Dashboard 只读目录产生冲突；不放宽系统目录权限。该机制依据 [SQLite WAL 只读条件](https://sqlite.org/wal.html#read_only_databases)。天气版本缓存与接收游标减少全量工作，完整快照后的首次重复 feed 跳过。序号缺口请求 full，旧选择丢弃，点撤销显式传递。两图保留现有 Lightweight Charts，使用共同时间基底、实际时间范围与 ResizeObserver；悬停继续接收数据。差值仍仅供人工研究展示。
 
 重新评估条件：
 

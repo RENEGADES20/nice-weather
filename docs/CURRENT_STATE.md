@@ -15,9 +15,9 @@
 - 控件独立 fragment；天气按版本复用，价格按目标窗口及接收游标增量查询，普通 tick 只重算受影响分钟。跳过完整快照后的重复 feed 计算；无数据变化仍推进年龄与过期状态。
 - full/delta 使用选择签名、递增序号和基线序号；缺序重同步、旧选择丢弃、完整快照替换、撤销点使用 tombstone。查询失败保留相同选择最后成功画面；恢复完整重同步。鼠标悬停继续更新，缩放/拖动只关闭 Follow latest。
 - 两图采用真实时间范围和共同透明时间基底，保持不等间隔价格与分钟差值对齐；ResizeObserver 按实际内容通知 iframe 高度，支持隐藏页签、窄屏和全屏退出。
-- 验证：Python 80 项、TypeScript/Vite 构建、桌面/移动端浏览器 8 项通过。测试涵盖来源污染、零值、成交时间、过期/断流、恢复游标、DST、未来快照和全量/增量一致性；v6→v7 备份迁移回归保留旧 tick。
+- 验证：Python 81 项、TypeScript/Vite 构建、桌面/移动端浏览器 8 项通过。测试涵盖来源污染、零值、成交时间、过期/断流、恢复游标、DST、未来快照和全量/增量一致性；v6→v7 备份迁移回归保留旧 tick。
 - 单会话本地复测：已加载 bin 切换 p95 739ms，查询/计算 56ms，渲染 35ms。双会话同时压测：后台查询/计算+渲染 p95 桌面 457ms、移动端 354ms；接收到可见更新 p95 桌面 2347ms、移动端 2395ms；已加载 bin 切换 1616/2029ms，超过 1 秒目标，仍有并发性能限制。测试数据规模不代表线上长期库。
-- 两份旧本地开发库 v6 migration checksum 与当前提交不一致，复制备份后迁移被正确拒绝；未改写校验和。线上部署需先核对 migration 记录、备份及完整性，不能沿用这些开发库的结果。线上 v4/v5/v6 checksums 已核对一致，统一库约 1.35GB、517881 条 tick（检查时点）；四个主要服务 active，09-05 journal 确认多次 unable to open database file。迁移前备份正在核验，原库尚未迁移。
+- 两份旧本地开发库 v6 migration checksum 与当前提交不一致，复制备份后迁移被正确拒绝；未改写校验和。线上部署需先核对 migration 记录、备份及完整性，不能沿用这些开发库的结果。线上 v4/v5/v6 checksums 已核对一致，统一库约 1.35GB、517881 条 tick（检查时点）；四个主要服务 active，09-05 journal 确认多次 unable to open database file。迁移前备份 baseline.sqlite3 已完成：518553 条 tick，quick_check=ok；原库尚未迁移。Market Stream 进一步复用单个已提交的连接，避免逐 tick 关闭最后连接导致 WAL/SHM 清理；Dashboard 保持原 ReadOnlyPaths 和 mode=ro。
 
 ## 2026-09-05 Repricing 固定实时差值与视图稳定性
 

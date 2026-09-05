@@ -321,3 +321,17 @@ def test_new_forecast_missing_point_replaces_old_snapshot():
         [{"id": "forecast", "points": [{"time": 1, "value": 70}]}], hashes
     )
     assert delta[0]["removedTimes"] == [2.0]
+
+
+def test_market_stream_keeps_wal_files_between_committed_ticks(tmp_path):
+    collector = MarketStreamCollector(load_city_config(), str(tmp_path / "wal.sqlite3"))
+    try:
+        store = collector._storage()
+        assert collector._storage() is store
+        assert not store.connection.in_transaction
+        with WeatherStore(collector.database_path, read_only=True) as reader:
+            assert reader.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 7
+        assert Path(collector.database_path + "-wal").exists()
+        assert Path(collector.database_path + "-shm").exists()
+    finally:
+        collector.close()

@@ -71,7 +71,23 @@ class MarketStreamCollector:
         self.adapter_factory = adapter_factory
         self.websocket_url = websocket_url
         self.state: dict[tuple[str, str], dict[str, float | None]] = {}
-        self._initialized = False
+        self._store: WeatherStore | None = None
+
+    def _storage(self) -> WeatherStore:
+        # Keep WAL/SHM available for the dashboard's read-only filesystem mount.
+        if self._store is None:
+            self._store = WeatherStore(self.database_path)
+            try:
+                self._store.init_schema()
+            except Exception:
+                self.close()
+                raise
+        return self._store
+
+    def close(self) -> None:
+        if self._store is not None:
+            self._store.close()
+            self._store = None
 
     def _save(
         self,
@@ -156,11 +172,7 @@ class MarketStreamCollector:
             event_hash=event_hash,
             event_kind=event_kind,
         )
-        with WeatherStore(self.database_path) as store:
-            if not self._initialized:
-                store.init_schema()
-                self._initialized = True
-            return store.save_market_top_tick(tick)
+        return self._storage().save_market_top_tick(tick)
 
     def discover(self) -> tuple[dict[str, TokenMetadata], dict[str, Any]]:
         now = utc_now()
@@ -172,11 +184,7 @@ class MarketStreamCollector:
             if contract.parse_status != "parsed":
                 logger.warning("market_discovery_ambiguous event=%s", contract.event_id)
                 continue
-            with WeatherStore(self.database_path) as store:
-                if not self._initialized:
-                    store.init_schema()
-                    self._initialized = True
-                store.save_discovered_contract(contract, snapshot)
+            self._storage().save_discovered_contract(contract, snapshot)
             discovered = {
                 item.yes_token_id: TokenMetadata(
                     event_id=contract.event_id,
