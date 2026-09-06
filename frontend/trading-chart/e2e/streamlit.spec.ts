@@ -49,7 +49,8 @@ test("renders 70000 audit points using exact step vertices", async ({page}) => {
         receivedAt: new Date((payload.windowStart + index / 10) * 1000).toISOString(),
         binId: payload.selectedBinId,
       };
-      return index % 300 === 299 ? [point, {...point, time: point.time + 0.01, value: null}] : [point];
+      return index < 700 && index % 3 === 2
+        ? [point, {...point, time: point.time + 0.01, value: null}] : [point];
     }).flat();
     Object.assign(window, {testLargePayload: payload});
     window.postMessage({type: "streamlit:render", args: {payload}, dfs: [], disabled: false}, "*");
@@ -100,6 +101,28 @@ test("renders 70000 audit points using exact step vertices", async ({page}) => {
     await expect(frame.locator("#app")).toHaveAttribute("data-price-point-count", "70000");
     expect(Date.now() - started).toBeLessThan(5000);
   }
+  const deltaStarted = Date.now();
+  const deltaSequence = await frame.locator("#app").evaluate(() => {
+    const saved = (window as unknown as {testLargePayload: {
+      sequence: number; series: {id: string; points: {time: number; value: number | null}[]}[];
+    }}).testLargePayload;
+    const payload = JSON.parse(JSON.stringify(saved));
+    payload.mode = "delta";
+    payload.baseSequence = saved.sequence;
+    payload.sequence = saved.sequence + 1;
+    for (const spec of payload.series) {
+      const last = spec.points.at(-1);
+      spec.points = spec.id === "price" ? [{...last, time: last.time + 1}] : [];
+      spec.removedTimes = spec.id === "price" ? [last.time] : [];
+    }
+    for (const spec of payload.differenceInputs) spec.points = [];
+    window.postMessage({type: "streamlit:render", args: {payload}, dfs: [], disabled: false}, "*");
+    return String(payload.sequence);
+  });
+  await expect(frame.locator("#app")).toHaveAttribute("data-sequence", deltaSequence);
+  await expect(frame.locator("#app")).toHaveAttribute("data-price-point-count", "70000");
+  await expect(frame.locator("#app")).toHaveAttribute("data-main-segment-count", segmentCount!);
+  expect(Date.now() - deltaStarted).toBeLessThan(5000);
 });
 
 async function canvasRatio(frame: FrameLocator): Promise<number> {
@@ -125,6 +148,40 @@ async function canvasRatio(frame: FrameLocator): Promise<number> {
     return bestRatio;
   });
 }
+
+test("queues a delta behind a full snapshot that is still decompressing", async ({page}) => {
+  await page.addInitScript(() => window.addEventListener("message", (event) => {
+    if (event.data?.type === "streamlit:render" && event.data.args?.payload?.gzip) {
+      Object.assign(window, {testWire: event.data.args.payload});
+    }
+  }));
+  const frame = await openRepricing(page);
+  const expectedSequence = await frame.locator("#app").evaluate(async (root) => {
+    const wire = (window as unknown as {testWire: {gzip: string}}).testWire;
+    const bytes = Uint8Array.from(atob(wire.gzip), (char) => char.charCodeAt(0));
+    const payload = await new Response(new Blob([bytes]).stream()
+      .pipeThrough(new DecompressionStream("gzip"))).json();
+    payload.signature = "queued-selection";
+    payload.sequence = Number((root as HTMLElement).dataset.sequence) + 1000;
+    const compressed = await new Response(new Blob([JSON.stringify(payload)]).stream()
+      .pipeThrough(new CompressionStream("gzip"))).arrayBuffer();
+    const gzip = btoa(Array.from(new Uint8Array(compressed), (byte) => String.fromCharCode(byte)).join(""));
+    const readJson = Response.prototype.json;
+    Response.prototype.json = async function () {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return readJson.call(this);
+    };
+    window.postMessage({type: "streamlit:render", args: {payload: {gzip}}, dfs: [], disabled: false}, "*");
+    const channel = new BroadcastChannel(`nice-weather-${payload.channelId}`);
+    channel.postMessage({...payload, mode: "delta", sequence: payload.sequence + 1,
+      baseSequence: payload.sequence});
+    channel.close();
+    return String(payload.sequence + 1);
+  });
+  await expect(frame.locator("#app")).toHaveAttribute("data-signature", "queued-selection");
+  await expect(frame.locator("#app")).toHaveAttribute("data-sequence", expectedSequence);
+  await expect(frame.locator("#feed-warning")).toHaveClass(/hidden/);
+});
 
 function rangeValues(value: string | null): [number, number] {
   const [start, end] = (value || "0:0").split(":").map(Number);

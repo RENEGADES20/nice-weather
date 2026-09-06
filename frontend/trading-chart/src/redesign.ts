@@ -314,7 +314,12 @@ function setupChannel(nextId: string): void {
   }
   document.querySelector("#channel-warning")?.classList.add("hidden");
   channel = new BroadcastChannel(`nice-weather-${nextId}`);
-  channel.addEventListener("message", (event) => applyPayload(event.data as Payload));
+  channel.addEventListener("message", (event) => {
+    // A delta can arrive while a full snapshot is still decompressing.
+    pendingRender = pendingRender.then(() => applyPayload(event.data as Payload)).catch(() => {
+      showFeedError("Chart update could not be applied; showing the last successful data.");
+    });
+  });
   root.dataset.channelSubscriptions = "1";
 }
 
@@ -409,15 +414,17 @@ function reconcileSeriesDelta(spec: SeriesSpec, previous: RawPoint[], merged: Ra
     const nextTimes = segment.map((point) => point.time);
     const oldTimes = segmentTimes.get(spec.id)?.get(key) || [];
     const keepsPrefix = oldTimes.every((time, index) => nextTimes[index] === time);
-    if (segmentApis.get(spec.id)?.has(key) && !keepsPrefix) removeSegment(spec.id, key);
     let api = segmentApis.get(spec.id)?.get(key);
+    const created = !api;
     if (!api) {
       api = mainChart!.addSeries(
         LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
       );
       if (!segmentApis.has(spec.id)) segmentApis.set(spec.id, new Map());
       segmentApis.get(spec.id)!.set(key, api);
-      for (const point of segment) api.update(valuedLineData(point));
+    }
+    if (created || !keepsPrefix) {
+      api.setData(segment.map(valuedLineData));
     } else {
       const oldSet = new Set(oldTimes);
       let lastTime = oldTimes.at(-1) ?? Number.NEGATIVE_INFINITY;
@@ -523,15 +530,15 @@ function reconcileDifferenceDelta(
     const nextTimes = segment.map((point) => point.time);
     const oldTimes = differenceSegmentTimes.get(spec.id)?.get(key) || [];
     const keepsPrefix = oldTimes.every((time, index) => nextTimes[index] === time);
-    if (differenceSegmentApis.get(spec.id)?.has(key) && !keepsPrefix) {
-      removeDifferenceSegment(spec.id, key);
-    }
     let api = differenceSegmentApis.get(spec.id)?.get(key);
+    const created = !api;
     if (!api) {
       api = differenceChart!.addSeries(LineSeries, differenceOptions(spec));
       if (!differenceSegmentApis.has(spec.id)) differenceSegmentApis.set(spec.id, new Map());
       differenceSegmentApis.get(spec.id)!.set(key, api);
-      for (const point of segment) api.update(valuedLineData(point));
+    }
+    if (created || !keepsPrefix) {
+      api.setData(segment.map(valuedLineData));
     } else {
       const oldSet = new Set(oldTimes);
       let lastTime = oldTimes.at(-1) ?? Number.NEGATIVE_INFINITY;
@@ -573,12 +580,18 @@ function differenceOptions(spec: DifferenceSpec) {
   };
 }
 
-function setTimeBasis(start: number, end: number): void {
+function setTimeBasis(start: number, end: number, upcoming: SeriesSpec[] = []): void {
   if (!mainChart || !differenceChart) return;
   const times = new Set<number>();
   for (let current = Math.floor(start / 60) * 60; current <= end; current += 60) times.add(current);
   for (const segments of [...segmentTimes.values(), ...differenceSegmentTimes.values()]) {
     for (const data of segments.values()) for (const time of data) times.add(time);
+  }
+  // Stage incoming times once; individual segment updates then keep stable logical indices.
+  for (const spec of upcoming) {
+    for (const segment of nonNullSegments(spec.points)) {
+      for (const point of spec.fill === "forecast" ? segment : stepVertices(segment)) times.add(point.time);
+    }
   }
   const ordered = [...times].sort((a, b) => a - b);
   const key = ordered.join(",");
@@ -817,6 +830,7 @@ function restoreCrosshair(time: number, onDifference: boolean): boolean {
 function updateIncrementally(next: Payload): void {
   const visible = mainChart?.timeScale().getVisibleRange();
   rangeSyncReady = false;
+  setTimeBasis(next.windowStart, next.windowEnd, next.series);
   reconcileDelta(next.series);
   reconcileDifferenceInputs(next.differenceInputs, false);
   renderDifferences(false);
@@ -921,6 +935,7 @@ function applyPayload(next: Payload): void {
     signature = next.signature;
     if (signatureChanged) crosshairTime = undefined;
 
+    setTimeBasis(next.windowStart, next.windowEnd, next.series);
     reconcileFull(next.series);
     reconcileDifferenceInputs(next.differenceInputs, true);
     renderDifferences(true);
