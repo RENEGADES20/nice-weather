@@ -25,6 +25,33 @@ async function openRepricing(page: Page): Promise<FrameLocator> {
   throw lastError;
 }
 
+test("crosshair canvas labels use the same New York time as the legends", async ({page}) => {
+  const frame = await openRepricing(page);
+  await frame.locator("#app").evaluate(() => {
+    const draw = CanvasRenderingContext2D.prototype.fillText;
+    const labels = new Set<string>();
+    Object.assign(window, {testCanvasLabels: labels});
+    CanvasRenderingContext2D.prototype.fillText = function (...args: Parameters<typeof draw>) {
+      if (args[0].endsWith(" ET")) labels.add(args[0]);
+      return draw.apply(this, args);
+    };
+  });
+  for (const id of ["main", "difference"]) {
+    const chart = frame.locator(`#${id}-chart`);
+    await chart.scrollIntoViewIfNeeded();
+    const box = (await chart.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + 50);
+    await expect.poll(() => frame.locator("#app").evaluate((root) => {
+      const value = root.dataset.mainCrosshair;
+      if (!value) return false;
+      const expected = new Intl.DateTimeFormat(undefined, {
+        timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false,
+      }).format(new Date(Number(value) * 1000)) + " ET";
+      return (window as unknown as {testCanvasLabels: Set<string>}).testCanvasLabels.has(expected);
+    })).toBe(true);
+  }
+});
+
 test("renders 70000 audit points using exact step vertices", async ({page}) => {
   await page.addInitScript(() => window.addEventListener("message", (event) => {
     if (event.data?.type === "streamlit:render" && event.data.args?.payload?.gzip) {
