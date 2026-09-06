@@ -42,12 +42,16 @@ test("renders 70000 audit points using exact step vertices", async ({page}) => {
     (root as HTMLElement).dataset.expectedRange = `${payload.windowStart}:${payload.windowEnd}`;
     payload.sequence = Number((root as HTMLElement).dataset.sequence) + 1000;
     const price = payload.series.find((item: {id: string}) => item.id === "price");
-    price.points = Array.from({length: 70000}, (_, index) => ({
-      time: payload.windowStart + index / 10,
-      value: Math.floor(index / 7) % 2 ? 0.002 : 0.05,
-      receivedAt: new Date((payload.windowStart + index / 10) * 1000).toISOString(),
-      binId: payload.selectedBinId,
-    }));
+    price.points = Array.from({length: 70000}, (_, index) => {
+      const point = {
+        time: payload.windowStart + index / 10,
+        value: Math.floor(index / 7) % 2 ? 0.002 : 0.05,
+        receivedAt: new Date((payload.windowStart + index / 10) * 1000).toISOString(),
+        binId: payload.selectedBinId,
+      };
+      return index % 300 === 299 ? [point, {...point, time: point.time + 0.01, value: null}] : [point];
+    }).flat();
+    Object.assign(window, {testLargePayload: payload});
     window.postMessage({type: "streamlit:render", args: {payload}, dfs: [], disabled: false}, "*");
   });
   await expect(frame.locator("#app")).toHaveAttribute("data-signature", "large-history");
@@ -76,6 +80,25 @@ test("renders 70000 audit points using exact step vertices", async ({page}) => {
     await frame.locator("#events-button").hover();
     await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", "");
     await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", "");
+  }
+  const segmentCount = await frame.locator("#app").getAttribute("data-main-segment-count");
+  expect(Number(segmentCount)).toBeGreaterThan(230);
+  for (let update = 0; update < 2; update += 1) {
+    const started = Date.now();
+    const signature = await frame.locator("#app").evaluate(() => {
+      const payload = (window as unknown as {testLargePayload: {
+        sequence: number; signature: string; series: {id: string; points: {time: number}[]}[];
+      }}).testLargePayload;
+      payload.sequence += 1;
+      payload.signature = `large-history-${payload.sequence}`;
+      for (const point of payload.series.find((item) => item.id === "price")!.points) point.time += 0.02;
+      window.postMessage({type: "streamlit:render", args: {payload}, dfs: [], disabled: false}, "*");
+      return payload.signature;
+    });
+    await expect(frame.locator("#app")).toHaveAttribute("data-signature", signature);
+    await expect(frame.locator("#app")).toHaveAttribute("data-main-segment-count", segmentCount!);
+    await expect(frame.locator("#app")).toHaveAttribute("data-price-point-count", "70000");
+    expect(Date.now() - started).toBeLessThan(5000);
   }
 });
 

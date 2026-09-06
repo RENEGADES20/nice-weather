@@ -96,6 +96,7 @@ const differenceApis = new Map<string, ISeriesApi<"Line">>();
 const differenceSegmentApis = new Map<string, Map<number, ISeriesApi<"Line">>>();
 const differenceSegmentTimes = new Map<string, Map<number, number[]>>();
 const differenceData = new Map<string, DifferencePoint[]>();
+const lineOptionKeys = new WeakMap<ISeriesApi<"Line">, string>();
 let selectedDifferenceIds = new Set<string>();
 let differenceSelectionInitialized = false;
 let mainChart: IChartApi | null = null;
@@ -341,6 +342,17 @@ function valuedLineData(point: RawPoint): LineData {
   return { time: point.time as UTCTimestamp, value: point.value };
 }
 
+function configureLine(
+  api: ISeriesApi<"Line">,
+  options: ReturnType<typeof seriesOptions> | ReturnType<typeof differenceOptions>,
+  created: boolean,
+): void {
+  // Formatters are fixed by format type; only their scalar options can change.
+  const key = JSON.stringify(options);
+  if (!created && lineOptionKeys.get(api) !== key) api.applyOptions(options);
+  lineOptionKeys.set(api, key);
+}
+
 function apisFor(id: string): ISeriesApi<"Line">[] {
   return [...(segmentApis.get(id)?.values() || [])];
 }
@@ -361,21 +373,25 @@ function removeSegment(id: string, key: number): void {
 }
 
 function reconcileSeriesFull(spec: SeriesSpec): void {
-  const apis = segmentApis.get(spec.id) || new Map<number, ISeriesApi<"Line">>();
+  const available = new Map(segmentApis.get(spec.id));
+  const apis = new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
   const normalized = mergeRawPoints([], spec.points);
   for (const rawSegment of nonNullSegments(normalized)) {
     const segment = spec.fill === "forecast" ? rawSegment : stepVertices(rawSegment);
     const key = segment[0].time;
-    const api = apis.get(key) || mainChart!.addSeries(
+    const reusable = available.has(key) ? [key, available.get(key)!] as const
+      : available.entries().next().value;
+    const api = reusable?.[1] || mainChart!.addSeries(
       LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
     );
-    api.applyOptions(seriesOptions(spec));
+    if (reusable) available.delete(reusable[0]);
+    configureLine(api, seriesOptions(spec), !reusable);
     api.setData(segment.map(valuedLineData));
     apis.set(key, api);
     times.set(key, segment.map((point) => point.time));
   }
-  for (const key of [...apis.keys()]) if (!times.has(key)) removeSegment(spec.id, key);
+  for (const key of available.keys()) removeSegment(spec.id, key);
   segmentApis.set(spec.id, apis);
   segmentTimes.set(spec.id, times);
   const representative = apis.values().next().value;
@@ -473,17 +489,21 @@ function differenceRawPoints(points: DifferencePoint[]): RawPoint[] {
 }
 
 function reconcileDifferenceFull(spec: DifferenceSpec, points: DifferencePoint[]): void {
-  const apis = differenceSegmentApis.get(spec.id) || new Map<number, ISeriesApi<"Line">>();
+  const available = new Map(differenceSegmentApis.get(spec.id));
+  const apis = new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
   for (const segment of nonNullSegments(differenceRawPoints(points))) {
     const key = segment[0].time;
-    const api = apis.get(key) || differenceChart!.addSeries(LineSeries, differenceOptions(spec));
-    api.applyOptions(differenceOptions(spec));
+    const reusable = available.has(key) ? [key, available.get(key)!] as const
+      : available.entries().next().value;
+    const api = reusable?.[1] || differenceChart!.addSeries(LineSeries, differenceOptions(spec));
+    if (reusable) available.delete(reusable[0]);
+    configureLine(api, differenceOptions(spec), !reusable);
     api.setData(segment.map(valuedLineData));
     apis.set(key, api);
     times.set(key, segment.map((point) => point.time));
   }
-  for (const key of [...apis.keys()]) if (!times.has(key)) removeDifferenceSegment(spec.id, key);
+  for (const key of available.keys()) removeDifferenceSegment(spec.id, key);
   differenceSegmentApis.set(spec.id, apis);
   differenceSegmentTimes.set(spec.id, times);
   const representative = apis.values().next().value;
@@ -934,6 +954,9 @@ function applyPayload(next: Payload): void {
   root.dataset.selectedBinId = next.selectedBinId;
   root.dataset.payloadBytes = String(JSON.stringify(next).length);
   root.dataset.mainSeriesCount = String(seriesApis.size);
+  root.dataset.mainSegmentCount = String(
+    [...segmentApis.values()].reduce((count, apis) => count + apis.size, 0),
+  );
   root.dataset.pricePointCount = String(
     seriesData.get("price")?.filter((point) => point.value !== null).length || 0,
   );
