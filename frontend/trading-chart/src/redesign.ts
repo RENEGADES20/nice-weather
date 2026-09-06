@@ -96,6 +96,7 @@ const differenceApis = new Map<string, ISeriesApi<"Line">>();
 const differenceSegmentApis = new Map<string, Map<number, ISeriesApi<"Line">>>();
 const differenceSegmentTimes = new Map<string, Map<number, number[]>>();
 const differenceData = new Map<string, DifferencePoint[]>();
+const lineOptionKeys = new WeakMap<ISeriesApi<"Line">, string>();
 let selectedDifferenceIds = new Set<string>();
 let differenceSelectionInitialized = false;
 let mainChart: IChartApi | null = null;
@@ -109,6 +110,7 @@ let markers: ISeriesMarkersPluginApi<Time> | null = null;
 let channel: BroadcastChannel | null = null;
 let channelId = "";
 let rangeSyncReady = false;
+let rangeLeader: "main" | "difference" = "main";
 let mainRangeKey = "";
 let differenceRangeKey = "";
 let syncingCrosshair = false;
@@ -138,6 +140,8 @@ function chartOptions() {
     rightPriceScale: { visible: true, borderColor: "#E2E7EE" },
     timeScale: {
       borderColor: "#E2E7EE",
+      // Dense intraday ticks must still fit within the selected calendar day.
+      minBarSpacing: 0.001,
       timeVisible: true,
       secondsVisible: false,
       shiftVisibleRangeOnNewBar: false,
@@ -210,7 +214,7 @@ function buildShell(): void {
     if (!range) return;
     mainRangeKey = `${range.from}:${range.to}`;
     root.dataset.mainRange = mainRangeKey;
-    if (!rangeSyncReady || mainRangeKey === differenceRangeKey) return;
+    if (!rangeSyncReady || rangeLeader !== "main" || mainRangeKey === differenceRangeKey) return;
     differenceRangeKey = mainRangeKey;
     differenceChart?.timeScale().setVisibleRange(range);
   });
@@ -218,19 +222,20 @@ function buildShell(): void {
     if (!range) return;
     differenceRangeKey = `${range.from}:${range.to}`;
     root.dataset.differenceRange = differenceRangeKey;
-    if (!rangeSyncReady || differenceRangeKey === mainRangeKey) return;
+    if (!rangeSyncReady || rangeLeader !== "difference" || differenceRangeKey === mainRangeKey) return;
     mainRangeKey = differenceRangeKey;
     mainChart?.timeScale().setVisibleRange(range);
   });
   mainChart.subscribeCrosshairMove((param) => {
-    if (syncingCrosshair) return;
+    // Layout also emits moves for synthetic crosshairs on a later animation frame.
+    if (syncingCrosshair || (param.time != null && !param.sourceEvent)) return;
     root.dataset.mainCrosshair = param.time == null ? "" : String(param.time);
     renderMainLegend(param.time);
     crosshairTime = param.time;
     syncCrosshair(param.time, true);
   });
   differenceChart.subscribeCrosshairMove((param) => {
-    if (syncingCrosshair) return;
+    if (syncingCrosshair || (param.time != null && !param.sourceEvent)) return;
     root.dataset.differenceCrosshair = param.time == null ? "" : String(param.time);
     renderDifferenceDetails(param.time);
     crosshairTime = param.time;
@@ -247,12 +252,16 @@ function buildShell(): void {
   });
   for (const selector of ["#main-chart", "#difference-chart"]) {
     const target = document.querySelector(selector);
-    const stopFollowing = () => setFollowing(false);
-    target?.addEventListener("pointerdown", stopFollowing);
-    target?.addEventListener("wheel", stopFollowing, { passive: true });
-    target?.addEventListener("touchstart", stopFollowing, { passive: true });
+    const stopFollowing = () => {
+      rangeLeader = selector === "#main-chart" ? "main" : "difference";
+      setFollowing(false);
+    };
+    target?.addEventListener("pointerdown", stopFollowing, { capture: true });
+    target?.addEventListener("wheel", stopFollowing, { passive: true, capture: true });
+    target?.addEventListener("touchstart", stopFollowing, { passive: true, capture: true });
   }
   document.querySelector("#reset-button")?.addEventListener("click", () => {
+    rangeLeader = "main";
     setFollowing(false);
     mainChart?.timeScale().fitContent();
   });
@@ -284,6 +293,7 @@ function showFeedError(message: string): void {
 
 function followLatest(): void {
   if (!mainChart || !payload || payload.comparisonMode === "future-snapshot") return;
+  rangeLeader = "main";
   const range = mainChart.timeScale().getVisibleRange();
   if (!range) return;
   const end = Math.min(payload.windowEnd, payload.latestActualTime ?? payload.windowEnd);
@@ -304,7 +314,12 @@ function setupChannel(nextId: string): void {
   }
   document.querySelector("#channel-warning")?.classList.add("hidden");
   channel = new BroadcastChannel(`nice-weather-${nextId}`);
-  channel.addEventListener("message", (event) => applyPayload(event.data as Payload));
+  channel.addEventListener("message", (event) => {
+    // A delta can arrive while a full snapshot is still decompressing.
+    pendingRender = pendingRender.then(() => applyPayload(event.data as Payload)).catch(() => {
+      showFeedError("Chart update could not be applied; showing the last successful data.");
+    });
+  });
   root.dataset.channelSubscriptions = "1";
 }
 
@@ -332,6 +347,17 @@ function valuedLineData(point: RawPoint): LineData {
   return { time: point.time as UTCTimestamp, value: point.value };
 }
 
+function configureLine(
+  api: ISeriesApi<"Line">,
+  options: ReturnType<typeof seriesOptions> | ReturnType<typeof differenceOptions>,
+  created: boolean,
+): void {
+  // Formatters are fixed by format type; only their scalar options can change.
+  const key = JSON.stringify(options);
+  if (!created && lineOptionKeys.get(api) !== key) api.applyOptions(options);
+  lineOptionKeys.set(api, key);
+}
+
 function apisFor(id: string): ISeriesApi<"Line">[] {
   return [...(segmentApis.get(id)?.values() || [])];
 }
@@ -352,21 +378,25 @@ function removeSegment(id: string, key: number): void {
 }
 
 function reconcileSeriesFull(spec: SeriesSpec): void {
-  const apis = segmentApis.get(spec.id) || new Map<number, ISeriesApi<"Line">>();
+  const available = new Map(segmentApis.get(spec.id));
+  const apis = new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
   const normalized = mergeRawPoints([], spec.points);
   for (const rawSegment of nonNullSegments(normalized)) {
     const segment = spec.fill === "forecast" ? rawSegment : stepVertices(rawSegment);
     const key = segment[0].time;
-    const api = apis.get(key) || mainChart!.addSeries(
+    const reusable = available.has(key) ? [key, available.get(key)!] as const
+      : available.entries().next().value;
+    const api = reusable?.[1] || mainChart!.addSeries(
       LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
     );
-    api.applyOptions(seriesOptions(spec));
+    if (reusable) available.delete(reusable[0]);
+    configureLine(api, seriesOptions(spec), !reusable);
     api.setData(segment.map(valuedLineData));
     apis.set(key, api);
     times.set(key, segment.map((point) => point.time));
   }
-  for (const key of [...apis.keys()]) if (!times.has(key)) removeSegment(spec.id, key);
+  for (const key of available.keys()) removeSegment(spec.id, key);
   segmentApis.set(spec.id, apis);
   segmentTimes.set(spec.id, times);
   const representative = apis.values().next().value;
@@ -384,15 +414,17 @@ function reconcileSeriesDelta(spec: SeriesSpec, previous: RawPoint[], merged: Ra
     const nextTimes = segment.map((point) => point.time);
     const oldTimes = segmentTimes.get(spec.id)?.get(key) || [];
     const keepsPrefix = oldTimes.every((time, index) => nextTimes[index] === time);
-    if (segmentApis.get(spec.id)?.has(key) && !keepsPrefix) removeSegment(spec.id, key);
     let api = segmentApis.get(spec.id)?.get(key);
+    const created = !api;
     if (!api) {
       api = mainChart!.addSeries(
         LineSeries, seriesOptions(spec), spec.pane === "market" ? 1 : 0,
       );
       if (!segmentApis.has(spec.id)) segmentApis.set(spec.id, new Map());
       segmentApis.get(spec.id)!.set(key, api);
-      for (const point of segment) api.update(valuedLineData(point));
+    }
+    if (created || !keepsPrefix) {
+      api.setData(segment.map(valuedLineData));
     } else {
       const oldSet = new Set(oldTimes);
       let lastTime = oldTimes.at(-1) ?? Number.NEGATIVE_INFINITY;
@@ -464,17 +496,21 @@ function differenceRawPoints(points: DifferencePoint[]): RawPoint[] {
 }
 
 function reconcileDifferenceFull(spec: DifferenceSpec, points: DifferencePoint[]): void {
-  const apis = differenceSegmentApis.get(spec.id) || new Map<number, ISeriesApi<"Line">>();
+  const available = new Map(differenceSegmentApis.get(spec.id));
+  const apis = new Map<number, ISeriesApi<"Line">>();
   const times = new Map<number, number[]>();
   for (const segment of nonNullSegments(differenceRawPoints(points))) {
     const key = segment[0].time;
-    const api = apis.get(key) || differenceChart!.addSeries(LineSeries, differenceOptions(spec));
-    api.applyOptions(differenceOptions(spec));
+    const reusable = available.has(key) ? [key, available.get(key)!] as const
+      : available.entries().next().value;
+    const api = reusable?.[1] || differenceChart!.addSeries(LineSeries, differenceOptions(spec));
+    if (reusable) available.delete(reusable[0]);
+    configureLine(api, differenceOptions(spec), !reusable);
     api.setData(segment.map(valuedLineData));
     apis.set(key, api);
     times.set(key, segment.map((point) => point.time));
   }
-  for (const key of [...apis.keys()]) if (!times.has(key)) removeDifferenceSegment(spec.id, key);
+  for (const key of available.keys()) removeDifferenceSegment(spec.id, key);
   differenceSegmentApis.set(spec.id, apis);
   differenceSegmentTimes.set(spec.id, times);
   const representative = apis.values().next().value;
@@ -494,15 +530,15 @@ function reconcileDifferenceDelta(
     const nextTimes = segment.map((point) => point.time);
     const oldTimes = differenceSegmentTimes.get(spec.id)?.get(key) || [];
     const keepsPrefix = oldTimes.every((time, index) => nextTimes[index] === time);
-    if (differenceSegmentApis.get(spec.id)?.has(key) && !keepsPrefix) {
-      removeDifferenceSegment(spec.id, key);
-    }
     let api = differenceSegmentApis.get(spec.id)?.get(key);
+    const created = !api;
     if (!api) {
       api = differenceChart!.addSeries(LineSeries, differenceOptions(spec));
       if (!differenceSegmentApis.has(spec.id)) differenceSegmentApis.set(spec.id, new Map());
       differenceSegmentApis.get(spec.id)!.set(key, api);
-      for (const point of segment) api.update(valuedLineData(point));
+    }
+    if (created || !keepsPrefix) {
+      api.setData(segment.map(valuedLineData));
     } else {
       const oldSet = new Set(oldTimes);
       let lastTime = oldTimes.at(-1) ?? Number.NEGATIVE_INFINITY;
@@ -544,12 +580,18 @@ function differenceOptions(spec: DifferenceSpec) {
   };
 }
 
-function setTimeBasis(start: number, end: number): void {
+function setTimeBasis(start: number, end: number, upcoming: SeriesSpec[] = []): void {
   if (!mainChart || !differenceChart) return;
   const times = new Set<number>();
   for (let current = Math.floor(start / 60) * 60; current <= end; current += 60) times.add(current);
   for (const segments of [...segmentTimes.values(), ...differenceSegmentTimes.values()]) {
     for (const data of segments.values()) for (const time of data) times.add(time);
+  }
+  // Stage incoming times once; individual segment updates then keep stable logical indices.
+  for (const spec of upcoming) {
+    for (const segment of nonNullSegments(spec.points)) {
+      for (const point of spec.fill === "forecast" ? segment : stepVertices(segment)) times.add(point.time);
+    }
   }
   const ordered = [...times].sort((a, b) => a - b);
   const key = ordered.join(",");
@@ -745,11 +787,17 @@ function renderMarkers(): void {
 
 function syncCrosshair(time: Time | undefined, fromMain: boolean): void {
   const target = fromMain ? differenceChart : mainChart;
-  if (!target || time == null) {
-    target?.clearCrosshairPosition();
+  if (!target) return;
+  syncingCrosshair = true;
+  if (time == null) {
+    try {
+      target.clearCrosshairPosition();
+      root.dataset[fromMain ? "differenceCrosshair" : "mainCrosshair"] = "";
+    } finally {
+      syncingCrosshair = false;
+    }
     return;
   }
-  syncingCrosshair = true;
   const basis = fromMain ? differenceTimeBasis : mainTimeBasis;
   if (fromMain) {
     root.dataset.differenceCrosshair = String(time);
@@ -782,6 +830,7 @@ function restoreCrosshair(time: number, onDifference: boolean): boolean {
 function updateIncrementally(next: Payload): void {
   const visible = mainChart?.timeScale().getVisibleRange();
   rangeSyncReady = false;
+  setTimeBasis(next.windowStart, next.windowEnd, next.series);
   reconcileDelta(next.series);
   reconcileDifferenceInputs(next.differenceInputs, false);
   renderDifferences(false);
@@ -873,6 +922,7 @@ function applyPayload(next: Payload): void {
   const previousRange = mainChart?.timeScale().getVisibleRange();
   payload = { ...payload, ...next, mode: next.mode, series: next.series };
   if (next.mode === "full") {
+    rangeLeader = "main";
     resyncPending = false;
     const validDifferenceIds = new Set(next.differenceSpecs.map((spec) => spec.id));
     selectedDifferenceIds = differenceSelectionInitialized && previousMode === next.comparisonMode
@@ -885,6 +935,7 @@ function applyPayload(next: Payload): void {
     signature = next.signature;
     if (signatureChanged) crosshairTime = undefined;
 
+    setTimeBasis(next.windowStart, next.windowEnd, next.series);
     reconcileFull(next.series);
     reconcileDifferenceInputs(next.differenceInputs, true);
     renderDifferences(true);
@@ -918,6 +969,9 @@ function applyPayload(next: Payload): void {
   root.dataset.selectedBinId = next.selectedBinId;
   root.dataset.payloadBytes = String(JSON.stringify(next).length);
   root.dataset.mainSeriesCount = String(seriesApis.size);
+  root.dataset.mainSegmentCount = String(
+    [...segmentApis.values()].reduce((count, apis) => count + apis.size, 0),
+  );
   root.dataset.pricePointCount = String(
     seriesData.get("price")?.filter((point) => point.value !== null).length || 0,
   );
