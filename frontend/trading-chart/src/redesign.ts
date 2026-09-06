@@ -136,6 +136,9 @@ function chartOptions() {
     },
     grid: { vertLines: { color: "#EDF1F5" }, horzLines: { color: "#EDF1F5" } },
     crosshair: { mode: CrosshairMode.Normal },
+    localization: {
+      timeFormatter: (time: Time) => `${formatAxisTime(Number(time), 3, "America/New_York")} ET`,
+    },
     leftPriceScale: { visible: true, borderColor: "#E2E7EE" },
     rightPriceScale: { visible: true, borderColor: "#E2E7EE" },
     timeScale: {
