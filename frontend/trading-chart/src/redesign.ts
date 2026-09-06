@@ -224,14 +224,15 @@ function buildShell(): void {
     mainChart?.timeScale().setVisibleRange(range);
   });
   mainChart.subscribeCrosshairMove((param) => {
-    if (syncingCrosshair) return;
+    // Layout also emits moves for synthetic crosshairs on a later animation frame.
+    if (syncingCrosshair || (param.time != null && !param.sourceEvent)) return;
     root.dataset.mainCrosshair = param.time == null ? "" : String(param.time);
     renderMainLegend(param.time);
     crosshairTime = param.time;
     syncCrosshair(param.time, true);
   });
   differenceChart.subscribeCrosshairMove((param) => {
-    if (syncingCrosshair) return;
+    if (syncingCrosshair || (param.time != null && !param.sourceEvent)) return;
     root.dataset.differenceCrosshair = param.time == null ? "" : String(param.time);
     renderDifferenceDetails(param.time);
     crosshairTime = param.time;

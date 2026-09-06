@@ -189,8 +189,10 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     const ratio = await canvasRatio(frame);
     expect(ratio).toBeGreaterThan(0.001);
     expect(ratio).toBeGreaterThan(initialRatio * 0.25);
+    await expect.poll(() => frame.locator("#app").evaluate((root) => (
+      root.dataset.mainRange === root.dataset.differenceRange
+    ))).toBe(true);
     const currentRange = await frame.locator("#app").getAttribute("data-main-range");
-    expect(await frame.locator("#app").getAttribute("data-difference-range")).toBe(currentRange);
     const [currentStart, currentEnd] = rangeValues(currentRange);
     expect(Math.abs((currentEnd - currentStart) - initialSpan)).toBeLessThan(initialSpan * 0.02);
     expect(Math.abs((currentStart + currentEnd) - (initialStart + initialEnd))).toBeLessThan(
