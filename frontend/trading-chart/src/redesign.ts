@@ -139,6 +139,8 @@ function chartOptions() {
     rightPriceScale: { visible: true, borderColor: "#E2E7EE" },
     timeScale: {
       borderColor: "#E2E7EE",
+      // Dense intraday ticks must still fit within the selected calendar day.
+      minBarSpacing: 0.001,
       timeVisible: true,
       secondsVisible: false,
       shiftVisibleRangeOnNewBar: false,

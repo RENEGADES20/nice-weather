@@ -39,6 +39,7 @@ test("renders 70000 audit points using exact step vertices", async ({page}) => {
     const payload = await new Response(new Blob([bytes]).stream()
       .pipeThrough(new DecompressionStream("gzip"))).json();
     payload.signature = "large-history";
+    (root as HTMLElement).dataset.expectedRange = `${payload.windowStart}:${payload.windowEnd}`;
     payload.sequence = Number((root as HTMLElement).dataset.sequence) + 1000;
     const price = payload.series.find((item: {id: string}) => item.id === "price");
     price.points = Array.from({length: 70000}, (_, index) => ({
@@ -53,6 +54,10 @@ test("renders 70000 audit points using exact step vertices", async ({page}) => {
   await expect(frame.locator("#app")).toHaveAttribute("data-price-point-count", "70000");
   expect(Number(await frame.locator("#app").getAttribute("data-time-basis-points"))).toBeLessThan(12000);
   expect(Date.now() - started).toBeLessThan(5000);
+  await frame.locator("#reset-button").click();
+  await expect.poll(() => frame.locator("#app").evaluate((root) => (
+    root.dataset.mainRange === root.dataset.expectedRange
+  ))).toBe(true);
   for (const id of ["#main-chart", "#difference-chart"]) {
     const chart = frame.locator(id);
     await chart.scrollIntoViewIfNeeded();
