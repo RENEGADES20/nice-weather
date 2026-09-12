@@ -342,10 +342,13 @@ D:\ALLPROJECTS\x learner\天气预测市场交易系统_项目启动会.pptx
 - `06 旧策略迁移表.md` 归档到 `research_runs/2026-08-02-obsidian-sequence-cleanup/historical-artifacts/`，未删除。
 - 总览与策略档案目录内不再保留额外的 `00` 文件；本次没有调用 X API，费用为 `$0`。
 
-## 2026-09-12 Nautilus 工作台实现中
+## 2026-09-12 Nautilus 工作台本地验收
 
 - 隔离分支 codex/nautilus-trading-workbench，基线 e827138f9535996ed0a2162d14bcd9997af2b2b8；原工作目录的未提交修改保留。
 - 新增 Trading/Backtest、请求库、原生引擎投影、不可变自采数据集、串行回测 worker 与模拟恢复；旧五页和旧 Paper 保留。
-- 原生 Python 3.12 / Nautilus 1.231.0 测试在 Ubuntu WSL 跑通；初始 17 项原生检查通过，扩展数据与浏览器验收持续进行。公开自采已发现 44 个 YES/NO token；自然行情与固定样本证据分别记录。
+- Ubuntu WSL Python 3.12 / Nautilus 1.231.0：111 项 Python 测试、14 项前端测试、类型检查及构建通过。公开自采发现 44 个 YES/NO token；自然行情与固定样本证据分别记录。
+- 桌面及移动端窄屏完成模拟买入/退出：同会话 4 笔成交、持仓归零、现金 99.67405、累计费用 0.22595、P&L -0.32595。重启后现金、持仓、订单、成交、净值及最大回撤核对一致。NETTING 生命周期累计统计修正采用可重放的版本升级事件。
+- 固定提交 98fbcb4 对同一自采数据集完成两次回测，配置、源码及完整快照哈希一致，均为 2 笔成交、净值 99.7895。浏览器取消保留部分结果；报告与可复现数据/日志见 [本地验收报告](acceptance/nautilus-2026-09-12/REPORT.md)。
 - 真实订单仍关闭。完整 KLGA 市场日的正式 Ubuntu 部署观察、官方执行客户端完整故障矩阵和最终验收结论尚未完成，不能将本地短时测试表述为整体上线验收完成。
 - Repricing 延迟优化与阶段 A 策略迁移本轮后置。运行与回滚见 [TRADING_WORKBENCH.md](TRADING_WORKBENCH.md)。
+- 推送被自动审批阻止，远端 CI/草稿 PR 尚未执行；需用户明确授权 RENEGADES20/nice-weather 目的地后继续。
