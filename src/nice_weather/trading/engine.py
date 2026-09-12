@@ -151,16 +151,20 @@ class Session:
         self.now = event["ts"]
         kind, row = event["kind"], event.get("data", {})
         # Cancel stale resting orders before a new book can match them.
+        cancel_pending = False
         for token, quote in list(self.quotes.items()):
-            if self.now - quote["ts"] > 30_000_000_000:
-                self.cancel_token(token)
+            if self.now - quote["ts"] > 30_000_000_000 or self.market_rejection(token):
+                cancel_pending |= self.cancel_token(token)
+        if cancel_pending:
+            # Native cancellation is queued; drain it before introducing a crossing quote.
+            self._run(CustomData(DataType(Input), Input(event | {"kind": "clock"})), custom=True)
         if kind == "contract":
             for side, key in (("YES", "yes_token_id"), ("NO", "no_token_id")):
                 token = row[key]
                 if not token:
                     continue
                 self.metadata[token] = row | {"outcome": side}
-                if row["parse_status"] != "parsed" or row["closed"] or not row["accepting_orders"]:
+                if self.market_rejection(token):
                     self.cancel_token(token)
                 if token not in self.instruments:
                     increment = Price.from_str(str(row["tick_size"]))
@@ -257,6 +261,27 @@ class Session:
     def open_orders(self):
         return self.engine.cache.orders_open()
 
+    def market_rejection(self, token):
+        row = self.metadata[token]
+        if (
+            row["parse_status"] != "parsed"
+            or json_nonempty(row["ambiguities_json"])
+            or row["station_id"] != "KLGA"
+            or row["timezone"] != "America/New_York"
+        ):
+            return "Ambiguous contract: no-trade"
+        if not row.get("fee_known", False):
+            return "Unknown historical fee schedule: no-trade"
+        if (
+            row["closed"]
+            or not row["active"]
+            or not row["accepting_orders"]
+            or self.now >= timestamp(row["observation_end"])
+            or token in self.outcomes
+        ):
+            return "Market closed"
+        return None
+
     def buy_reserve(self, order):
         token = self.engine.cache.instrument(order.instrument_id).raw_symbol.value
         row = self.metadata[token]
@@ -265,10 +290,13 @@ class Session:
 
     def cancel_token(self, token):
         ins = self.instruments.get(token)
+        requested = False
         if ins:
             for order in self.open_orders():
                 if order.instrument_id == ins.id:
                     self.control.cancel_order(order)
+                    requested = True
+        return requested
 
     def command(self, event):
         kind, payload = event["kind"], event.get("data", {})
@@ -400,23 +428,8 @@ class Session:
         if token not in self.metadata or token not in self.quotes:
             raise ValueError("Missing contract or executable quote")
         row, quote, ins = self.metadata[token], self.quotes[token], self.instruments[token]
-        if (
-            row["parse_status"] != "parsed"
-            or json_nonempty(row["ambiguities_json"])
-            or row["station_id"] != "KLGA"
-            or row["timezone"] != "America/New_York"
-        ):
-            raise ValueError("Ambiguous contract: no-trade")
-        if not row.get("fee_known", False):
-            raise ValueError("Unknown historical fee schedule: no-trade")
-        if (
-            row["closed"]
-            or not row["active"]
-            or not row["accepting_orders"]
-            or self.now >= timestamp(row["observation_end"])
-            or token in self.outcomes
-        ):
-            raise ValueError("Market closed")
+        if reason := self.market_rejection(token):
+            raise ValueError(reason)
         if self.now - quote["ts"] > 30_000_000_000:
             raise ValueError("Stale quote")
         side, tif = payload.get("side"), payload.get("tif", "GTC")

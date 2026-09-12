@@ -341,10 +341,11 @@ test("keeps one bin state and fits the requested viewport", async ({ page }, tes
   expect(componentDimensions.scrollHeight).toBeLessThanOrEqual(componentDimensions.height);
   await expect(frame.locator("#difference-chart canvas").first()).toBeVisible();
   await expect(frame.locator("input[name='reference']")).toHaveCount(0);
-  const targetRadio = page.getByTestId("stRadioGroup").getByRole("radio", { name: "68-69°F" });
-  const targetBin = page.getByTestId("stRadioGroup").getByText("68-69°F", { exact: true });
+  const bins = page.getByRole("tabpanel", { name: "Repricing", exact: true }).getByTestId("stRadioGroup");
+  const targetRadio = bins.getByRole("radio", { name: "68-69°F" });
+  const targetBin = bins.getByText("68-69°F", { exact: true });
   if (await targetRadio.isChecked()) {
-    await page.getByTestId("stRadioGroup").getByText("70-71°F", { exact: true }).click();
+    await bins.getByText("70-71°F", { exact: true }).click();
     await expect(targetRadio).not.toBeChecked();
   }
   const firstBin = await frame.locator("#app").getAttribute("data-selected-bin-id");
@@ -384,13 +385,15 @@ test("all bins switch without stale messages and feeds recover after disconnect"
   const queryTimes: number[] = [];
   const renderTimes: number[] = [];
   const transportTimes: number[] = [];
-  const labels = await page.getByTestId("stRadioGroup").locator("label").allTextContents();
+  const bins = page.getByRole("tabpanel", { name: "Repricing", exact: true }).getByTestId("stRadioGroup");
+  const labels = await bins.locator("label").allTextContents();
+  expect(labels.length).toBeGreaterThan(1);
   for (const label of [...labels, ...labels]) {
     const before = await frame.locator("#app").getAttribute("data-selected-bin-id");
-    const radio = page.getByTestId("stRadioGroup").getByRole("radio", { name: label.trim(), exact: true });
+    const radio = bins.getByRole("radio", { name: label.trim(), exact: true });
     if (await radio.isChecked()) continue;
     const started = Date.now();
-    await page.getByTestId("stRadioGroup").getByText(label.trim(), { exact: true }).click();
+    await bins.getByText(label.trim(), { exact: true }).click();
     await expect.poll(() => frame.locator("#app").getAttribute("data-selected-bin-id"),
       { intervals: [50, 100], timeout: 10_000 }).not.toBe(before);
     latencies.push(Date.now() - started);

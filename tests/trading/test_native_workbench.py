@@ -337,6 +337,37 @@ def test_future_revision_does_not_change_past(session):
     assert session.snapshot()["cash"] == past["cash"]
 
 
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"ambiguities_json": '["rounding"]'},
+        {"active": False},
+        {"fee_known": False},
+        {"observation_end": "2026-09-12T12:00:01+00:00"},
+    ],
+)
+def test_resting_order_canceled_before_invalid_market_can_match(session, changes):
+    session.apply(event("order", 2, buy(quantity=1, price=0.38, tif="GTC")))
+    assert session.snapshot()["orders"][0]["status"] == "ACCEPTED"
+    session.apply(event("contract", 3, contract(**changes)))
+    # Keep the original quote fresh while crossing the observation boundary.
+    result = session.apply(
+        event("quote", 2_000_000_000, quote(best_bid=0.36, best_ask=0.37))
+    )
+    assert result["orders"][0]["status"] == "CANCELED"
+    assert result["fills"] == []
+    assert result["cash"] == 100
+
+
+def test_stale_resting_order_cancellation_precedes_crossing_quote(session):
+    session.apply(event("order", 2, buy(quantity=1, price=0.38, tif="GTC")))
+    result = session.apply(
+        event("quote", 31_000_000_001, quote(best_bid=0.36, best_ask=0.37))
+    )
+    assert result["orders"][0]["status"] == "CANCELED"
+    assert result["fills"] == []
+
+
 def test_native_live_config_is_disabled_and_persistent():
     from nice_weather.trading.live import node_config, status
 
