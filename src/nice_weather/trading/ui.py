@@ -33,8 +33,8 @@ def submit(root, account, mode, kind, payload, key):
     st.success(f"Request queued: {request_id}")
 
 
-def metrics(snapshot):
-    columns = st.columns(4)
+def metrics(snapshot, count=4):
+    columns = st.columns(count)
     for i, (key, label) in enumerate(
         (
             ("cash", "Cash"),
@@ -57,7 +57,7 @@ def metrics(snapshot):
             if value is None
             else (f"{value:.2%}" if "drawdown" in key else f"{value:,.4f}")
         )
-        columns[i % 4].metric(label, text)
+        columns[i % count].metric(label, text)
 
 
 def result_view(root, run, *, show_metrics=True):
@@ -71,7 +71,7 @@ def result_view(root, run, *, show_metrics=True):
         st.info("Waiting for the first engine snapshot.")
         return
     if show_metrics:
-        metrics(snapshot)
+        metrics(snapshot, count=2)
     series = read_rows(
         root / "results.sqlite3",
         "SELECT ts,equity,drawdown FROM equity WHERE run_id=? ORDER BY seq",
