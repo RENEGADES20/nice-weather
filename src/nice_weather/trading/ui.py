@@ -383,7 +383,10 @@ def backtest(root):
     )
     if runs:
         selected = st.multiselect(
-            "Inspect / compare up to two runs", [r["run_id"] for r in runs], max_selections=2
+            "Inspect / compare up to two runs",
+            [r["run_id"] for r in runs],
+            max_selections=2,
+            key="compare-runs",
         )
         for column, run_id in zip(st.columns(max(len(selected), 1)), selected, strict=False):
             run = next(r for r in runs if r["run_id"] == run_id)
