@@ -28,6 +28,8 @@ from nice_weather.store import WeatherStore
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="nice-weather")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    from nice_weather.trading.cli import register
+    register(subparsers)
 
     init_parser = subparsers.add_parser("db-init", help="Initialize the SQLite database")
     init_parser.add_argument("--db", type=Path, required=True)
@@ -364,6 +366,9 @@ def _run_smoke(args: argparse.Namespace) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command in {"trading", "backtest"}:
+        from nice_weather.trading.cli import execute
+        return execute(args)
     if args.command == "db-init":
         with WeatherStore(args.db) as store:
             store.init_schema()

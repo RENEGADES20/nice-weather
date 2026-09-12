@@ -299,8 +299,9 @@ def test_price_in_threshold_requires_sixty_seconds_of_persistence() -> None:
     assert _persistent_threshold(ticks, 0.9, start) == start + timedelta(seconds=60)
 
 
-def test_market_cursor_uses_receipt_order_for_late_event_ticks(tmp_path) -> None:
+def test_market_cursor_uses_receipt_order_for_late_event_ticks(tmp_path, seed_yes_token) -> None:
     database = tmp_path / "late-tick.sqlite3"
+    seed_yes_token(database)
     config = load_city_config()
     with WeatherStore(database) as store:
         store.init_schema()

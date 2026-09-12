@@ -45,6 +45,8 @@ def test_dashboard_renders_fixture(fixture_manifest, tmp_path, monkeypatch) -> N
         "Execution",
         "Paper",
         "System & Audit",
+        "Trading",
+        "Backtest",
     ]
     assert any("Build" in caption.value for caption in app.caption)
     assert any(metric.label == "Quote age" for metric in app.metric)
@@ -65,6 +67,7 @@ def test_dashboard_handles_empty_database(tmp_path, monkeypatch) -> None:
 
     assert not app.exception
     assert any("No completed decision" in item.value for item in app.info)
+    assert [t.label for t in app.tabs][-2:] == ["Trading", "Backtest"]
 
 
 def test_dashboard_renders_no_trade_coverage_gap(fixture_manifest, tmp_path, monkeypatch) -> None:

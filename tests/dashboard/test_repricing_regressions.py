@@ -239,8 +239,9 @@ def test_incremental_inputs_equal_full_reconstruction(monkeypatch):
     assert expired[-1]["points"][-1]["value"] is None
 
 
-def test_receipt_cursor_includes_recovery_of_unchanged_old_book(tmp_path):
+def test_receipt_cursor_includes_recovery_of_unchanged_old_book(tmp_path, seed_yes_token):
     database = tmp_path / "seed.sqlite3"
+    seed_yes_token(database)
     collector = MarketStreamCollector(load_city_config(), str(database))
     now = datetime(2026, 9, 5, 4, tzinfo=UTC)
     metadata = TokenMetadata("event", "condition", "market", "bin", "token", "80 F")

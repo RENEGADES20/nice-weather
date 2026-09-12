@@ -176,3 +176,7 @@ sudo systemctl start nice-weather-r2-sync.timer
 ```
 
 回滚不删除 `/var/lib/nice-weather` 或任何 R2 对象。系统稳定后，由用户人工将本地 TXT 移入密码管理器或删除；项目不会代为删除。
+
+## Nautilus 独立工作台服务
+
+新增 sandbox/backtest service 及 dashboard drop-in；Python 3.12 独立环境，操作目录 `/var/lib/nice-weather-trading/requests`，结果库位于 `/var/lib/nice-weather-trading`。正式部署、完整市场日观察和回滚流程见 [TRADING_WORKBENCH.md](TRADING_WORKBENCH.md)。回滚不得覆盖已经新增的模拟/交易日志。真实服务本轮不启用。

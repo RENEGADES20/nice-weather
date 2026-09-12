@@ -1,0 +1,25 @@
+[Unit]
+Description=Nice Weather Nautilus sandbox (real execution disabled)
+After=network-online.target nice-weather-market-stream.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nice-weather
+Group=nice-weather
+WorkingDirectory=/opt/nice-weather/repo
+Environment=PYTHONUNBUFFERED=1
+StateDirectory=nice-weather-trading
+ExecStartPre=/usr/bin/mkdir -p /var/lib/nice-weather-trading/requests
+ExecStart=/opt/nice-weather/.venv-trading/bin/nice-weather trading run --mode sandbox --db /var/lib/nice-weather/nice-weather.sqlite3 --root /var/lib/nice-weather-trading
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/lib/nice-weather
+ReadWritePaths=/var/lib/nice-weather-trading
+
+[Install]
+WantedBy=multi-user.target

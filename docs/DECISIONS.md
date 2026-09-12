@@ -665,3 +665,11 @@ schema v7 为加列和加索引，不删除历史记录；旧数据有明确核�
 
 重新评估条件：
 ```
+
+## D-037：接入 Nautilus 工作台，保留旧 Paper
+
+2026-09-12 用户明确批准：Python 3.12 与 nautilus_trader[polymarket]==1.231.0 独立环境，BacktestEngine 同时承担历史及 streaming 模拟。账户事实取自原生引擎；追加输入日志与快照哈希支持同会话恢复，恢复不一致暂停。Dashboard 仅向独立 requests 目录写请求，结果与天气库只读。
+
+YES/NO 分别使用真实 token 记录；旧 Repricing 显式筛选 YES。历史合约从不可变原始 capture 重建，禁止依赖覆盖式 contract_bins。无费用版本、规则歧义、缺失/陈旧盘口时拒绝交易。L1 深度消耗、无 maker 排队优势、无默认 rebate；周期公开盘口刷新用于保持可核验深度。
+
+实现官方 TradingNode / Polymarket 配置接线与 Redis/对账配置，但 CLI 不开放真实执行，也不读取真实凭据。阶段 A 与延迟优化后置。先前将 Nautilus 全部后置的 MVP 决策由此更新，旧 Paper 保留。完整日部署验收是独立未完成门槛。

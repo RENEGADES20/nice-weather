@@ -341,3 +341,11 @@ D:\ALLPROJECTS\x learner\天气预测市场交易系统_项目启动会.pptx
 - `04 策略库/` 改名为 `04 策略档案/`，只保留 `01` 至 `05` 的活动档案和证据缺口。
 - `06 旧策略迁移表.md` 归档到 `research_runs/2026-08-02-obsidian-sequence-cleanup/historical-artifacts/`，未删除。
 - 总览与策略档案目录内不再保留额外的 `00` 文件；本次没有调用 X API，费用为 `$0`。
+
+## 2026-09-12 Nautilus 工作台实现中
+
+- 隔离分支 codex/nautilus-trading-workbench，基线 e827138f9535996ed0a2162d14bcd9997af2b2b8；原工作目录的未提交修改保留。
+- 新增 Trading/Backtest、请求库、原生引擎投影、不可变自采数据集、串行回测 worker 与模拟恢复；旧五页和旧 Paper 保留。
+- 原生 Python 3.12 / Nautilus 1.231.0 测试在 Ubuntu WSL 跑通；初始 17 项原生检查通过，扩展数据与浏览器验收持续进行。公开自采已发现 44 个 YES/NO token；自然行情与固定样本证据分别记录。
+- 真实订单仍关闭。完整 KLGA 市场日的正式 Ubuntu 部署观察、官方执行客户端完整故障矩阵和最终验收结论尚未完成，不能将本地短时测试表述为整体上线验收完成。
+- Repricing 延迟优化与阶段 A 策略迁移本轮后置。运行与回滚见 [TRADING_WORKBENCH.md](TRADING_WORKBENCH.md)。

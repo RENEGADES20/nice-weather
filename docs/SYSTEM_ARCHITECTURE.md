@@ -341,3 +341,22 @@ Polymarket 输入：
 → 多城市与策略验证
 → 长期监控和版本迭代
 ```
+
+## 2026-09-12 Nautilus 工作台增量架构
+
+```mermaid
+flowchart LR
+  C[KLGA YES / NO 公开采集] --> D[SQLite 一致性视图与哈希数据集]
+  C --> J[持久化输入日志]
+  D --> B[Nautilus 历史回测 worker]
+  J --> S[Nautilus streaming 模拟账户]
+  UI[Trading / Backtest] --> Q[独立 requests 目录]
+  Q --> S
+  Q --> B
+  S --> R[原生账户与执行事件投影]
+  B --> R
+  R --> UI
+  L[官方 TradingNode + Redis + 启动对账] -.默认关闭.-> R
+```
+
+交易进程使用 Python 3.12 / Nautilus 1.231.0 独立依赖环境。Dashboard 不导入引擎或读取资金凭据。每个账户只有一个 writer，回测单独串行 worker。日志先写入、引擎后执行、快照哈希再提交；恢复重放全会话并校验。报价严格按实际 token 和接收时间处理，规则及费用读取原始历史 capture。主库 schema v7 保持兼容；旧 Paper 和旧 Runner 不迁移账目。详见 [TRADING_WORKBENCH.md](TRADING_WORKBENCH.md)。
