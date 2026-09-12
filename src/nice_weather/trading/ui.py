@@ -33,6 +33,15 @@ def submit(root, account, mode, kind, payload, key):
     st.success(f"Request queued: {request_id}")
 
 
+def fee_preview(market, quantity, price):
+    rate, exponent = market.get("fee_rate"), market.get("fee_exponent")
+    if rate is None or exponent is None:
+        st.warning("Fee unavailable; the worker rejects orders with unknown fees.")
+        return
+    fee = quantity * rate * (price * (1 - price)) ** exponent
+    st.caption(f"Estimated taker fee at limit: {fee:.6f}; worker revalidates before execution.")
+
+
 def metrics(snapshot, count=4):
     columns = st.columns(count)
     for i, (key, label) in enumerate(
@@ -211,16 +220,9 @@ def trading(root):
         if draft and draft["account"] == account:
             payload = draft["payload"]
             st.json({"account": account, "mode": "SANDBOX", **payload})
-            m = by_token[payload["token"]]
+            m = by_token.get(payload["token"], {})
             qty = payload.get("quantity", payload.get("amount", 0) / payload["price"])
-            fee = (
-                qty
-                * m["fee_rate"]
-                * (payload["price"] * (1 - payload["price"])) ** m["fee_exponent"]
-            )
-            st.caption(
-                f"Estimated taker fee at limit: {fee:.6f}; worker revalidates before execution."
-            )
+            fee_preview(m, qty, payload["price"])
             if st.button("Submit reviewed order", disabled=not connected):
                 submit(root, account, "sandbox", "order", payload, "manual")
             if st.button("Clear preview / prepare a new order"):
@@ -239,9 +241,13 @@ def trading(root):
                 "Target total / exit shares (0 = full exit)", min_value=0.0, value=0.0
             )
             replacement_price = st.number_input(
-                "Replacement limit", min_value=0.001, max_value=0.999, value=0.4, format="%.3f"
+                "Exit / replacement limit",
+                min_value=0.000001,
+                max_value=0.999999,
+                value=0.4,
+                format="%.6f",
             )
-            if st.form_submit_button("Queue action", disabled=not connected):
+            if st.form_submit_button("Preview action", disabled=not connected):
                 payload = {"order_id": order_id, "token": exit_token}
                 if action == "replace":
                     payload |= {
@@ -250,13 +256,50 @@ def trading(root):
                         "price": replacement_price,
                         "tif": "GTC",
                     }
-                elif action == "close" and target:
-                    payload["quantity"] = target
+                elif action == "close":
+                    payload["quantity"] = target or sum(
+                        p["quantity"]
+                        for p in snapshot.get("positions", [])
+                        if p["token"] == exit_token
+                    )
+                    payload["price"] = replacement_price
+                st.session_state["action-preview"] = {
+                    "account": account,
+                    "kind": action,
+                    "payload": payload,
+                }
+        action_draft = st.session_state.get("action-preview")
+        if action_draft and action_draft["account"] == account:
+            action, payload = action_draft["kind"], action_draft["payload"]
+            st.json({"account": account, "mode": "SANDBOX", "action": action, **payload})
+            if action != "cancel":
+                filled = next(
+                    (
+                        o["filled"]
+                        for o in snapshot.get("orders", [])
+                        if o["order_id"] == payload["order_id"]
+                    ),
+                    0,
+                )
+                qty = (
+                    max(0, payload["target_quantity"] - filled)
+                    if action == "replace"
+                    else payload["quantity"]
+                )
+                st.caption(
+                    f"Reviewed shares: {qty:g} · "
+                    f"Side: {payload.get('side', 'SELL')} · Limit: {payload['price']:g}"
+                )
+                fee_preview(by_token.get(payload["token"], {}), qty, payload["price"])
+                if action == "replace":
+                    st.caption("Replacement quantity is rechecked after confirmed cancellation.")
+            if st.button("Submit reviewed action", disabled=not connected):
                 submit(root, account, "sandbox", action, payload, "controls")
         if st.button("Prepare another position / order action"):
             for key in list(st.session_state):
                 if key.startswith("request-controls-"):
                     del st.session_state[key]
+            st.session_state.pop("action-preview", None)
             st.info("A new action will receive a new request ID.")
         with st.form("strategy-controls"):
             strategy = st.selectbox("Registered strategy", list(STRATEGIES), key="trading-strategy")

@@ -75,7 +75,7 @@ Python 最终 **111 项全部通过**，完整输出保存在 `pytest.txt`；回
 ## 尚未通过的整体完成门槛
 
 - **正式 Ubuntu 主机的完整 KLGA 市场日运行**：尚未获得部署连接信息；本地短时 WSL 观察不能代替。systemd 文件已提交，正式主机部署、采集/R2 连续不受影响及完整日证据待完成。
-- **官方真实执行客户端完整故障矩阵**：HTTP 认证失败和超时已测；提交结果未知、WebSocket 重复成交报告、Redis 重启对账的完整组合尚未验收。LIVE 目前交付官方客户端/TradingNode/Cache 配置接线及禁用保护，真实账户监控、外部资产对账与资金限额启用没有开放。
+- **官方真实执行客户端剩余边界**：第二轮已补齐提交结果未知、WebSocket 重复成交报告、Redis 已落盘记录重启与启动对账，具体证据见下文。尚未落盘提交遇到机器断电的恢复未覆盖；真实账户监控、外部资产对账与资金限额启用没有开放，LIVE 保持禁用。
 - **归因与数据覆盖**：原生 NETTING 持仓显示统一 Workbench 策略 ID，订单有 manual/strategy 归属；多策略独立持仓归因、外部充提现金流调整、既有真实资产均未验收。尚无 30 个完整日，因此 Sharpe 不可用。
 - 自然最终结算尚未观察到；0/1 结算及异常分支使用明确标注的固定输入。示例策略只依赖报价，真实天气策略及天气修订路径随阶段 A 迁移后验收。
 
@@ -95,3 +95,22 @@ Python 最终 **111 项全部通过**，完整输出保存在 `pytest.txt`；回
 远端完整 CI 已启动，包含 Nautilus、lint、unit、fixture-dashboard、frontend（含原有 Playwright 场景）和 security；各提交检查结果以 [PR 检查页](https://github.com/RENEGADES20/nice-weather/pull/36/checks) 为准。本报告保留已执行本地证据与尚未完成的部署门槛，PR 保持草稿，未合并到 main。
 
 复查修正后，原生交易测试 **31 项通过**，日志见 `review-pytest.txt`；前端类型检查通过。此前 111 项全套本地结果保留于 `pytest.txt`，不将旧日志改写成新版本结果。首轮 [CI #82](https://github.com/RENEGADES20/nice-weather/actions/runs/34701946062) 的 Nautilus、lint、unit、fixture-dashboard、security 通过；frontend 为 12 通过、2 失败，上述定位修正后通过后续提交重新运行。历史输入如曾受撤单顺序问题影响，升级重放将暂停并保留差异，禁止修改旧成交或重置现金。
+
+## 第二轮验收（2026-09-12）
+
+本轮 **125 项 Python 测试通过**：Ubuntu WSL 原生交易 38 项（`native-final.txt`），Windows 原有单元/集成/Dashboard 87 项（`python-regression.txt`）。Ruff、diff 空白检查及密钥扫描通过。之前提交 `360a0ce` 的 [CI #83](https://github.com/RENEGADES20/nice-weather/actions/runs/34702265459) 六项检查全部通过；本轮新增提交的远端检查另行记录。
+
+| 新增场景 | 结果与边界 |
+| --- | --- |
+| 官方签名订单提交超时 | 实际官方签名及 HTTP 提交方法；受控响应全部超时，重试请求正文一致，状态仍为 SUBMITTED，没有伪造接受、拒绝或成交事件。覆盖已知与未知预期订单 ID。 |
+| WebSocket 重复成交 | 实际官方解码器接收 MATCHED 重复、MINED、CONFIRMED 及迟到重复；原生 5 份订单只成交 2 份一次。清空客户端内存去重状态后，原生 trade IDs 仍阻止重复入账。 |
+| Redis 重启 | 测试独立回环端口 Redis，AOF/appendfsync=always；确认异步写入可读后终止并重启服务，创建新 Cache，调用 TradingNode 使用的原生 load_cache 路径。核对现金快照、精确纳秒、SUBMITTED/部分成交状态、持仓和费用。 |
+| 启动对账与重复报告 | 受控 HTTP 通过官方解析器生成撤单报告，将该原生报告交给实际 LiveExecutionEngine 启动对账入口；重复报告不增加成交，部分持仓和费用保留。启动 mass-status 传输边界使用测试桩，未连接真实账户。 |
+| 退出与撤改单预览 | Streamlit AppTest 确认预览不写请求；连续两次提交只产生一个请求，审核限价保留。原生引擎验证 Bid 下跌后不以更差价格退出。 |
+| 市场精度修订 | tick size 从 0.01 改为 0.001 时先撤旧挂单，更新原生 instrument 并等待新盘口；0.382 成交保持原价，现金为 99.618。 |
+
+修复中保留的限制：官方 Cache 的异步写入不等同于逐笔同步落盘；本轮恢复试验针对已经核验落盘的记录。未完成机器断电、未落盘实盘提交及真实资产对账验收，不能据此启用真实资金。
+
+修复后的代码重新验证归档模拟日志 19,730 条及两次回测各 377 条，共 20,484 条输入，所有已记录快照哈希一致。模拟现金仍为 99.67405，两次回测现金均为 99.7895；结果见 `replay-final.json`。归档账户概览与日志结尾的两条报价采集时点差异保持原样，未改写旧证据。浏览器重新载入新版本时，缺少旧 Runner 决策仍可打开 Trading，停止的本地 worker 显示 Disconnected / paused 并禁用提交按钮。
+
+VM 检查结果：开发机没有可用 SSH 配置；已发现项目 Google Cloud 控制台标签页，浏览器控制连接持续超时，尚未读取到实例地址或进入 VM。私有仓库部署可使用已认证开发机导出的 Git bundle，传输前后核对 SHA256；具体步骤见 VM_DEPLOYMENT。正式服务尚未变更，完整纽约市场日观察尚未开始。

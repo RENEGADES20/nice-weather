@@ -166,8 +166,16 @@ class Session:
                 self.metadata[token] = row | {"outcome": side}
                 if self.market_rejection(token):
                     self.cancel_token(token)
-                if token not in self.instruments:
-                    increment = Price.from_str(str(row["tick_size"]))
+                previous = self.instruments.get(token)
+                increment = Price.from_str(str(row["tick_size"]))
+                if previous is None or increment != previous.price_increment:
+                    if previous is not None:
+                        self.cancel_token(token)
+                        self._run(
+                            CustomData(DataType(Input), Input(event | {"kind": "clock"})),
+                            custom=True,
+                        )
+                        self.quotes.pop(token, None)
                     instrument = BinaryOption(
                         instrument_id=InstrumentId.from_str(
                             f"{row['condition_id']}-{token}.POLYMARKET"
@@ -188,7 +196,10 @@ class Session:
                     )
                     # Expiry stays deferred until a verified result is actually received.
                     self.instruments[token] = instrument
-                    self.engine.add_instrument(instrument)
+                    if previous is None:
+                        self.engine.add_instrument(instrument)
+                    else:
+                        self._run(instrument, custom=True)
             self._run(CustomData(DataType(Input), Input(event | {"kind": "clock"})), custom=True)
         elif kind == "quote":
             token = row["token_id"]
@@ -415,7 +426,7 @@ class Session:
                 "token": token,
                 "quantity": quantity,
                 "side": "SELL",
-                "price": self.quotes[token]["best_bid"],
+                "price": payload.get("price", self.quotes[token]["best_bid"]),
                 "tif": "IOC",
             },
             owner,

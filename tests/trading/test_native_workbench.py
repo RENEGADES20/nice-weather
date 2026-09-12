@@ -351,9 +351,7 @@ def test_resting_order_canceled_before_invalid_market_can_match(session, changes
     assert session.snapshot()["orders"][0]["status"] == "ACCEPTED"
     session.apply(event("contract", 3, contract(**changes)))
     # Keep the original quote fresh while crossing the observation boundary.
-    result = session.apply(
-        event("quote", 2_000_000_000, quote(best_bid=0.36, best_ask=0.37))
-    )
+    result = session.apply(event("quote", 2_000_000_000, quote(best_bid=0.36, best_ask=0.37)))
     assert result["orders"][0]["status"] == "CANCELED"
     assert result["fills"] == []
     assert result["cash"] == 100
@@ -361,11 +359,29 @@ def test_resting_order_canceled_before_invalid_market_can_match(session, changes
 
 def test_stale_resting_order_cancellation_precedes_crossing_quote(session):
     session.apply(event("order", 2, buy(quantity=1, price=0.38, tif="GTC")))
-    result = session.apply(
-        event("quote", 31_000_000_001, quote(best_bid=0.36, best_ask=0.37))
-    )
+    result = session.apply(event("quote", 31_000_000_001, quote(best_bid=0.36, best_ask=0.37)))
     assert result["orders"][0]["status"] == "CANCELED"
     assert result["fills"] == []
+
+
+def test_exit_keeps_reviewed_price_when_bid_falls(session):
+    session.apply(event("order", 2, buy(quantity=1)))
+    session.apply(event("quote", 3, quote(best_bid=0.37, best_ask=0.38)))
+    result = session.apply(event("close", 4, {"token": "111", "quantity": 1, "price": 0.39}))
+    assert result["positions"][0]["quantity"] == 1
+    assert len(result["fills"]) == 1
+    assert result["orders"][-1]["status"] == "CANCELED"
+
+
+def test_tick_revision_updates_native_precision_and_cancels_old_orders(session):
+    session.apply(event("order", 2, buy(quantity=1, price=0.38, tif="GTC")))
+    result = session.apply(event("contract", 3, contract(tick_size=0.001)))
+    assert result["orders"][0]["status"] == "CANCELED"
+    assert session.instruments["111"].price_precision == 3
+    session.apply(event("quote", 4, quote(best_bid=0.381, best_ask=0.382)))
+    result = session.apply(event("order", 5, buy(quantity=1, price=0.382)))
+    assert result["fills"][0]["price"] == 0.382
+    assert result["cash"] == pytest.approx(99.618)
 
 
 def test_native_live_config_is_disabled_and_persistent():

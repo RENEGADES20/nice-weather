@@ -1,0 +1,21 @@
+........................................................................ [ 82%]
+...............                                                          [100%]
+============================== warnings summary ===============================
+tests/dashboard/test_dashboard.py::test_dashboard_renders_fixture
+tests/dashboard/test_dashboard.py::test_dashboard_renders_no_trade_coverage_gap
+  D:\ALLPROJECTS\weather forecast\.worktrees\nautilus-trading\.venv-trading\Lib\site-packages\streamlit\time_util.py:73: DeprecationWarning: The 'generic' unit for NumPy timedelta is deprecated, and will raise an error in the future. This includes implicit conversion of bare integers (e.g. `+ 1`). Please use a specific unit instead.
+    seconds: float = pd.Timedelta(t).total_seconds()
+
+tests/dashboard/test_trading_actions.py::test_action_requires_review_and_duplicate_submit_is_idempotent[replace]
+tests/dashboard/test_trading_actions.py::test_action_requires_review_and_duplicate_submit_is_idempotent[replace]
+tests/dashboard/test_trading_actions.py::test_action_requires_review_and_duplicate_submit_is_idempotent[replace]
+tests/dashboard/test_trading_actions.py::test_action_requires_review_and_duplicate_submit_is_idempotent[replace]
+tests/dashboard/test_trading_actions.py::test_action_requires_review_and_duplicate_submit_is_idempotent[close]
+tests/dashboard/test_trading_actions.py::test_action_requires_review_and_duplicate_submit_is_idempotent[close]
+tests/dashboard/test_trading_actions.py::test_action_requires_review_and_duplicate_submit_is_idempotent[close]
+tests/dashboard/test_trading_actions.py::test_action_requires_review_and_duplicate_submit_is_idempotent[close]
+  D:\ALLPROJECTS\weather forecast\.worktrees\nautilus-trading\.venv-trading\Lib\site-packages\pandas\core\arrays\datetimes.py:804: DeprecationWarning: The 'generic' unit for NumPy timedelta is deprecated, and will raise an error in the future. This includes implicit conversion of bare integers (e.g. `+ 1`). Please use a specific unit instead.
+    res_values = offset._apply_array(values._ndarray)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+87 passed, 10 warnings in 35.56s

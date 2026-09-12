@@ -82,7 +82,35 @@ sudo systemctl enable --now nice-weather-runner.service
 
 ## 2. 安装程序
 
-以下命令在 Ubuntu VM 上运行。仓库是公开仓库，无需向 VM 写入 GitHub Token。
+仓库现为 private。现有开发机通过 Git Credential Manager 认证后仍可正常 fetch/push；
+不要把凭据写进 remote URL、代码、聊天或部署命令。VM 若已配置对该仓库的只读访问，
+可继续使用原有认证；尚未配置时，使用下列离线 Git bundle 流程将已审核提交传到同一项目 VM，
+无需将开发机 GitHub Token 保存到 VM。
+
+在已认证的开发机确认 PR 检查与精确 SHA 后：
+
+```powershell
+git fetch origin main
+git rev-parse HEAD
+git bundle create var/nice-weather-reviewed.bundle HEAD
+Get-FileHash var/nice-weather-reviewed.bundle -Algorithm SHA256
+scp var/nice-weather-reviewed.bundle <existing-ssh-alias>:/tmp/nice-weather-reviewed.bundle
+```
+
+VM 上先核对传输哈希、当前 SHA、工作区和服务状态；本轮接入采用独立环境，
+保留原库及所有交易日志。下列 fetch 只导入对象，切换代码和重启仍须按照已通过验收的部署步骤执行。
+
+```bash
+sha256sum /tmp/nice-weather-reviewed.bundle
+sudo -u nice-weather git -C /opt/nice-weather/repo status --short
+sudo -u nice-weather git -C /opt/nice-weather/repo rev-parse HEAD
+sudo -u nice-weather git -C /opt/nice-weather/repo bundle verify /tmp/nice-weather-reviewed.bundle
+sudo -u nice-weather git -C /opt/nice-weather/repo fetch /tmp/nice-weather-reviewed.bundle HEAD
+sudo -u nice-weather git -C /opt/nice-weather/repo rev-parse FETCH_HEAD
+```
+
+以下保留首次安装命令；`git clone`/`pull` 需要 VM 已有的仓库访问权限。若使用 bundle 首次安装，
+将 clone 来源替换为已校验的 bundle 文件。不要为完成部署扩大仓库共享范围。
 
 ```bash
 sudo apt-get update

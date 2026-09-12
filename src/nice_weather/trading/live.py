@@ -69,13 +69,29 @@ def build_node(config):
 
 def execution_factory():
     from nautilus_trader.adapters.polymarket.factories import PolymarketLiveExecClientFactory
+    from nautilus_trader.model.identifiers import VenueOrderId
     from py_clob_client_v2.exceptions import PolyApiException
 
     class GuardedPolymarketFactory(PolymarketLiveExecClientFactory):
         @staticmethod
         def create(**kwargs):
             client = PolymarketLiveExecClientFactory.create(**kwargs)
+            cache = kwargs["cache"]
+            prefix = "weather:expected-order:"
+            for order in cache.orders():
+                saved = cache.get(prefix + order.client_order_id.value)
+                if saved:
+                    cache.add_venue_order_id(order.client_order_id, VenueOrderId(saved.decode()))
             original_connect = client._connect
+            original_post = client._post_signed_order
+
+            async def post(order, signed_order, **options):
+                expected = options.get("expected_venue_order_id")
+                if expected is not None:
+                    # Persist only the signed order ID, never credentials or the signed body.
+                    # Native Cache remains the order/event source of truth.
+                    cache.add(prefix + order.client_order_id.value, expected.value.encode())
+                await original_post(order, signed_order, **options)
 
             async def connect():
                 try:
@@ -88,6 +104,7 @@ def execution_factory():
                     raise
 
             client._connect = connect
+            client._post_signed_order = post
             return client
 
     return GuardedPolymarketFactory

@@ -1,0 +1,20 @@
+[
+  {
+    "run_id": "eeebfc15-8566-4a6f-bec0-37c44a96dc88",
+    "inputs_verified": 19730,
+    "all_hashes_match": true,
+    "cash": 99.67405
+  },
+  {
+    "run_id": "c1c6a167-0f95-47bc-95a2-7829bdbb11d9",
+    "inputs_verified": 377,
+    "all_hashes_match": true,
+    "cash": 99.7895
+  },
+  {
+    "run_id": "05e148c3-8ea9-4ad2-ad82-72ba795073d0",
+    "inputs_verified": 377,
+    "all_hashes_match": true,
+    "cash": 99.7895
+  }
+]
