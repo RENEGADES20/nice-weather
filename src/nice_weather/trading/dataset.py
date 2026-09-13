@@ -19,7 +19,12 @@ def timestamp(value: str) -> int:
 
 
 def contracts(
-    con, cutoff: str, since: str = "1970-01-01T00:00:00+00:00", *, latest_only=False
+    con,
+    cutoff: str,
+    since: str = "1970-01-01T00:00:00+00:00",
+    *,
+    latest_only=False,
+    include_legacy=True,
 ) -> list[dict]:
     from nice_weather.config import load_city_config
     from nice_weather.contract import parse_gamma_contract
@@ -35,11 +40,12 @@ def contracts(
         SELECT snapshot_id AS source_id,received_at,content_hash,event_id,
                'raw_snapshots' AS origin FROM raw_snapshots
         WHERE kind='event' AND source='polymarket_gamma'
+          AND ?
           AND julianday(received_at)<=julianday(?) AND julianday(received_at)>=julianday(?)
           AND snapshot_id NOT IN (SELECT capture_id FROM market_captures)
         ORDER BY received_at,source_id
     """,
-        (cutoff, since, cutoff, since),
+        (cutoff, since, include_legacy, cutoff, since),
     )
     captures = sorted(captures, key=lambda r: (timestamp(r["received_at"]), r["source_id"]))
     if latest_only:

@@ -340,6 +340,7 @@ def sandbox_worker(
                             now,
                             since=contract_cursor,
                             latest_only=contract_cursor == "1970-01-01T00:00:00+00:00",
+                            include_legacy=False,
                         )
                         contract_cursor = now
                         ticks = [
