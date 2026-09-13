@@ -1,0 +1,24 @@
+[Unit]
+Description=Nice Weather Nautilus serial backtest worker
+After=network-online.target
+
+[Service]
+Type=simple
+User=nice-weather
+Group=nice-weather
+WorkingDirectory=/opt/nice-weather/repo
+Environment=PYTHONUNBUFFERED=1
+LogNamespace=nice-weather-trading
+StateDirectory=nice-weather-trading
+ExecStartPre=/usr/bin/mkdir -p /var/lib/nice-weather-trading/requests
+ExecStart=/opt/nice-weather/.venv-trading/bin/nice-weather backtest worker --root /var/lib/nice-weather-trading
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nice-weather-trading
+
+[Install]
+WantedBy=multi-user.target

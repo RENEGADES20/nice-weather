@@ -1,0 +1,25 @@
+...............................                                          [100%]
+=============================== warnings summary ===============================
+.venv-trading-linux/lib/python3.12/site-packages/nautilus_trader/persistence/catalog/parquet.py:829
+  /mnt/d/ALLPROJECTS/weather forecast/.worktrees/nautilus-trading/.venv-trading-linux/lib/python3.12/site-packages/nautilus_trader/persistence/catalog/parquet.py:829: DeprecationWarning: The 'generic' unit for NumPy timedelta is deprecated, and will raise an error in the future. This includes implicit conversion of bare integers (e.g. `+ 1`). Please use a specific unit instead.
+    period: pd.Timedelta = pd.Timedelta(days=1),
+
+.venv-trading-linux/lib/python3.12/site-packages/nautilus_trader/persistence/catalog/parquet.py:895
+  /mnt/d/ALLPROJECTS/weather forecast/.worktrees/nautilus-trading/.venv-trading-linux/lib/python3.12/site-packages/nautilus_trader/persistence/catalog/parquet.py:895: DeprecationWarning: The 'generic' unit for NumPy timedelta is deprecated, and will raise an error in the future. This includes implicit conversion of bare integers (e.g. `+ 1`). Please use a specific unit instead.
+    period: pd.Timedelta = pd.Timedelta(days=1),
+
+tests/trading/test_dataset_worker.py: 6 warnings
+tests/trading/test_native_workbench.py: 60 warnings
+  /mnt/d/ALLPROJECTS/weather forecast/.worktrees/nautilus-trading/.venv-trading-linux/lib/python3.12/site-packages/pandas/core/tools/timedeltas.py:233: DeprecationWarning: The 'generic' unit for NumPy timedelta is deprecated, and will raise an error in the future. This includes implicit conversion of bare integers (e.g. `+ 1`). Please use a specific unit instead.
+    result = Timedelta(r, unit)
+
+tests/trading/test_statistics.py::test_sharpe_requires_complete_days_and_handles_zero_variance
+tests/trading/test_statistics.py::test_sharpe_requires_complete_days_and_handles_zero_variance
+tests/trading/test_statistics.py::test_sharpe_requires_complete_days_and_handles_zero_variance
+tests/trading/test_statistics.py::test_sharpe_requires_complete_days_and_handles_zero_variance
+tests/trading/test_statistics.py::test_sharpe_requires_complete_days_and_handles_zero_variance
+  /mnt/d/ALLPROJECTS/weather forecast/.worktrees/nautilus-trading/.venv-trading-linux/lib/python3.12/site-packages/pandas/core/arrays/datetimes.py:804: DeprecationWarning: The 'generic' unit for NumPy timedelta is deprecated, and will raise an error in the future. This includes implicit conversion of bare integers (e.g. `+ 1`). Please use a specific unit instead.
+    res_values = offset._apply_array(values._ndarray)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+31 passed, 73 warnings in 39.27s

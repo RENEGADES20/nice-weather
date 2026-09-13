@@ -18,7 +18,7 @@ async function waitUntilReady(child) {
 
 export default async function globalSetup() {
   const python = process.platform === "win32"
-    ? path.resolve("../../.venv-codex/Scripts/python.exe")
+    ? (process.env.NICE_WEATHER_TEST_PYTHON || path.resolve("../../.venv-trading/Scripts/python.exe"))
     : "python";
   const child = spawn(python, ["e2e/serve_streamlit.py"], { stdio: "inherit" });
   child.unref();

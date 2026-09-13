@@ -1602,17 +1602,29 @@ def _render_trading_timeline(db: Path) -> None:
 
 
 def _render(db: Path) -> None:
+    tabs = st.tabs(
+        ["Overview", "Repricing", "Trading", "Backtest", "System & Audit"]
+    )
+    overview, repricing_tab, trading_tab, backtest_tab, system_tab = tabs
+    with system_tab:
+        execution_tab = st.expander("Legacy execution evidence", expanded=False)
+        paper_tab = st.expander("Legacy Paper history", expanded=False)
+    from nice_weather.trading.ui import render
+    render(db, trading_tab, backtest_tab, system_tab)
     query = DashboardQuery(db)
     try:
         summary = query.get_latest_decision_summary()
     except Exception as exc:
         logger.exception("dashboard_database_open_failed")
-        st.error(f"Database unavailable: {exc}")
-        st.caption(f"Read-only database: {db.resolve()}")
+        with overview:
+            st.error(f"Database unavailable: {exc}")
+            st.caption(f"Read-only database: {db.resolve()}")
         return
     if summary is None:
-        st.info("No completed decision is available. Run the fixture or live-shadow command first.")
-        st.caption(f"Read-only database: {db.resolve()}")
+        with overview:
+            st.info("No completed decision is available. "
+                    "Run the fixture or live-shadow command first.")
+            st.caption(f"Read-only database: {db.resolve()}")
         return
     decision_id = str(summary["decision_id"])
     outcomes = query.get_outcome_snapshot(decision_id)
@@ -1635,13 +1647,11 @@ def _render(db: Path) -> None:
         ("City / station", f"{summary['city_code']} / {summary['station_id']}"),
         ("Decision time", _format_timestamp(summary["decision_time"], display_zone)),
     )
-    _status_grid(status_values)
-    if summary["reason_codes"]:
-        st.warning("Reason codes: " + ", ".join(summary["reason_codes"]))
+    with overview:
+        _status_grid(status_values)
+        if summary["reason_codes"]:
+            st.warning("Reason codes: " + ", ".join(summary["reason_codes"]))
 
-    overview, repricing_tab, execution_tab, paper_tab, system_tab = st.tabs(
-        ["Overview", "Repricing", "Execution", "Paper", "System & Audit"]
-    )
     with overview:
         st.button("Refresh", icon=":material/refresh:", key="refresh-overview")
         st.caption(_browser_timezone_note(browser_timezone, now))

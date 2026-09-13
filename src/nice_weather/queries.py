@@ -312,6 +312,7 @@ class DashboardQuery:
             "SELECT tick_id,event_id,bin_id,token_id,source,exchange_event_at,received_at,"
             "status,event_kind,best_bid,best_ask,mid,last_trade_price "
             "FROM market_top_ticks WHERE event_id=? AND bin_id=? "
+            "AND token_id IN (SELECT yes_token_id FROM contract_bins) "
             "AND received_at>=? AND exchange_event_at<? AND received_at<=? "
             f"{cursor_sql} ORDER BY received_at,tick_id",
             tuple(parameters),
@@ -437,6 +438,7 @@ class DashboardQuery:
                 f"""
                 SELECT * FROM market_top_ticks
                 WHERE event_id=? AND bin_id IN ({placeholders})
+                  AND token_id IN (SELECT yes_token_id FROM contract_bins)
                   AND exchange_event_at>=? AND exchange_event_at<?
                   {as_of_sql} {cursor_sql}
                 ORDER BY received_at,tick_id LIMIT {page_size}

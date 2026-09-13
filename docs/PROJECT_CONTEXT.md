@@ -127,3 +127,7 @@ Nautilus Trader 是当前优先验证的交易运行引擎，负责事件流、�
 - 关键决策：`docs/DECISIONS.md`
 - Obsidian、Skill、旧代码和数据资源：`docs/RESEARCH_INDEX.md`
 
+
+## 2026-09-12 执行范围更新
+
+用户已批准接入 Nautilus Trader 1.231.0（Python 3.12 独立环境）、KLGA YES/NO 实时模拟、Trading 与 Backtest 页签。实际执行仍限模拟与回测；官方 TradingNode/执行客户端只实现默认关闭的接线，不配置真实凭据或资金操作。此前 Nautilus 后置的描述适用于旧 Paper MVP；新工作台保留旧路径并独立运行。详见 [运行说明](TRADING_WORKBENCH.md)。

@@ -1,3 +1,5 @@
 # Fixture manifests verify exact response bytes. Keep those bytes unchanged
 # across Windows and POSIX checkouts.
 tests/fixtures/** -text
+frontend/trading-chart/index.html text eol=lf
+src/nice_weather/trading_chart_dist/index.html text eol=lf

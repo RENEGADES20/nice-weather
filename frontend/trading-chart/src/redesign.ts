@@ -15,6 +15,7 @@ import {
 } from "lightweight-charts";
 import { Expand, Eye, LocateFixed, RotateCcw, createIcons } from "lucide";
 import { Streamlit, type RenderData } from "streamlit-component-lib";
+import { renderTerminal } from "./terminal";
 import {
   differencePoints,
   mergeRawPoints,
@@ -987,6 +988,10 @@ function applyPayload(next: Payload): void {
 }
 
 function render(data: RenderData): void {
+  if (data.args.payload.mode === "terminal") {
+    renderTerminal(data.args.payload);
+    return;
+  }
   const next = data.args.payload as Payload;
   if (next.mode === "feed") {
     root.replaceChildren();

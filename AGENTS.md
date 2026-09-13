@@ -19,6 +19,7 @@
 - X 研究使用 `weather-market-research` Skill；调用前必须有明确预算，并遵守去重和费用记录流程。
 - 优先读取本地 Obsidian 与研究状态，避免重复付费读取 X 资源。
 - Nautilus Trader 是暂定运行引擎，领域逻辑保持独立接口。
+- 已批准新增 Nautilus 1.231.0 / Python 3.12 独立模拟与回测环境及 Trading、Backtest 页签；允许实现默认关闭的官方执行客户端接口，仍禁止配置真实凭据或发送真实订单。执行细节见 docs/TRADING_WORKBENCH.md。
 - 保留失败案例、反例、异常和停止交易原因。
 - 修改架构、项目范围或数据口径后，同步更新 `docs/CURRENT_STATE.md` 与 `docs/DECISIONS.md`。
 - 不批量删除文件；涉及删除时先列出精确目标并请求人工确认。

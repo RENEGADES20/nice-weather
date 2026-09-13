@@ -1,5 +1,8 @@
 .venv/
 .venv-codex/
+.venv-trading/
+.venv-trading-linux/
+.worktrees/
 *.egg-info/
 __pycache__/
 *.py[cod]

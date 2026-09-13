@@ -186,15 +186,17 @@ class MarketStreamCollector:
                 continue
             self._storage().save_discovered_contract(contract, snapshot)
             discovered = {
-                item.yes_token_id: TokenMetadata(
+                token_id: TokenMetadata(
                     event_id=contract.event_id,
                     condition_id=item.condition_id,
                     market_id=item.market_id,
                     bin_id=item.bin_id,
-                    token_id=item.yes_token_id,
-                    label=item.label,
+                    token_id=token_id,
+                    label=item.label if side == "YES" else f"{item.label} · NO",
                 )
                 for item in contract.bins
+                for side, token_id in (("YES", item.yes_token_id), ("NO", item.no_token_id))
+                if token_id
             }
             event = snapshot.payload["events"][0]
             markets = {str(item.get("id")): item for item in event.get("markets", [])}
@@ -222,6 +224,12 @@ class MarketStreamCollector:
                     },
                 )
             metadata.update(discovered)
+        self.refresh_books(metadata)
+        return metadata, {
+            "events": [event for snap in snapshots for event in snap.payload["events"]]
+        }
+
+    def refresh_books(self, metadata: dict[str, TokenMetadata]) -> None:
         try:
             with self.adapter_factory() as adapter:
                 books = adapter.fetch_books_batch_payload(list(metadata))
@@ -243,11 +251,9 @@ class MarketStreamCollector:
                 )
         except (OSError, RuntimeError, ValueError):
             logger.exception("market_snapshot_recovery_failed")
-        return metadata, {
-            "events": [event for snap in snapshots for event in snap.payload["events"]]
-        }
 
-    def _book_changes(self, event: dict[str, Any]) -> dict[str, float | None]:
+    @staticmethod
+    def _book_changes(event: dict[str, Any]) -> dict[str, float | None]:
         bids = [
             item
             for item in event.get("bids", [])
@@ -352,6 +358,7 @@ class MarketStreamCollector:
                         self.config.collector.market_discovery_interval_seconds
                     )
                     next_ping = time.monotonic() + 10
+                    next_snapshot = time.monotonic() + 15
                     while time.monotonic() < deadline:
                         remaining_to_ping = max(0.1, next_ping - time.monotonic())
                         try:
@@ -361,6 +368,9 @@ class MarketStreamCollector:
                         if time.monotonic() >= next_ping:
                             websocket.send("PING")
                             next_ping = time.monotonic() + 10
+                        if time.monotonic() >= next_snapshot:
+                            self.refresh_books(metadata)
+                            next_snapshot = time.monotonic() + 15
                         if message is not None:
                             self.process_message(message, metadata)
             except (ConnectionClosed, OSError, RuntimeError, ValueError) as exc:
