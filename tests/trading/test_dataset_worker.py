@@ -12,6 +12,64 @@ from nice_weather.trading.storage import Requests, Results, connect
 from nice_weather.trading.worker import backtest_worker
 
 
+def test_sandbox_skips_old_tick_backlog_and_loads_latest_contract(
+    tmp_path, fixture_manifest, monkeypatch
+):
+    from nice_weather.trading.dataset import contracts
+    from nice_weather.trading.worker import sandbox_worker
+
+    config = load_city_config()
+    bundle = load_fixture(fixture_manifest, config)
+    contract = parse_gamma_contract(bundle.gamma_snapshot.payload, config)
+    database = tmp_path / "source.sqlite3"
+    root = tmp_path / "trading"
+    collector = MarketStreamCollector(config, str(database))
+    collector._storage().save_discovered_contract(contract, bundle.gamma_snapshot)
+    now = datetime.now(UTC)
+    monkeypatch.setattr(
+        "nice_weather.trading.worker.time.time_ns", lambda: int(now.timestamp() * 1e9)
+    )
+    item = contract.bins[0]
+    for i in range(101):
+        received = now - timedelta(hours=1) if i < 100 else now + timedelta(seconds=1)
+        collector._save(
+            TokenMetadata(
+                contract.event_id,
+                item.condition_id,
+                item.market_id,
+                item.bin_id,
+                item.yes_token_id,
+                item.label,
+            ),
+            exchange_event_at=received,
+            received_at=received,
+            source="clob_ws",
+            status="available",
+            changes={"best_bid": 0.39, "best_ask": 0.4, "bid_size": 20, "ask_size": 20},
+            raw_event={"index": i},
+            event_kind="snapshot",
+        )
+    collector.close()
+    with connect(database) as con:
+        con.execute(
+            """INSERT INTO market_captures
+            SELECT capture_id||'-revision',source,kind,event_id,market_id,requested_at,?,
+                   content_hash||'-revision',payload_json FROM market_captures""",
+            ((now - timedelta(minutes=1)).isoformat(),),
+        )
+        current = contracts(con, now.isoformat(), latest_only=True)
+        assert len(current) == len(contract.bins)
+        assert all(r["source_id"].endswith("-revision") for r in current)
+        old = contracts(con, bundle.gamma_snapshot.received_at.isoformat(), latest_only=True)
+        assert all(not r["source_id"].endswith("-revision") for r in old)
+    sandbox_worker(root, database, once=True)
+    with connect(root / "results.sqlite3", readonly=True) as con:
+        inputs = [json.loads(r[0]) for r in con.execute("SELECT body FROM inputs")]
+    quotes = [e for e in inputs if e["kind"] == "quote"]
+    assert len(quotes) == 1 and quotes[0]["data"]["source_seq"] == 101
+    assert len([e for e in inputs if e["kind"] == "contract"]) == len(contract.bins)
+
+
 def test_self_collected_export_worker_compare_cancel_and_no_leak(tmp_path, fixture_manifest):
     root = tmp_path / "trading"
     database = tmp_path / "weather.sqlite3"

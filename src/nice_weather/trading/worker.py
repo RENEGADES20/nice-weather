@@ -335,16 +335,31 @@ def sandbox_worker(
                 now = datetime.now(UTC).isoformat()
                 if source.exists():
                     with connect(source, readonly=True) as con:
-                        definitions = contracts(con, now, since=contract_cursor)
+                        definitions = contracts(
+                            con,
+                            now,
+                            since=contract_cursor,
+                            latest_only=contract_cursor == "1970-01-01T00:00:00+00:00",
+                        )
                         contract_cursor = now
                         ticks = [
                             dict(r)
                             for r in con.execute(
                                 "SELECT rowid AS source_seq,* FROM market_top_ticks "
-                                "WHERE rowid>? ORDER BY rowid LIMIT 64",
-                                (cursor,),
+                                "WHERE rowid>? AND julianday(received_at)>=julianday(?) "
+                                "ORDER BY rowid LIMIT 64",
+                                (
+                                    cursor,
+                                    datetime.fromtimestamp(
+                                        max(start, time.time_ns() - 30_000_000_000) / 1e9, UTC
+                                    ).isoformat(),
+                                ),
                             )
                         ]
+                        if not ticks:
+                            cursor = con.execute(
+                                "SELECT COALESCE(MAX(rowid),0) FROM market_top_ticks"
+                            ).fetchone()[0]
                     for definition in definitions:
                         input_id = "contract-" + digest(definition)
                         if input_id not in runner.seen:

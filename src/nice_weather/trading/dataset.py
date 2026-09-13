@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from nice_weather.trading.storage import connect, digest, encoded
 
@@ -16,27 +18,44 @@ def timestamp(value: str) -> int:
     return int(parsed.timestamp() * 1_000_000_000)
 
 
-def contracts(con, cutoff: str, since: str = "1970-01-01T00:00:00+00:00") -> list[dict]:
+def contracts(
+    con, cutoff: str, since: str = "1970-01-01T00:00:00+00:00", *, latest_only=False
+) -> list[dict]:
     from nice_weather.config import load_city_config
     from nice_weather.contract import parse_gamma_contract
 
     # contract_bins is an upserted display table. Rebuild versions from immutable captures.
     captures = con.execute(
         """
-        SELECT capture_id AS source_id,received_at,content_hash,payload_json FROM market_captures
-        WHERE julianday(received_at)<=julianday(?) AND julianday(received_at)>=julianday(?)
+        SELECT capture_id AS source_id,received_at,content_hash,event_id,
+               'market_captures' AS origin FROM market_captures
+        WHERE kind='event' AND source='polymarket_gamma'
+          AND julianday(received_at)<=julianday(?) AND julianday(received_at)>=julianday(?)
         UNION ALL
-        SELECT snapshot_id AS source_id,received_at,content_hash,payload_json FROM raw_snapshots
-        WHERE julianday(received_at)<=julianday(?) AND julianday(received_at)>=julianday(?)
-          AND payload_json LIKE '%"events"%'
+        SELECT snapshot_id AS source_id,received_at,content_hash,event_id,
+               'raw_snapshots' AS origin FROM raw_snapshots
+        WHERE kind='event' AND source='polymarket_gamma'
+          AND julianday(received_at)<=julianday(?) AND julianday(received_at)>=julianday(?)
           AND snapshot_id NOT IN (SELECT capture_id FROM market_captures)
         ORDER BY received_at,source_id
     """,
         (cutoff, since, cutoff, since),
     )
+    captures = sorted(captures, key=lambda r: (timestamp(r["received_at"]), r["source_id"]))
+    if latest_only:
+        latest = {}
+        for capture in captures:
+            latest[capture["event_id"] or capture["source_id"]] = capture
+        captures = list(latest.values())
     result = []
     for capture in captures:
-        payload = json.loads(capture["payload_json"])
+        table = capture["origin"]
+        key = "capture_id" if table == "market_captures" else "snapshot_id"
+        payload = json.loads(
+            con.execute(
+                f"SELECT payload_json FROM {table} WHERE {key}=?", (capture["source_id"],)
+            ).fetchone()[0]
+        )
         if not payload.get("events"):
             continue
         try:
@@ -67,6 +86,13 @@ def contracts(con, cutoff: str, since: str = "1970-01-01T00:00:00+00:00") -> lis
                     "fee_known": known,
                 }
             )
+    if latest_only:
+        latest_bins = {}
+        for definition in sorted(
+            result, key=lambda r: (timestamp(r["received_at"]), r["source_id"])
+        ):
+            latest_bins[(definition["event_id"], definition["yes_token_id"])] = definition
+        return list(latest_bins.values())
     return result
 
 
@@ -78,10 +104,14 @@ def export_dataset(
         raise ValueError("End must follow start")
     directory.mkdir(parents=True, exist_ok=True)
     # SQLite backup supplies one consistent source view; all queries use that copy.
-    with connect(source, readonly=True) as original, sqlite3.connect(":memory:") as copy:
+    with (
+        TemporaryDirectory(prefix="nice-weather-export-") as temporary,
+        connect(source, readonly=True) as original,
+        closing(sqlite3.connect(str(Path(temporary) / "source.sqlite3"))) as copy,
+    ):
         original.backup(copy)
         copy.row_factory = sqlite3.Row
-        definitions = contracts(copy, end)
+        definitions = contracts(copy, start, latest_only=True) + contracts(copy, end, since=start)
         tokens = {row[key] for row in definitions for key in ("yes_token_id", "no_token_id")}
         rows = [
             dict(r)
