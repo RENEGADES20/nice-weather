@@ -35,6 +35,17 @@ test("terminal retains input and folds independently; depth click cannot submit"
   await expect(page.locator("#t-dialog")).toBeVisible();
   await expect(page.locator("#t-review-summary")).toContainText("80–81°F");
   await page.locator("#t-dismiss").click();
+  await page.evaluate(()=>{(window as any).selections=[];window.addEventListener("message",e=>{if(e.data?.type==="streamlit:setComponentValue")(window as any).selections.push(e.data.value);});});
+  await page.locator('#t-bins [data-token="2"]').click();
+  await expect.poll(()=>page.evaluate(()=>(window as any).selections.at(-1)?.token)).toBe("2");
+  await page.evaluate(p=>window.postMessage({type:"streamlit:render",args:{payload:{...p,selectedToken:"2"}},disabled:false},"*"),payload);
+  await page.locator("#t-size").fill("4.25");
+  await page.reload();
+  await page.evaluate(()=>{(window as any).selections=[];window.addEventListener("message",e=>{if(e.data?.type==="streamlit:setComponentValue")(window as any).selections.push(e.data.value);});});
+  await page.evaluate(p=>window.postMessage({type:"streamlit:render",args:{payload:p},disabled:false},"*"),payload);
+  await expect.poll(()=>page.evaluate(()=>(window as any).selections.at(-1)?.token)).toBe("2");
+  await page.evaluate(p=>window.postMessage({type:"streamlit:render",args:{payload:{...p,selectedToken:"2"}},disabled:false},"*"),payload);
+  await expect(page.locator("#t-size")).toHaveValue("4.25");
   await page.locator(`[data-day="${day}"]`).click();
   await expect(page.locator("#t-day-detail")).toContainText("2 fills");
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
