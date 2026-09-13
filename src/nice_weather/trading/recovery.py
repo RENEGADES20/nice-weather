@@ -172,6 +172,10 @@ class PaperRunner:
             saved = con.execute(
                 "SELECT * FROM paper_state WHERE run_id=?", (self.run_id,)
             ).fetchone()
+            last_sample = con.execute(
+                "SELECT ts,equity FROM paper_equity WHERE run_id=? ORDER BY ts DESC LIMIT 1",
+                (self.run_id,),
+            ).fetchone()
             self.seen = {
                 r[0]
                 for r in con.execute(
@@ -198,9 +202,12 @@ class PaperRunner:
         config["execution"] = "L2 depth consumption; no maker queue priority; native fact recovery"
         config["config_hash"] = digest({k: v for k, v in config.items() if k != "config_hash"})
         self.last_state_hash = None
-        self.last_financial_hash = None
-        self.last_minute = None
-        self.last_valid = None
+        snapshot = self.session.snapshot()
+        self.last_financial_hash = (
+            digest([snapshot["fills"], snapshot["settled"]]) if saved else None
+        )
+        self.last_minute = last_sample["ts"] // 60_000_000_000 if last_sample else None
+        self.last_valid = last_sample["equity"] is not None if last_sample else None
         self.commit("startup")
 
     def commit(self, input_id=None):
