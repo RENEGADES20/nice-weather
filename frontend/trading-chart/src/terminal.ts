@@ -246,7 +246,7 @@ function renderCalendar(){
 }
 function finishClose(){if(pendingClose?.token===data.selectedToken&&book().valid){const r=pendingClose;pendingClose=null;try{const p=draft();review("close",{token:r.token,quantity:r.quantity,price:p.price});}catch{estimate();}}}
 export function renderTerminal(next:TerminalPayload,optimistic=false){
-  if(!optimistic&&next.history!==null){histories.set(next.selectedToken,next.history);while(histories.size>32)histories.delete(histories.keys().next().value!);}
+  if(!optimistic&&next.history!==null&&next.historyReady!==false){histories.set(next.selectedToken,next.history);while(histories.size>32)histories.delete(histories.keys().next().value!);}
   if(!optimistic&&!next.markets.some(m=>m.token===desiredToken))desiredToken="";
   if(desiredToken)next={...next,selectedToken:desiredToken,historyReady:histories.has(desiredToken)};
   next={...next,history:histories.get(next.selectedToken)||[]};
