@@ -71,7 +71,9 @@ def terminal(root: Path, db: Path, mode: str, account: str):
     run = runs[0] if runs else None
     snapshot = json.loads(run["snapshot"]) if run and run["snapshot"] else {}
     config = json.loads(run["config"]) if run else {"cash": 100}
-    markets = snapshot.get("markets", [])
+    markets = sorted(
+        snapshot.get("markets", []), key=lambda m: (m["date"], m["bin"], m["outcome"] != "YES")
+    )
     token_key = f"terminal-token-{account}"
     token = st.session_state.get(token_key)
     if token not in {m["token"] for m in markets}:
@@ -80,6 +82,7 @@ def terminal(root: Path, db: Path, mode: str, account: str):
             (m["token"] for m in markets if m["date"] >= today),
             markets[0]["token"] if markets else None,
         )
+        st.session_state[token_key] = token
     selected = next((m for m in markets if m["token"] == token), None)
     pair = [m["token"] for m in markets if selected and m["condition"] == selected["condition"]]
     depth = {}

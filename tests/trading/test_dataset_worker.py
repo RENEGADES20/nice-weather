@@ -84,6 +84,35 @@ def test_sandbox_skips_old_tick_backlog_and_loads_latest_contract(
     assert '"bids"' not in json.dumps(saved) and '"asks"' not in json.dumps(saved)
 
 
+def test_live_contract_cursor_only_reads_new_immutable_captures(tmp_path, fixture_manifest):
+    from nice_weather.trading.dataset import live_contracts
+
+    config = load_city_config()
+    bundle = load_fixture(fixture_manifest, config)
+    contract = parse_gamma_contract(bundle.gamma_snapshot.payload, config)
+    database = tmp_path / "source.sqlite3"
+    collector = MarketStreamCollector(config, str(database))
+    collector._storage().save_discovered_contract(contract, bundle.gamma_snapshot)
+    collector.close()
+    with connect(database) as con:
+        cursor, initial = live_contracts(con)
+        assert len(initial) == len(contract.bins)
+        # Old malformed bodies must never be decoded during an incremental refresh.
+        con.execute("UPDATE market_captures SET payload_json='invalid' WHERE rowid<=?", (cursor,))
+        assert live_contracts(con, cursor) == (cursor, [])
+        con.execute(
+            "INSERT INTO market_captures "
+            "SELECT capture_id||'-new',source,kind,event_id,market_id,requested_at,?,"
+            "content_hash||'-new',? FROM market_captures LIMIT 1",
+            (datetime.now(UTC).isoformat(), json.dumps(bundle.gamma_snapshot.payload)),
+        )
+        next_cursor, current = live_contracts(con, cursor)
+        assert next_cursor > cursor
+        assert len(current) == len(contract.bins)
+        assert all(r['source_id'].endswith('-new') for r in current)
+        assert live_contracts(con, next_cursor) == (next_cursor, [])
+
+
 def test_self_collected_export_worker_compare_cancel_and_no_leak(tmp_path, fixture_manifest):
     root = tmp_path / "trading"
     database = tmp_path / "weather.sqlite3"

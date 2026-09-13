@@ -481,6 +481,7 @@ def sandbox_worker(
     parameters=None,
     tokens=None,
 ):
+    from nice_weather.trading.dataset import live_contracts
     from nice_weather.trading.depth import DepthFeed
     from nice_weather.trading.recovery import PaperRunner
 
@@ -500,22 +501,15 @@ def sandbox_worker(
         runner = PaperRunner(results, run)
         feed = DepthFeed()
         feed.start(int(os.environ.get("NICE_WEATHER_DEPTH_PORT", "8766")))
-        contract_cursor = "1970-01-01T00:00:00+00:00"
+        contract_cursor = 0
         next_contract = next_resolution = 0
         applied = {}
         try:
             while True:
                 now = time.monotonic()
                 if source.exists() and now >= next_contract:
-                    end = datetime.now(UTC).isoformat()
                     with connect(source, readonly=True) as con:
-                        definitions = contracts(
-                            con,
-                            end,
-                            since=contract_cursor,
-                            latest_only=next_contract == 0,
-                            include_legacy=False,
-                        )
+                        contract_cursor, definitions = live_contracts(con, contract_cursor)
                     for definition in definitions:
                         runner.apply(
                             "contract-" + digest(definition),
@@ -525,7 +519,7 @@ def sandbox_worker(
                                 "data": definition,
                             },
                         )
-                    contract_cursor, next_contract = end, now + 15
+                    next_contract = now + 15
                 snapshot = runner.session.snapshot()
                 feed.allowed = set(runner.session.metadata)
                 feed.required = {p["token"] for p in snapshot["positions"]}
