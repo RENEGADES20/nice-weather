@@ -19,10 +19,19 @@ from nautilus_trader.backtest.models import FeeModel, FillModel
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig, StrategyConfig
 from nautilus_trader.core.data import Data
 from nautilus_trader.model.currencies import pUSD
-from nautilus_trader.model.data import CustomData, DataType, InstrumentClose, QuoteTick
+from nautilus_trader.model.data import (
+    BookOrder,
+    CustomData,
+    DataType,
+    InstrumentClose,
+    OrderBookDelta,
+    OrderBookDeltas,
+    QuoteTick,
+)
 from nautilus_trader.model.enums import (
     AccountType,
     AssetClass,
+    BookAction,
     BookType,
     InstrumentCloseType,
     LiquiditySide,
@@ -131,7 +140,7 @@ class Session:
             account_type=AccountType.CASH,
             base_currency=pUSD,
             starting_balances=[Money(self.cash_start, pUSD)],
-            book_type=BookType.L1_MBP,
+            book_type=BookType.L2_MBP if config.get("execution_version") == 3 else BookType.L1_MBP,
             liquidity_consumption=True,
             fill_model=FillModel(prob_fill_on_limit=0, random_seed=7),
             fee_model=Fees(self),
@@ -201,6 +210,71 @@ class Session:
                     else:
                         self._run(instrument, custom=True)
             self._run(CustomData(DataType(Input), Input(event | {"kind": "clock"})), custom=True)
+        elif kind == "depth":
+            token = row["token_id"]
+            if token not in self.instruments:
+                return
+            ins = self.instruments[token]
+            if not row.get("valid"):
+                self.quotes.pop(token, None)
+                self._run(
+                    CustomData(DataType(Input), Input(event | {"kind": "clock"})), custom=True
+                )
+            else:
+                bids, asks = row["bids"], row["asks"]
+                self.quotes[token] = {
+                    "ts": row["received_ns"],
+                    "best_bid": float(bids[0][0]),
+                    "best_ask": float(asks[0][0]),
+                    "bid_size": float(bids[0][1]),
+                    "ask_size": float(asks[0][1]),
+                }
+                # Apply only changed levels: identical snapshots must not replenish consumed size.
+                previous = getattr(self, "_depth", {}).get(token, {})
+                current = {
+                    (side, str(p)): str(q)
+                    for side, levels in ((OrderSide.BUY, bids), (OrderSide.SELL, asks))
+                    for p, q in levels
+                }
+                deltas = []
+                for (side, price), quantity in (
+                    current | {k: "0" for k in previous.keys() - current.keys()}
+                ).items():
+                    if previous.get((side, price)) == quantity:
+                        continue
+                    anchors = getattr(self, "_depth_anchors", {})
+                    key = (token, side.name, price)
+                    consumed = self.depth_filled(token, side, price)
+                    if (side, price) not in previous:
+                        anchors[key] = consumed
+                    self._depth_anchors = anchors
+                    remaining = max(
+                        Decimal(0), Decimal(quantity) - Decimal(str(consumed - anchors[key]))
+                    )
+                    deltas.append(
+                        OrderBookDelta(
+                            ins.id,
+                            BookAction.DELETE if remaining == 0 else BookAction.UPDATE,
+                            BookOrder(side, ins.make_price(price), ins.make_qty(remaining), 0),
+                            0,
+                            0,
+                            self.now,
+                            self.now,
+                        )
+                    )
+                if deltas:
+                    last = deltas[-1]
+                    deltas[-1] = OrderBookDelta(
+                        ins.id, last.action, last.order, 128, 0, self.now, self.now
+                    )
+                    self._run(OrderBookDeltas(ins.id, deltas))
+                self._depth = getattr(self, "_depth", {}) | {token: current}
+                self._run(
+                    CustomData(
+                        DataType(Input), Input(event | {"kind": "strategy_tick", "token": token})
+                    ),
+                    custom=True,
+                )
         elif kind == "quote":
             token = row["token_id"]
             if token not in self.instruments:
@@ -251,6 +325,7 @@ class Session:
                 raise ValueError("Invalid or duplicate settlement")
             ins = self.instruments[token]
             self.outcomes[token] = value
+            self.settlements = getattr(self, "settlements", []) + [row | {"ts": self.now}]
             self.settlement_prices[ins.id] = float(value)
             self._run(
                 InstrumentClose(
@@ -452,13 +527,34 @@ class Session:
         if "amount" in payload:
             if side != "BUY" or "quantity" in payload:
                 raise ValueError("Use either buy amount or share quantity")
-            quantity = (number(payload["amount"], "amount") / price).quantize(
+            unit_cost = price
+            if self.config.get("execution_version") == 3:
+                unit_cost += Decimal(str(row["fee_rate"])) * Decimal("0.25") ** Decimal(
+                    str(row["fee_exponent"])
+                )
+            quantity = (number(payload["amount"], "amount") / unit_cost).quantize(
                 Decimal("0.000001"), rounding=ROUND_DOWN
             )
         else:
             quantity = number(payload["quantity"], "quantity")
         if quantity % Decimal("0.000001") or quantity < Decimal(str(row["minimum_order_size"])):
             raise ValueError("Illegal quantity precision or below market minimum")
+        if tif == "FOK" and self.config.get("execution_version") == 3:
+            book_side = OrderSide.SELL if side == "BUY" else OrderSide.BUY
+            available = Decimal(0)
+            for (level_side, level_price), size in (
+                getattr(self, "_depth", {}).get(token, {}).items()
+            ):
+                p = Decimal(level_price)
+                if level_side != book_side or (p > price if side == "BUY" else p < price):
+                    continue
+                used = self.depth_filled(token, book_side, level_price)
+                baseline = getattr(self, "_depth_anchors", {}).get(
+                    (token, book_side.name, level_price), 0
+                )
+                available += max(Decimal(0), Decimal(size) - Decimal(str(used - baseline)))
+            if available < quantity:
+                raise ValueError("FOK depth insufficient; no liquidity consumed")
         post_only = payload.get("post_only", False)
         if type(post_only) is not bool or (post_only and tif not in {"GTC", "GTD"}):
             raise ValueError("Illegal post-only combination")
@@ -530,6 +626,18 @@ class Session:
             tags=[owner],
         )
         self.control.submit_order(order)
+
+    def depth_filled(self, token, book_side, price):
+        trade_side = OrderSide.BUY if book_side == OrderSide.SELL else OrderSide.SELL
+        return sum(
+            float(e.last_qty)
+            for order in self.engine.cache.orders()
+            if order.instrument_id == self.instruments[token].id
+            for e in order.events
+            if type(e).__name__ == "OrderFilled"
+            and e.order_side == trade_side
+            and e.last_px.as_decimal() == Decimal(price)
+        )
 
     def snapshot(self):
         account = self.engine.cache.account_for_venue(VENUE)
@@ -659,7 +767,9 @@ class Session:
                     "tick_size": r["tick_size"],
                     "fee_rate": r["fee_rate"],
                     "fee_exponent": r["fee_exponent"],
-                    "quote": self.quotes.get(token),
+                    "quote": None
+                    if self.config.get("execution_version") == 3
+                    else self.quotes.get(token),
                 }
                 for token, r in self.metadata.items()
             ],

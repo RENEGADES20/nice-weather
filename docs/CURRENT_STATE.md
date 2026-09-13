@@ -2,6 +2,14 @@
 
 最后更新：2026-09-13 UTC
 
+## Trading 统一工作台：本地验收，待发布
+
+导航统一为 Overview → Repricing → Trading → Backtest → System & Audit。Paper/Live 共用日期、温度区间、YES/NO、多档盘口、价格图与交易票据；Live 未接入账户且禁用操作。PnL 曲线和月度日历独立折叠，曲线缺口分段，纽约时区归日。
+
+实时 Paper execution_version=3 使用 Worker 内存 WebSocket 多档簿和 Nautilus L2_MBP；回环只读接口提供展示，新增盘口不落库、文件或日志。结果库保存原生交易/账户事实及稀疏权益，常规每分钟一条。原生旧会话按旧规则核验恢复后转换检查点；独立旧 Paper 历史与 Backtest 余额不迁入。重启取消无法恢复排队位置的旧挂单，现金、持仓、成交与费用保留。
+
+本地 Python 回归 87 项、原生交易 46 项通过。发布和 15 分钟生产观察结果待填写，尚未宣称上线。新规则详见 `docs/TRADING_WORKBENCH.md`。
+
 ## 2026-09-13：Nautilus VM 部署验收
 
 VM 已部署 `2f6f4e9cfbc7a9f2a01dff038884a89aeb97af27`，独立 Python 3.12.3 / Nautilus 1.231.0 环境。VM 原生 40 项测试、该提交六项 CI 全部通过；Trading、Backtest、模拟及回测服务已启用，LIVE 关闭。生产约 246 万条行情暴露的初始化扫描已修正；结果库保留无事务连接，解决只读 Dashboard 在 WAL 辅助文件消失时无法读取的问题。原采集、Market Stream、Runner 持续运行，02:38:23 UTC R2 同步成功。

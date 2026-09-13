@@ -78,9 +78,10 @@ def test_sandbox_skips_old_tick_backlog_and_loads_latest_contract(
     sandbox_worker(root, database, once=True)
     with connect(root / "results.sqlite3", readonly=True) as con:
         inputs = [json.loads(r[0]) for r in con.execute("SELECT body FROM inputs")]
-    quotes = [e for e in inputs if e["kind"] == "quote"]
-    assert len(quotes) == 1 and quotes[0]["data"]["source_seq"] == 101
-    assert len([e for e in inputs if e["kind"] == "contract"]) == len(contract.bins)
+        saved = json.loads(con.execute("SELECT body FROM paper_state").fetchone()[0])
+    assert inputs == []
+    assert len(saved["metadata"]) == len(contract.bins) * 2
+    assert '"bids"' not in json.dumps(saved) and '"asks"' not in json.dumps(saved)
 
 
 def test_self_collected_export_worker_compare_cancel_and_no_leak(tmp_path, fixture_manifest):

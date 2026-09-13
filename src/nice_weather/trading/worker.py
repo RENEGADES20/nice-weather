@@ -98,6 +98,7 @@ def run_config(
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         sha = os.environ.get("NICE_WEATHER_CODE_SHA", "unavailable")
+    sha = os.environ.get("NICE_WEATHER_CODE_SHA", sha)
     source_root = Path(__file__).resolve().parents[1]
     source_hash = hashlib.sha256()
     for path in sorted(source_root.rglob("*.py")):
@@ -289,7 +290,7 @@ def backtest_worker(root: Path, *, once=False):
             time.sleep(1)
 
 
-def sandbox_worker(
+def legacy_sandbox_worker(
     root: Path,
     source: Path,
     account="sandbox-001",
@@ -467,4 +468,157 @@ def sandbox_worker(
                     return
                 time.sleep(1)
         finally:
+            runner.session.dispose()
+
+
+def sandbox_worker(
+    root,
+    source,
+    account="sandbox-001",
+    *,
+    once=False,
+    strategy_id="noop",
+    parameters=None,
+    tokens=None,
+):
+    from nice_weather.trading.depth import DepthFeed
+    from nice_weather.trading.recovery import PaperRunner
+
+    if not re.fullmatch(r"sandbox-[A-Za-z0-9_-]{1,64}", account):
+        raise ValueError("Sandbox account must have sandbox- prefix")
+    requests = Requests(root / "requests" / "requests.sqlite3")
+    results = Results(root / "results.sqlite3")
+    with single_writer(root / (account + ".lock")), connect(results.path):
+        run = results.run(account=account)
+        if not run:
+            config = run_config(account, "sandbox", strategy_id, parameters, tokens)
+            config.update(execution_version=3, started_ns=time.time_ns())
+            run_id = str(uuid.uuid4())
+            results.create(run_id, account, "sandbox", config)
+            run = results.run(run_id)
+        results.status(run["run_id"], "recovering")
+        runner = PaperRunner(results, run)
+        feed = DepthFeed()
+        feed.start(int(os.environ.get("NICE_WEATHER_DEPTH_PORT", "8766")))
+        contract_cursor = "1970-01-01T00:00:00+00:00"
+        next_contract = next_resolution = 0
+        applied = {}
+        try:
+            while True:
+                now = time.monotonic()
+                if source.exists() and now >= next_contract:
+                    end = datetime.now(UTC).isoformat()
+                    with connect(source, readonly=True) as con:
+                        definitions = contracts(
+                            con,
+                            end,
+                            since=contract_cursor,
+                            latest_only=next_contract == 0,
+                            include_legacy=False,
+                        )
+                    for definition in definitions:
+                        runner.apply(
+                            "contract-" + digest(definition),
+                            {
+                                "kind": "contract",
+                                "ts": max(time.time_ns(), runner.session.now + 1),
+                                "data": definition,
+                            },
+                        )
+                    contract_cursor, next_contract = end, now + 15
+                snapshot = runner.session.snapshot()
+                feed.allowed = set(runner.session.metadata)
+                feed.required = {p["token"] for p in snapshot["positions"]}
+                feed.required.update(
+                    runner.session.engine.cache.instrument(o.instrument_id).raw_symbol.value
+                    for o in runner.session.open_orders()
+                )
+                if runner.session.enabled:
+                    feed.required.update(runner.session.config.get("tokens", []))
+                    if runner.session.parameters.get("require_both"):
+                        for token in runner.session.config.get("tokens", []):
+                            definition = runner.session.metadata.get(token)
+                            if definition:
+                                feed.required.update(
+                                    definition[k] for k in ("yes_token_id", "no_token_id")
+                                )
+                for token in feed.wanted():
+                    book = feed.book(token)
+                    signature = (book.get("received_ns"), book["valid"])
+                    if applied.get(token) != signature:
+                        runner.apply(
+                            f"depth-{token}-{time.time_ns()}",
+                            {
+                                "kind": "depth",
+                                "ts": max(time.time_ns(), runner.session.now + 1),
+                                "data": book,
+                            },
+                        )
+                        applied[token] = signature
+                for request in requests.pending(account, "sandbox"):
+                    input_id = "request-" + request["request_id"]
+                    if input_id not in runner.seen:
+                        if request["expires"] < time.time():
+                            requests.finish(request["request_id"], "expired")
+                            continue
+                        payload = json.loads(request["payload"])
+                        token = payload.get("token")
+                        if request["kind"] in {"order", "replace", "close"}:
+                            book = feed.book(token)
+                            if not book["valid"]:
+                                requests.finish(
+                                    request["request_id"],
+                                    "rejected",
+                                    "Waiting for a fresh complete order book",
+                                )
+                                continue
+                            runner.apply(
+                                f"depth-submit-{request['request_id']}",
+                                {
+                                    "kind": "depth",
+                                    "ts": max(time.time_ns(), runner.session.now + 1),
+                                    "data": book,
+                                },
+                            )
+                        runner.apply(
+                            input_id,
+                            {
+                                "kind": request["kind"],
+                                "data": payload,
+                                "request_id": request["request_id"],
+                                "ts": max(time.time_ns(), runner.session.now + 1),
+                            },
+                        )
+                    rejection = next(
+                        (
+                            r
+                            for r in runner.session.rejections
+                            if r["request_id"] == request["request_id"]
+                        ),
+                        None,
+                    )
+                    requests.finish(
+                        request["request_id"],
+                        "rejected" if rejection else "completed",
+                        rejection["reason"] if rejection else None,
+                    )
+                runner.apply(
+                    f"clock-{time.time_ns()}",
+                    {
+                        "kind": "clock",
+                        "ts": max(time.time_ns(), runner.session.now + 1),
+                        "data": {},
+                    },
+                )
+                if now >= next_resolution:
+                    poll_final_results(runner)
+                    next_resolution = now + 60
+                if once:
+                    break
+                time.sleep(1)
+        except Exception as exc:
+            results.status(run["run_id"], "paused", f"{type(exc).__name__}: {exc}")
+            raise
+        finally:
+            feed.stop()
             runner.session.dispose()

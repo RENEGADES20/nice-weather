@@ -1603,11 +1603,14 @@ def _render_trading_timeline(db: Path) -> None:
 
 def _render(db: Path) -> None:
     tabs = st.tabs(
-        ["Overview", "Repricing", "Execution", "Paper", "System & Audit", "Trading", "Backtest"]
+        ["Overview", "Repricing", "Trading", "Backtest", "System & Audit"]
     )
-    overview, repricing_tab, execution_tab, paper_tab, system_tab, trading_tab, backtest_tab = tabs
+    overview, repricing_tab, trading_tab, backtest_tab, system_tab = tabs
+    with system_tab:
+        execution_tab = st.expander("Legacy execution evidence", expanded=False)
+        paper_tab = st.expander("Legacy Paper history", expanded=False)
     from nice_weather.trading.ui import render
-    render(db, trading_tab, backtest_tab)
+    render(db, trading_tab, backtest_tab, system_tab)
     query = DashboardQuery(db)
     try:
         summary = query.get_latest_decision_summary()

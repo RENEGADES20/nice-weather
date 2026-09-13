@@ -451,11 +451,29 @@ def backtest(root):
                     st.success("Rerun queued")
 
 
-def render(db: Path, trading_tab, backtest_tab):
+def render(db: Path, trading_tab, backtest_tab, system_tab=None):
+    from nice_weather.trading.terminal import trading as terminal_trading
+
     root = Path(os.environ.get("NICE_WEATHER_TRADING_ROOT", str(db.parent / "trading")))
-    for tab, renderer in ((trading_tab, trading), (backtest_tab, backtest)):
+    for tab, renderer in (
+        (trading_tab, lambda root: terminal_trading(root, db)),
+        (backtest_tab, backtest),
+    ):
         with tab:
             try:
                 renderer(root)
             except Exception as exc:
                 st.error(f"Workbench unavailable: {exc}")
+    if system_tab is not None:
+        with system_tab, st.expander("Paper engine audit", expanded=False):
+            st.caption(
+                "Native facts are recoverable; historical full market depth is not archived."
+            )
+            for run in read_rows(
+                root / "results.sqlite3", "SELECT * FROM runs WHERE mode='sandbox'"
+            ):
+                st.write(f"{run['account']} · {run['status']}")
+                st.json(json.loads(run["config"]), expanded=False)
+                snapshot = json.loads(run["snapshot"] or "{}")
+                st.dataframe(pd.DataFrame(snapshot.get("markets", [])), width="stretch")
+                st.dataframe(pd.DataFrame(snapshot.get("rejections", [])), width="stretch")
