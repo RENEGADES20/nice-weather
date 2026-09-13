@@ -106,7 +106,7 @@ function shell() {
   mounted=true;
 }
 
-function selectToken(token?:string){if(token&&token!==data.selectedToken){saveDraft();preview=null;(el("t-dialog") as HTMLDialogElement).close();send("select",{token});}}
+function selectToken(token?:string){if(token&&token!==data.selectedToken){saveDraft();localStorage.setItem(`terminal-selection-${data.account}`,token);preview=null;(el("t-dialog") as HTMLDialogElement).close();send("select",{token});}}
 function availableShares(){const q=(data.snapshot.positions||[]).filter((p:Row)=>p.token===data.selectedToken).reduce((a:number,p:Row)=>a+p.quantity,0);return Math.max(0,q-(data.snapshot.orders||[]).filter((o:Row)=>o.token===data.selectedToken&&o.side==="SELL"&&["ACCEPTED","PARTIALLY_FILLED","SUBMITTED"].includes(o.status)).reduce((a:number,o:Row)=>a+o.remaining,0));}
 function draft():Row{
   const m=market(), b=book(), side=input("t-side-value").value;
@@ -221,4 +221,5 @@ export function renderTerminal(next:TerminalPayload){
   for(const id of ["t-start","t-stop"])(el(id) as HTMLButtonElement).disabled=!data.connected||data.accountMode!=="Paper";
   finishClose();
   height();
+  if(first){const saved=localStorage.getItem(`terminal-selection-${data.account}`);if(data.markets.some(m=>m.token===saved))selectToken(saved!);}
 }
