@@ -16,7 +16,9 @@ nice-weather trading status --root var/trading
 
 Dashboard 使用原环境；设置 `NICE_WEATHER_TRADING_ROOT`。Ubuntu 安装两个新 service 及 dashboard 的 `trading.conf` drop-in，先创建 `/var/lib/nice-weather-trading/requests` 并赋予服务用户访问权限，再启动服务。Dashboard 的写权限只开放到 requests 子目录；结果与天气库继续只读。两个 worker 使用独立 OS 文件锁。不要加载原含资金凭据的 env 到模拟或回测服务。
 
-Windows 原生扩展若被应用程序控制阻止，使用已安装的 Ubuntu WSL 环境；不关闭系统防护。本轮原生引擎测试在 Ubuntu WSL Python 3.12 环境执行。
+Windows 原生扩展若被应用程序控制阻止，使用已安装的 Ubuntu WSL 环境；不关闭系统防护。原生测试已在 WSL 和部署 Ubuntu VM 的 Python 3.12 环境执行。2026-09-13 部署版本及证据见 [验收报告](acceptance/nautilus-2026-09-12/REPORT.md)。
+
+worker 运行期间保留一个无事务的结果库连接，使 WAL/SHM 在写入间隔仍可被只读 Dashboard 打开。不要把结果目录改成 Dashboard 可写来规避 WAL 生命周期问题。初始化及日志重放期间应等待 fresh snapshot；超过 10 秒的快照不允许提交交易操作。
 
 原生故障验收还需要 `redis-server`：`sudo apt-get install -y redis-server`，随后运行
 `python -m pytest tests/trading -q`。测试仅启动随机回环端口的独立 Redis/AOF 目录，
@@ -39,6 +41,8 @@ nice-weather backtest run --root var/trading --request request.json
 `noop` 不产生订单；`acceptance_roundtrip` 只用于验收，在首个有效报价买入，在指定报价序号退出，不代表交易优势。示例数量必须满足该市场最小份额以及同档 5、单机场日 20 的限额。
 
 导出使用 SQLite backup 的一致性视图，JSON 内容哈希固定。合约与费用从原始 capture 重建；`contract_bins` 会覆盖历史，不能用作历史规则版本的事实来源。按 `received_at` 和来源序号推进，保留 exchange timestamp。缺失 NO 历史时拒绝双侧需求。NULL event_kind、Gamma 和插值不进入成交回放。缺失费用口径、歧义规则、陈旧报价、无有效双侧深度等均拒绝订单。Market Stream 每 15 秒补充完整公开盘口，恢复顶层深度，不推导 NO 价格。
+
+一致性副本写入临时磁盘，导出正常结束后自动清理，不在 RAM 保存整库。需要预留至少一个源数据库大小的临时空间；生产旧库首次导出包含全库复制及旧合约读取，可能耗时数分钟以上。导出应作为独立进程运行，不能放入模拟账户循环或浏览器请求内。
 
 ## 账目与恢复
 
