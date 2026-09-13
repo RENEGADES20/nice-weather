@@ -150,7 +150,11 @@ class Session:
         self.engine.add_strategy(self.control)
 
     def _run(self, data, *, custom=False):
-        self.engine.add_data([data], client_id=ClientId("WORKBENCH") if custom else None)
+        batch = [data]
+        if self.config.get("execution_version") == 3 and isinstance(data, InstrumentClose):
+            # Settlement clears liquidity; it does not need or invent a tradable quote.
+            batch.insert(0, OrderBookDelta.clear(data.instrument_id, 0, self.now, self.now))
+        self.engine.add_data(batch, client_id=ClientId("WORKBENCH") if custom else None)
         self.engine.run(streaming=True)
         self.engine.clear_data()
 

@@ -38,6 +38,7 @@ def native_state(session):
 
 
 def restore(state):
+    from nautilus_trader.core.uuid import UUID4
     from nautilus_trader.model import events
     from nautilus_trader.model.enums import OmsType
     from nautilus_trader.model.events import AccountState
@@ -61,10 +62,29 @@ def restore(state):
     finally:
         temporary.dispose()
     cache = session.engine.cache
+    resting = 0
     for history in state["orders"]:
         order = OrderUnpacker.from_init(events.OrderInitialized.from_dict(history[0]))
         for row in history[1:]:
             order.apply(getattr(events, row["type"]).from_dict(row))
+        if order.is_open:
+            # Backtest startup re-submits cached open orders, even without an L2 book.
+            # Record the restart cancellation before exposing them to that startup path.
+            order.apply(
+                events.OrderCanceled(
+                    order.trader_id,
+                    order.strategy_id,
+                    order.instrument_id,
+                    order.client_order_id,
+                    order.venue_order_id,
+                    order.account_id,
+                    UUID4(),
+                    state["now"],
+                    state["now"],
+                    True,
+                )
+            )
+            resting += 1
         cache.add_order(order)
     for key in ("archived", "positions"):
         for history in state[key]:
@@ -83,7 +103,7 @@ def restore(state):
     session.counts, session.parameters = state["counts"], state["parameters"]
     session.rejections = state["rejections"]
     session.equity_peak, session.maximum_drawdown = state["peak"], state["maximum_drawdown"]
-    # No book is installed, so native startup cannot create a fill.
+    # Only closed orders are loaded; native startup has no order to re-submit.
     session.apply({"kind": "clock", "ts": state["now"], "data": {}})
     if state["account"]:
         account = cache.account_for_venue(VENUE)
@@ -91,10 +111,18 @@ def restore(state):
             account.apply(AccountState.from_dict(row))
         cache.update_account(account)
     session.enabled = state["enabled"]
-    resting = len(session.open_orders())
-    for token in session.instruments:
-        session.cancel_token(token)
     session.apply({"kind": "clock", "ts": state["now"] + 1, "data": {}})
+    if state["account"]:
+        expected = AccountState.from_dict(state["account"]["events"][-1])
+        account = cache.account_for_venue(VENUE)
+        for balance in expected.balances:
+            if account.balance_total(balance.currency) != balance.total:
+                session.dispose()
+                raise ValueError("Recovery changed recorded cash; account paused")
+    stored_fills = sum(e["type"] == "OrderFilled" for history in state["orders"] for e in history)
+    if len(session.snapshot()["fills"]) != stored_fills:
+        session.dispose()
+        raise ValueError("Recovery changed recorded fills; account paused")
     if resting:
         session.rejections.append(
             {
@@ -152,6 +180,7 @@ class PaperRunner:
         config["execution"] = "L2 depth consumption; no maker queue priority; native fact recovery"
         config["config_hash"] = digest({k: v for k, v in config.items() if k != "config_hash"})
         self.last_state_hash = None
+        self.last_financial_hash = None
         self.last_minute = None
         self.last_valid = None
         self.commit("startup")
@@ -162,13 +191,24 @@ class PaperRunner:
         state_hash = digest(
             {
                 k: state[k]
-                for k in ("orders", "account", "outcomes", "rejections", "config", "enabled")
+                for k in (
+                    "orders",
+                    "account",
+                    "outcomes",
+                    "rejections",
+                    "config",
+                    "enabled",
+                    "metadata",
+                )
             }
         )
         minute = self.session.now // 60_000_000_000
         valid = snapshot["equity"] is not None
         important = input_id is not None or state_hash != self.last_state_hash
         sample = important or minute != self.last_minute or valid != self.last_valid
+        financial_hash = digest([snapshot["fills"], snapshot["settled"]])
+        financial = financial_hash != self.last_financial_hash
+        valuation = financial or minute != self.last_minute or valid != self.last_valid
         with connect(self.results.path) as con:
             if sample:
                 con.execute(
@@ -180,8 +220,12 @@ class PaperRunner:
                     "INSERT OR IGNORE INTO paper_receipts VALUES (?,?)", (self.run_id, input_id)
                 )
                 self.seen.add(input_id)
-            if sample and self.session.now > 0:
-                sample_key = f"event:{self.session.now}" if important else f"minute:{minute}"
+            if valuation and self.session.now > 0:
+                sample_key = (
+                    f"event:{self.session.now}"
+                    if financial or valid != self.last_valid
+                    else f"minute:{minute}"
+                )
                 con.execute(
                     "INSERT OR IGNORE INTO paper_equity VALUES (?,?,?,?,?,?)",
                     (
@@ -200,6 +244,7 @@ class PaperRunner:
                 (encoded(snapshot), encoded(self.session.config), time.time(), self.run_id),
             )
         self.last_state_hash, self.last_minute, self.last_valid = state_hash, minute, valid
+        self.last_financial_hash = financial_hash
         return snapshot
 
     def apply(self, input_id, event):
@@ -207,4 +252,4 @@ class PaperRunner:
             return self.session.snapshot()
         self.session.apply(event)
         # These observations never enter the durable receipt/input log.
-        return self.commit(None if event["kind"] in {"clock", "depth"} else input_id)
+        return self.commit(None if event["kind"] in {"clock", "depth", "contract"} else input_id)

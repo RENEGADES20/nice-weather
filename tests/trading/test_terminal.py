@@ -8,6 +8,33 @@ from nice_weather.trading.storage import Results, connect
 from nice_weather.trading.worker import run_config
 
 
+@pytest.mark.parametrize(
+    "price,qty,tif,post_only,filled",
+    [
+        (0.40, 5, "IOC", False, 2),
+        (0.41, 6, "IOC", False, 5),
+        (0.41, 6, "FOK", False, 0),
+        (0.40, 5, "GTC", True, 0),
+    ],
+)
+def test_l2_protection_partial_fok_and_post_only(tmp_path, price, qty, tif, post_only, filled):
+    results = Results(tmp_path / "results.sqlite3")
+    results.create("run", "sandbox-test", "sandbox", run_config("sandbox-test", "sandbox"))
+    runner = PaperRunner(results, results.run("run"))
+    runner.apply("contract", event("contract", 0, contract(fee_rate=0.02)))
+    runner.apply("depth", event("depth", 1, book()))
+    runner.apply(
+        "buy", event("order", 2, buy(price=price, quantity=qty, tif=tif, post_only=post_only))
+    )
+    snapshot = runner.session.snapshot()
+    assert sum(f["quantity"] for f in snapshot["fills"]) == filled
+    assert all(f["price"] <= price for f in snapshot["fills"])
+    assert snapshot["cash"] == pytest.approx(
+        100 - sum(f["quantity"] * f["price"] + f["fee"] for f in snapshot["fills"])
+    )
+    runner.session.dispose()
+
+
 def book():
     return dict(
         token_id="111",

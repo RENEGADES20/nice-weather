@@ -47,6 +47,20 @@ def equity_history(path, run_id):
     return legacy + samples
 
 
+@st.cache_data(ttl=15, max_entries=16, show_spinner=False)
+def price_history(path, token):
+    with connect(path, readonly=True) as con:
+        return [
+            dict(r)
+            for r in con.execute(
+                "SELECT MAX(rowid) AS sample,received_at,mid FROM market_top_ticks "
+                "WHERE token_id=? AND source='clob_ws' AND event_kind IN ('quote','snapshot') "
+                "GROUP BY substr(received_at,1,16) ORDER BY received_at",
+                (token,),
+            )
+        ]
+
+
 @st.fragment(run_every="2s")
 def terminal(root: Path, db: Path, mode: str, account: str):
     runs = rows(
@@ -99,16 +113,7 @@ def terminal(root: Path, db: Path, mode: str, account: str):
     history = []
     if token and db.exists():
         try:
-            with connect(db, readonly=True) as con:
-                history = [
-                    dict(r)
-                    for r in con.execute(
-                        "SELECT received_at,mid FROM market_top_ticks "
-                        "WHERE token_id=? AND source='clob_ws' "
-                        "AND event_kind IN ('quote','snapshot') ORDER BY rowid DESC LIMIT 1500",
-                        (token,),
-                    )
-                ][::-1]
+            history = price_history(db, token)
         except Exception:
             pass
     notices = rows(
