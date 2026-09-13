@@ -28,6 +28,8 @@ collector、market-stream、旧 runner、dashboard、sandbox、backtest 均运�
 
 完整 KLGA 市场日、自然结算与本报告其余未验收边界继续保留为待验收，PR #36 保持 draft；未合并主分支。
 
+生产移动端 390px 复验：viewport/document 宽度均 390，账户数值可读，见 `vm-trading-mobile.png`；本轮移动端只复验布局，完整移动交易流程的早期 WSL 证据见下文。VM 首次历史导出通过 `nice-weather-acceptance-export.service` 于 02:36:50 UTC 启动，请求窗口为 02:27–02:37 UTC。截至本轮收尾尚未生成数据集，独立进程继续运行；约 4.3 GB 临时一致性副本在正常结束时清理。VM 上的回测运行、比较及导出仍待后续复验，不能以本地通过记录替代。
+
 ## 实现与版本
 
 - 隔离分支：`codex/nautilus-trading-workbench`，远端主分支基线 `e827138f9535996ed0a2162d14bcd9997af2b2b8`。原工作目录未提交内容保留。
