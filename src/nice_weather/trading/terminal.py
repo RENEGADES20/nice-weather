@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import streamlit as st
 
+from nice_weather.trading.history import PriceHistory
 from nice_weather.trading.metrics import pnl_view
 from nice_weather.trading.storage import Requests, connect
 from nice_weather.trading_chart import _component
@@ -19,20 +21,27 @@ from nice_weather.trading_chart import _component
 def rows(path, sql, parameters=()):
     if not path.exists():
         return []
-    with connect(path, readonly=True) as con:
-        return [dict(r) for r in con.execute(sql, parameters)]
+    try:
+        with connect(path, readonly=True) as con:
+            return [dict(r) for r in con.execute(sql, parameters)]
+    except sqlite3.OperationalError as exc:
+        # A new worker can create the file before committing its schema.
+        if "no such table:" not in str(exc):
+            raise
+        return []
 
 
 @st.cache_data(ttl=30, max_entries=8, show_spinner=False)
-def equity_history(path, run_id):
+def equity_history(path, run_id, started_ns=0):
     with connect(path, readonly=True) as con:
         samples = []
         if con.execute("SELECT 1 FROM sqlite_master WHERE name='paper_equity'").fetchone():
             samples = [
                 dict(r)
                 for r in con.execute(
-                    "SELECT ts,equity,realized,fees FROM paper_equity WHERE run_id=? ORDER BY ts",
-                    (run_id,),
+                    "SELECT ts,equity,realized,fees FROM paper_equity "
+                    "WHERE run_id=? AND ts>=? ORDER BY ts",
+                    (run_id, started_ns),
                 )
             ]
         boundary = samples[0]["ts"] if samples else 2**63 - 1
@@ -40,25 +49,16 @@ def equity_history(path, run_id):
             dict(r)
             for r in con.execute(
                 "SELECT MAX(ts) ts, CASE WHEN COUNT(equity)=COUNT(*) THEN equity END equity "
-                "FROM equity WHERE run_id=? AND ts<? GROUP BY ts/60000000000 ORDER BY ts",
-                (run_id, boundary),
+                "FROM equity WHERE run_id=? AND ts<? AND ts>=? GROUP BY ts/60000000000 ORDER BY ts",
+                (run_id, boundary, started_ns),
             )
         ]
     return legacy + samples
 
 
-@st.cache_data(ttl=15, max_entries=16, show_spinner=False)
-def price_history(path, token):
-    with connect(path, readonly=True) as con:
-        return [
-            dict(r)
-            for r in con.execute(
-                "SELECT MAX(rowid) AS sample,received_at,mid FROM market_top_ticks "
-                "WHERE token_id=? AND source='clob_ws' AND event_kind IN ('quote','snapshot') "
-                "GROUP BY substr(received_at,1,16) ORDER BY received_at",
-                (token,),
-            )
-        ]
+@st.cache_resource
+def price_cache():
+    return PriceHistory()
 
 
 @st.fragment(run_every="2s")
@@ -75,6 +75,47 @@ def terminal(root: Path, db: Path, mode: str, account: str):
         snapshot.get("markets", []), key=lambda m: (m["date"], m["bin"], m["outcome"] != "YES")
     )
     token_key = f"terminal-token-{account}"
+    component_key = f"terminal-{mode}-{account}"
+    connected = bool(run and run["status"] == "running" and time.time() - run["updated"] < 10)
+
+    def consume(action):
+        if not isinstance(action, dict) or st.session_state.get("terminal-action") == action.get(
+            "id"
+        ):
+            return False
+        st.session_state["terminal-action"] = action.get("id")
+        if action.get("selectedToken") in {m["token"] for m in markets}:
+            st.session_state[token_key] = action["selectedToken"]
+        if action.get("kind") == "ready":
+            st.session_state.pop(component_key + "-history", None)
+        if action.get("kind") == "select" and action.get("token") in {m["token"] for m in markets}:
+            st.session_state[token_key] = action["token"]
+        elif mode == "Paper" and action.get("kind") in {
+            "order",
+            "cancel",
+            "replace",
+            "close",
+            "start",
+            "stop",
+            "balance",
+            "reset",
+        }:
+            if connected:
+                Requests(root / "requests" / "requests.sqlite3").submit(
+                    action["id"], account, "sandbox", action["kind"], action.get("payload", {})
+                )
+            else:
+                st.session_state[component_key + "-notice"] = {
+                    "request_id": action["id"],
+                    "kind": action["kind"],
+                    "status": "rejected",
+                    "error": "Worker is disconnected or paused; request was not submitted",
+                }
+        return True
+
+    # Widget values are available before rendering. Consume the latest selection
+    # before any market read; the return value below covers the first mount too.
+    consume(st.session_state.get(component_key))
     token = st.session_state.get(token_key)
     if token not in {m["token"] for m in markets}:
         today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
@@ -98,7 +139,9 @@ def terminal(root: Path, db: Path, mode: str, account: str):
         pass
     samples = []
     if run:
-        samples = equity_history(root / "results.sqlite3", run["run_id"])
+        samples = equity_history(
+            root / "results.sqlite3", run["run_id"], config.get("started_ns", 0)
+        )
         samples.append(
             {
                 "ts": int(run["updated"] * 1e9),
@@ -112,19 +155,24 @@ def terminal(root: Path, db: Path, mode: str, account: str):
         config.get("cash", 100),
         snapshot.get("fills", []),
         config.get("started_ns", samples[0]["ts"] if samples else time.time_ns()),
+        config.get("funding_events", []),
     )
     history = []
+    history_ready, history_error, revision = False, None, 0
     if token and db.exists():
-        try:
-            history = price_history(db, token)
-        except Exception:
-            pass
+        history, revision, history_ready, history_error = price_cache().get(db, token)
+    history_key = (token, revision, history_ready)
+    if st.session_state.get(component_key + "-history") == history_key:
+        history = None
+    st.session_state[component_key + "-history"] = history_key
     notices = rows(
         root / "requests" / "requests.sqlite3",
-        "SELECT kind,status,error,created FROM requests "
+        "SELECT request_id,kind,status,error,created FROM requests "
         "WHERE account=? ORDER BY created DESC LIMIT 3",
         (account,),
     )
+    if local_notice := st.session_state.get(component_key + "-notice"):
+        notices = [local_notice, *notices]
     connected = bool(run and run["status"] == "running" and time.time() - run["updated"] < 10)
     payload = {
         "mode": "terminal",
@@ -137,26 +185,13 @@ def terminal(root: Path, db: Path, mode: str, account: str):
         "depth": depth,
         "performance": performance if mode == "Paper" else {"points": [], "days": []},
         "history": history,
+        "historyReady": history_ready,
+        "historyError": history_error,
         "notices": notices if mode == "Paper" else [],
         "updated": run["updated"] if run else None,
     }
-    action = _component(
-        payload=payload, height=1500, key=f"terminal-{mode}-{account}", default=None
-    )
-    if not isinstance(action, dict) or st.session_state.get("terminal-action") == action.get("id"):
-        return
-    st.session_state["terminal-action"] = action.get("id")
-    if action.get("kind") == "select" and action.get("token") in {m["token"] for m in markets}:
-        st.session_state[token_key] = action["token"]
-        st.rerun(scope="fragment")
-    elif (
-        mode == "Paper"
-        and connected
-        and action.get("kind") in {"order", "cancel", "replace", "close", "start", "stop"}
-    ):
-        Requests(root / "requests" / "requests.sqlite3").submit(
-            action["id"], account, "sandbox", action["kind"], action.get("payload", {})
-        )
+    action = _component(payload=payload, height=1500, key=component_key, default=None)
+    if consume(action):
         st.rerun(scope="fragment")
 
 

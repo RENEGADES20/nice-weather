@@ -70,3 +70,60 @@ def test_ny_calendar_dst_first_day_and_gap_not_shifted(start, end):
     assert result["days"][-1]["pnl"] is None
     assert any(p["value"] is None for p in result["points"])
     assert datetime.fromtimestamp(a / 1e9, UTC).hour in {4, 5}
+
+
+def test_subscription_changes_keep_the_existing_connection(monkeypatch):
+    import json
+    from contextlib import contextmanager
+
+    feed = DepthFeed()
+    feed.allowed = {"one", "two"}
+    feed.required = {"one"}
+    calls, sent, observed = [], [], []
+    clock = [0]
+    monkeypatch.setattr("nice_weather.trading.depth.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(feed, "snapshots", lambda tokens: [])
+
+    class Socket:
+        def send(self, message):
+            sent.append(message)
+
+        def recv(self, timeout):
+            clock[0] += 1
+            if clock[0] == 2:
+                feed.required.add("two")
+            if clock[0] == 5:
+                feed.required.remove("one")
+            if clock[0] >= 40:
+                feed.closed.set()
+            observed.append(clock[0])
+            return "PONG"
+
+    @contextmanager
+    def connection(*args, **kwargs):
+        calls.append(1)
+        yield Socket()
+
+    monkeypatch.setattr("nice_weather.trading.depth.connect", connection)
+    feed.run()
+    assert len(calls) == 1 and max(observed) == 40
+    updates = [json.loads(s) for s in sent if s != "PING"]
+    assert any(u.get("operation") == "subscribe" and u["assets_ids"] == ["two"] for u in updates)
+    assert any(u.get("operation") == "unsubscribe" and u["assets_ids"] == ["one"] for u in updates)
+
+
+def test_complete_empty_side_is_distinct_from_missing_snapshot():
+    feed = DepthFeed()
+    feed.allowed = {"one"}
+    row = {
+        "event_type": "book",
+        "asset_id": "one",
+        "timestamp": "100",
+        "bids": [],
+        "asks": [{"price": ".4", "size": "5"}],
+    }
+    feed.ingest(row)
+    assert feed.book("one")["valid"]
+    del row["bids"]
+    feed.ingest(row)
+    assert not feed.book("one")["valid"]

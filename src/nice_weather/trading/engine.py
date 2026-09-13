@@ -92,6 +92,19 @@ class Control(Strategy):
     def on_start(self):
         self.subscribe_data(DataType(Input), client_id=ClientId("WORKBENCH"))
 
+    def on_order_rejected(self, event):
+        if self.session.config.get("execution_version") == 3:
+            self.session.rejections.append(
+                {
+                    "request_id": str(event.client_order_id),
+                    "ts": self.session.now,
+                    "reason": event.reason,
+                }
+            )
+
+    def on_order_denied(self, event):
+        self.on_order_rejected(event)
+
     def on_data(self, data):
         if isinstance(data, Input):
             self.session.command(data.event)
@@ -228,10 +241,10 @@ class Session:
                 bids, asks = row["bids"], row["asks"]
                 self.quotes[token] = {
                     "ts": row["received_ns"],
-                    "best_bid": float(bids[0][0]),
-                    "best_ask": float(asks[0][0]),
-                    "bid_size": float(bids[0][1]),
-                    "ask_size": float(asks[0][1]),
+                    "best_bid": float(bids[0][0]) if bids else None,
+                    "best_ask": float(asks[0][0]) if asks else None,
+                    "bid_size": float(bids[0][1]) if bids else 0,
+                    "ask_size": float(asks[0][1]) if asks else 0,
                 }
                 # Apply only changed levels: identical snapshots must not replenish consumed size.
                 previous = getattr(self, "_depth", {}).get(token, {})
@@ -362,6 +375,9 @@ class Session:
             return "Ambiguous contract: no-trade"
         if not row.get("fee_known", False):
             return "Unknown historical fee schedule: no-trade"
+        quote = self.quotes.get(token)
+        if quote and (quote.get("best_bid") is None or quote.get("best_ask") is None):
+            return "Paper execution requires bids and asks; this book is one-sided"
         if (
             row["closed"]
             or not row["active"]
@@ -421,6 +437,8 @@ class Session:
                 if not self.enabled or self.config["strategy_id"] == "noop":
                     return
                 if token not in self.config.get("tokens", []):
+                    return
+                if self.quotes.get(token, {}).get("best_ask") is None:
                     return
                 if self.parameters.get("require_both"):
                     definition = self.metadata[token]
@@ -562,10 +580,9 @@ class Session:
         post_only = payload.get("post_only", False)
         if type(post_only) is not bool or (post_only and tif not in {"GTC", "GTD"}):
             raise ValueError("Illegal post-only combination")
-        crosses = (
-            price >= Decimal(str(quote["best_ask"]))
-            if side == "BUY"
-            else price <= Decimal(str(quote["best_bid"]))
+        opposite = quote["best_ask"] if side == "BUY" else quote["best_bid"]
+        crosses = opposite is not None and (
+            price >= Decimal(str(opposite)) if side == "BUY" else price <= Decimal(str(opposite))
         )
         if post_only and crosses:
             raise ValueError("Post-only would take liquidity")
@@ -661,7 +678,11 @@ class Session:
             if not p.is_open:
                 continue
             quote = self.quotes.get(token)
-            valid = quote and self.now - quote["ts"] <= 30_000_000_000
+            valid = (
+                quote
+                and quote.get("best_bid") is not None
+                and self.now - quote["ts"] <= 30_000_000_000
+            )
             bid = quote["best_bid"] if valid else None
             quantity = float(p.quantity)
             if bid is None:
@@ -731,12 +752,20 @@ class Session:
         losses = [
             float(p.realized_pnl) for p in closed if p.realized_pnl and float(p.realized_pnl) < 0
         ]
-        return {
+        snapshot = {
             "account": self.config["account"],
             "mode": self.config["mode"],
             "ts": self.now,
             "engine_version": ENGINE_VERSION,
             "cash": cash,
+            "account_revision": digest(
+                [
+                    cash,
+                    orders,
+                    [(p["token"], p["quantity"], p["cost"]) for p in positions],
+                    self.config.get("started_ns"),
+                ]
+            ),
             "reserved": reserved,
             "available": cash - reserved,
             "market_value": market_value if complete else None,
@@ -744,7 +773,12 @@ class Session:
             "realized_pnl": realized,
             "fees": fees,
             "unrealized_pnl": sum(p["unrealized_pnl"] for p in positions) if complete else None,
-            "total_pnl": equity - self.cash_start if equity is not None else None,
+            "net_funding": sum(f["delta"] for f in self.config.get("funding_events", [])),
+            "total_pnl": equity
+            - self.cash_start
+            - sum(f["delta"] for f in self.config.get("funding_events", []))
+            if equity is not None
+            else None,
             "drawdown": (peak - equity) / peak if equity is not None and peak else None,
             "max_drawdown": maximum,
             "positions": positions,
@@ -771,6 +805,7 @@ class Session:
                     "tick_size": r["tick_size"],
                     "fee_rate": r["fee_rate"],
                     "fee_exponent": r["fee_exponent"],
+                    "rejection": self.market_rejection(token),
                     "quote": None
                     if self.config.get("execution_version") == 3
                     else self.quotes.get(token),
@@ -778,6 +813,13 @@ class Session:
                 for token, r in self.metadata.items()
             ],
         }
+
+        if self.config.get("execution_version") != 3:
+            snapshot.pop("account_revision")
+            snapshot.pop("net_funding")
+            for market in snapshot["markets"]:
+                market.pop("rejection")
+        return snapshot
 
     def dispose(self):
         self.engine.dispose()

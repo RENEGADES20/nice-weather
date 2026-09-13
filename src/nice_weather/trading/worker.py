@@ -591,6 +591,8 @@ def sandbox_worker(
                         ),
                         None,
                     )
+                    if request["kind"] == "reset" and rejection is None:
+                        applied.clear()
                     requests.finish(
                         request["request_id"],
                         "rejected" if rejection else "completed",

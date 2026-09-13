@@ -9,12 +9,15 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 
-def pnl_view(samples, cash, fills, started_ns):
+def pnl_view(samples, cash, fills, started_ns, funding=()):
     """One NY-day definition for both curve and calendar; missing days stay missing."""
     zone = ZoneInfo("America/New_York")
     grouped = {}
     points = []
-    for row in sorted(samples, key=lambda r: r["ts"]):
+    for original in sorted(samples, key=lambda r: r["ts"]):
+        row = dict(original)
+        if row["equity"] is not None:
+            row["equity"] -= sum(f["delta"] for f in funding if f["ts"] <= row["ts"])
         at = datetime.fromtimestamp(row["ts"] / 1e9, UTC)
         day = at.astimezone(zone).date()
         value = row["equity"] - cash if row["equity"] is not None else None

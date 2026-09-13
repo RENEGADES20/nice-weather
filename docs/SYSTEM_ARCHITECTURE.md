@@ -364,3 +364,10 @@ flowchart LR
 ```
 
 交易进程使用 Python 3.12 / Nautilus 1.231.0 独立依赖环境。Dashboard 不导入引擎或读取资金凭据。每个账户只有一个 writer，回测单独串行 worker。日志先写入、引擎后执行、快照哈希再提交；恢复重放全会话并校验。报价严格按实际 token 和接收时间处理，规则及费用读取原始历史 capture。主库 schema v7 保持兼容；旧 Paper 和旧 Runner 不迁移账目。详见 [TRADING_WORKBENCH.md](TRADING_WORKBENCH.md)。
+
+
+## Trading 交互与账户控制补充（2026-09-13）
+
+前端即时选择 → Streamlit 优先消费组件事件 → Worker 回环盘口 → SQLite 请求队列 → 原生 Paper 执行。历史查询经最多两个后台线程与 32 个缓存项隔离，初始化按 token 聚合已有 tick，后续按全局 rowid 区间增量读取；缓存不落盘。价格历史相同版本不重复传输，实时末点独立更新。WebSocket 动态订阅不影响其他持仓盘口，公开 REST 快照仅用于内存校验。
+
+`balance` 与 `reset` 只在 PaperRunner 接受，校验账户修订及金额精度。原生 AccountState 记录资金调整，config 记录带时间的净资金流用于统一 PnL。重置原子保存前期 `paper_resets` 事实、当期新 `paper_state`、请求 receipt 和权益样本；恢复不重撮合成交。当前周期以 started_ns 隔离，旧权益与成交不混入。生产部署采用既有 runtime manifest，测试应用与浏览器产物不在发布清单内。

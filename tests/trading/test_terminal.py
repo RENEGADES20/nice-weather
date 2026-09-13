@@ -45,6 +45,21 @@ def book():
     )
 
 
+def test_one_sided_book_is_explicitly_rejected_and_bid_valuation_stays_missing(tmp_path):
+    results = Results(tmp_path / "results.sqlite3")
+    results.create("run", "sandbox-test", "sandbox", run_config("sandbox-test", "sandbox"))
+    runner = PaperRunner(results, results.run("run"))
+    runner.apply("contract", event("contract", 0, contract()))
+    runner.apply("depth", event("depth", 1, book()))
+    result = runner.apply("buy", event("order", 2, buy(quantity=2)))
+    assert sum(f["quantity"] for f in result["fills"]) == 2
+    result = runner.apply("empty-bid", event("depth", 3, book() | {"bids": []}))
+    assert result["equity"] is None and result["positions"][0]["bid"] is None
+    result = runner.apply("again", event("order", 4, buy(quantity=2)))
+    assert "one-sided" in result["rejections"][-1]["reason"]
+    runner.session.dispose()
+
+
 def test_restarting_flat_account_does_not_append_duplicate_valuation(tmp_path):
     results = Results(tmp_path / "results.sqlite3")
     results.create("run", "sandbox-test", "sandbox", run_config("sandbox-test", "sandbox"))

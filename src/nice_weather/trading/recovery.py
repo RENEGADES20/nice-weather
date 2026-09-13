@@ -168,6 +168,9 @@ class PaperRunner:
                 CREATE TABLE IF NOT EXISTS paper_equity (
                     run_id TEXT NOT NULL, sample_key TEXT NOT NULL, ts INTEGER NOT NULL,
                     equity REAL, realized REAL, fees REAL, PRIMARY KEY(run_id,sample_key));
+                CREATE TABLE IF NOT EXISTS paper_resets (
+                    run_id TEXT NOT NULL, input_id TEXT NOT NULL, ts INTEGER NOT NULL,
+                    body TEXT NOT NULL, PRIMARY KEY(run_id,input_id));
             """)
             saved = con.execute(
                 "SELECT * FROM paper_state WHERE run_id=?", (self.run_id,)
@@ -204,13 +207,15 @@ class PaperRunner:
         self.last_state_hash = None
         snapshot = self.session.snapshot()
         self.last_financial_hash = (
-            digest([snapshot["fills"], snapshot["settled"]]) if saved else None
+            digest([snapshot["fills"], snapshot["settled"], config.get("funding_events", [])])
+            if saved
+            else None
         )
         self.last_minute = last_sample["ts"] // 60_000_000_000 if last_sample else None
         self.last_valid = last_sample["equity"] is not None if last_sample else None
         self.commit("startup")
 
-    def commit(self, input_id=None):
+    def commit(self, input_id=None, archive=None):
         state = native_state(self.session)
         snapshot = self.session.snapshot()
         state_hash = digest(
@@ -231,10 +236,17 @@ class PaperRunner:
         valid = snapshot["equity"] is not None
         important = input_id is not None or state_hash != self.last_state_hash
         sample = important or minute != self.last_minute or valid != self.last_valid
-        financial_hash = digest([snapshot["fills"], snapshot["settled"]])
+        financial_hash = digest(
+            [snapshot["fills"], snapshot["settled"], self.session.config.get("funding_events", [])]
+        )
         financial = financial_hash != self.last_financial_hash
         valuation = financial or minute != self.last_minute or valid != self.last_valid
         with connect(self.results.path) as con:
+            if archive is not None:
+                con.execute(
+                    "INSERT INTO paper_resets VALUES (?,?,?,?)",
+                    (self.run_id, input_id, self.session.now, encoded(archive)),
+                )
             if sample:
                 con.execute(
                     "INSERT OR REPLACE INTO paper_state VALUES (?,?,?)",
@@ -275,6 +287,91 @@ class PaperRunner:
     def apply(self, input_id, event):
         if input_id in self.seen:
             return self.session.snapshot()
+        if event["kind"] in {"balance", "reset"}:
+            return self.manage_account(input_id, event)
         self.session.apply(event)
         # These observations never enter the durable receipt/input log.
         return self.commit(None if event["kind"] in {"clock", "depth", "contract"} else input_id)
+
+    def manage_account(self, input_id, event):
+        from decimal import Decimal
+
+        from nautilus_trader.accounting.accounts.cash import CashAccount
+        from nautilus_trader.core.uuid import UUID4
+        from nautilus_trader.model.events import AccountState
+
+        from nice_weather.trading.engine import VENUE, Session
+
+        payload = event["data"]
+        archive = None
+        try:
+            if self.session.config["mode"] != "sandbox":
+                raise ValueError("Account controls are Paper only")
+            value = Decimal(str(payload["cash"]))
+            if not value.is_finite() or not 0 <= value <= 1_000_000 or value % Decimal("0.000001"):
+                raise ValueError("Cash must be 0–1,000,000 pUSD, at most six decimal places")
+            before = self.session.snapshot()
+            if payload.get("expected_revision") != before["account_revision"]:
+                raise ValueError("Account changed; review the current balance and retry")
+            self.session.apply(event | {"kind": "clock"})
+            if event["kind"] == "reset":
+                if value <= 0:
+                    raise ValueError("Reset starting cash must be positive")
+                archive = native_state(self.session)
+                config = self.session.config | {
+                    "cash": float(value),
+                    "started_ns": event["ts"],
+                    "funding_events": [],
+                    "strategy_id": "noop",
+                    "parameters": {},
+                    "tokens": [],
+                }
+                replacement = Session(config)
+                for row in {r["condition_id"]: r for r in self.session.metadata.values()}.values():
+                    replacement.apply({"kind": "contract", "ts": event["ts"], "data": row})
+                replacement.apply({"kind": "clock", "ts": event["ts"], "data": {}})
+                old = self.session
+                self.session = replacement
+                self.last_minute = None
+                try:
+                    result = self.commit(input_id, archive)
+                except Exception:
+                    self.session = old
+                    replacement.dispose()
+                    raise
+                old.dispose()
+                return result
+            if float(value) < before["reserved"]:
+                raise ValueError("Cancel open buy orders before reducing cash below reserved funds")
+            account = self.session.engine.cache.account_for_venue(VENUE)
+            last = CashAccount.to_dict(account)["events"][-1]
+            delta = float(value) - before["cash"]
+            balances = [
+                b | {"total": str(value), "free": str(value - Decimal(b["locked"]))}
+                for b in last["balances"]
+            ]
+            if any(Decimal(b["free"]) < 0 for b in balances):
+                raise ValueError("Cash cannot be below native order reservations")
+            account.apply(
+                AccountState.from_dict(
+                    last
+                    | {
+                        "balances": balances,
+                        "event_id": str(UUID4()),
+                        "reported": True,
+                        "ts_event": event["ts"],
+                        "ts_init": event["ts"],
+                        "info": {"reason": "User Paper cash adjustment", "request_id": input_id},
+                    }
+                )
+            )
+            self.session.engine.cache.update_account(account)
+            self.session.config.setdefault("funding_events", []).append(
+                {"ts": event["ts"], "delta": delta, "request_id": input_id}
+            )
+            self.session.equity_peak += delta
+        except (ValueError, KeyError, ArithmeticError) as exc:
+            self.session.rejections.append(
+                {"request_id": event["request_id"], "ts": event["ts"], "reason": str(exc)}
+            )
+        return self.commit(input_id)
