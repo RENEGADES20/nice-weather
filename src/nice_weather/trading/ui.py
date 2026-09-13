@@ -477,3 +477,27 @@ def render(db: Path, trading_tab, backtest_tab, system_tab=None):
                 snapshot = json.loads(run["snapshot"] or "{}")
                 st.dataframe(pd.DataFrame(snapshot.get("markets", [])), width="stretch")
                 st.dataframe(pd.DataFrame(snapshot.get("rejections", [])), width="stretch")
+            archives = (
+                read_rows(
+                    root / "results.sqlite3",
+                    "SELECT run_id,input_id,ts FROM paper_resets ORDER BY ts DESC",
+                )
+                if read_rows(
+                    root / "results.sqlite3",
+                    "SELECT name FROM sqlite_master WHERE name='paper_resets'",
+                )
+                else []
+            )
+            if archives:
+                selected = st.selectbox(
+                    "Previous Paper periods (read only)",
+                    archives,
+                    format_func=lambda r: f"{r['run_id']} · {r['ts']}",
+                )
+                if st.button("Load archived account facts"):
+                    record = read_rows(
+                        root / "results.sqlite3",
+                        "SELECT body FROM paper_resets WHERE run_id=? AND input_id=?",
+                        (selected["run_id"], selected["input_id"]),
+                    )
+                    st.json(json.loads(record[0]["body"]), expanded=False)

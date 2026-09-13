@@ -6,11 +6,13 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 from websockets.sync.client import connect
 
 
@@ -101,10 +103,14 @@ class DepthFeed:
                 levels[side] = sorted(
                     values.items(), key=lambda x: Decimal(x[0]), reverse=side == "bids"
                 )
-            valid = bool(
-                levels["bids"]
-                and levels["asks"]
-                and Decimal(levels["bids"][0][0]) < Decimal(levels["asks"][0][0])
+            valid = (
+                "bids" in event
+                and "asks" in event
+                and not (
+                    levels["bids"]
+                    and levels["asks"]
+                    and Decimal(levels["bids"][0][0]) >= Decimal(levels["asks"][0][0])
+                )
             )
             with self.lock:
                 stamp = int(event.get("timestamp") or 0)
@@ -115,10 +121,15 @@ class DepthFeed:
                     received_ns=time.time_ns(),
                     exchange_ms=stamp,
                     valid=valid,
+                    reason="Paper execution requires bids and asks; this book is one-sided"
+                    if valid and (not levels["bids"] or not levels["asks"]) else None,
                     **levels,
                 )
 
     def run(self):
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="depth-refresh")
+        refresh = None
+        next_refresh = 0
         while not self.closed.is_set():
             wanted = self.wanted()
             if not wanted:
@@ -140,16 +151,43 @@ class DepthFeed:
                         )
                     )
                     # WebSocket supplies authoritative initial books before incremental changes.
-                    ping = connected = time.monotonic()
-                    while (
-                        not self.closed.is_set()
-                        and self.wanted() == wanted
-                        and time.monotonic() - connected < 25
-                    ):
+                    ping = alive = time.monotonic()
+                    while not self.closed.is_set():
+                        desired = self.wanted()
+                        for operation, tokens in (
+                            ("subscribe", desired - wanted),
+                            ("unsubscribe", wanted - desired),
+                        ):
+                            if tokens:
+                                ws.send(
+                                    json.dumps(
+                                        {
+                                            "assets_ids": sorted(tokens),
+                                            "operation": operation,
+                                            "custom_feature_enabled": True,
+                                        }
+                                    )
+                                )
+                        with self.lock:
+                            self.books = {t: b for t, b in self.books.items() if t in desired}
+                        wanted = desired
+                        if refresh and refresh.done():
+                            try:
+                                for event in refresh.result():
+                                    if str(event.get("asset_id")) in wanted:
+                                        self.ingest(event | {"event_type": "book"})
+                            except (httpx.HTTPError, ValueError):
+                                pass  # Stale books remain invalid; never invent freshness.
+                            refresh = None
+                        if wanted and refresh is None and time.monotonic() >= next_refresh:
+                            refresh = pool.submit(self.snapshots, sorted(wanted))
+                            next_refresh = time.monotonic() + 20
                         try:
                             raw = ws.recv(timeout=0.5)
                         except TimeoutError:
                             raw = None
+                        if raw:
+                            alive = time.monotonic()
                         if raw and raw != "PONG":
                             events = json.loads(raw)
                             for event in events if isinstance(events, list) else [events]:
@@ -162,6 +200,8 @@ class DepthFeed:
                         if time.monotonic() - ping >= 8:
                             ws.send("PING")
                             ping = time.monotonic()
+                        if time.monotonic() - alive > 20:
+                            raise TimeoutError("Public depth heartbeat expired")
             except Exception as exc:
                 self.invalidate()
                 if self.last_error != type(exc).__name__:
@@ -174,6 +214,16 @@ class DepthFeed:
                 self.invalidate()
                 with self.lock:
                     self.books = {t: b for t, b in self.books.items() if t in self.wanted()}
+        pool.shutdown(wait=False, cancel_futures=True)
+
+    @staticmethod
+    def snapshots(tokens):
+        with httpx.Client(timeout=5, trust_env=False) as client:
+            response = client.post(
+                "https://clob.polymarket.com/books", json=[{"token_id": t} for t in tokens]
+            )
+            response.raise_for_status()
+            return response.json()
 
     def start(self, port=8766):
         feed = self
