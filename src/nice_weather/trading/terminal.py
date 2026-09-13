@@ -163,7 +163,15 @@ def trading(root, db):
     accounts = rows(
         root / "results.sqlite3", "SELECT account FROM runs WHERE mode='sandbox' ORDER BY account"
     )
-    account = controls[1].selectbox(
-        "Account", [r["account"] for r in accounts] or ["sandbox-001"], key="terminal-account"
-    )
+    choices = [r["account"] for r in accounts] or ["sandbox-001"]
+    if mode == "Paper":
+        account = controls[1].selectbox(
+            "Account",
+            choices,
+            format_func=lambda value: value.replace("sandbox-", "Paper "),
+            key="terminal-account",
+        )
+    else:
+        controls[1].text_input("Account", "Not connected", disabled=True)
+        account = st.session_state.get("terminal-account", choices[0])
     terminal(root, db, mode, account)

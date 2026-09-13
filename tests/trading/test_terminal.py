@@ -138,6 +138,9 @@ def test_resting_restart_and_settlement_facts(tmp_path):
     runner = PaperRunner(results, results.run("run"))
     assert not runner.session.open_orders()
     assert runner.session.snapshot()["available"] == 100
+    from nice_weather.trading.engine import VENUE, pUSD
+
+    assert float(runner.session.engine.cache.account_for_venue(VENUE).balance_free(pUSD)) == 100
     assert "Restart cancelled" in runner.session.rejections[-1]["reason"]
     runner.apply("depth2", event("depth", 4, book()))
     runner.apply("buy", event("order", 5, buy(price=0.41, quantity=5)))

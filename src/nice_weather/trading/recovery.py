@@ -109,6 +109,24 @@ def restore(state):
         account = cache.account_for_venue(VENUE)
         for row in state["account"]["events"]:
             account.apply(AccountState.from_dict(row))
+        if resting:
+            last = state["account"]["events"][-1]
+            # Release cancelled reservations without changing total cash.
+            account.apply(
+                AccountState.from_dict(
+                    last
+                    | {
+                        "balances": [
+                            b | {"free": b["total"], "locked": "0"} for b in last["balances"]
+                        ],
+                        "reported": True,
+                        "event_id": str(UUID4()),
+                        "ts_event": state["now"],
+                        "ts_init": state["now"],
+                        "info": {"reason": "Paper restart cancelled resting orders"},
+                    }
+                )
+            )
         cache.update_account(account)
     session.enabled = state["enabled"]
     session.apply({"kind": "clock", "ts": state["now"] + 1, "data": {}})

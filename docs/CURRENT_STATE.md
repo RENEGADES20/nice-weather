@@ -8,7 +8,7 @@
 
 实时 Paper execution_version=3 使用 Worker 内存 WebSocket 多档簿和 Nautilus L2_MBP；回环只读接口提供展示，新增盘口不落库、文件或日志。结果库保存原生交易/账户事实及稀疏权益，常规每分钟一条。原生旧会话按旧规则核验恢复后转换检查点；独立旧 Paper 历史与 Backtest 余额不迁入。重启取消无法恢复排队位置的旧挂单，现金、持仓、成交与费用保留。
 
-本地 Python 回归 87 项、原生交易 46 项通过。发布和 15 分钟生产观察结果待填写，尚未宣称上线。新规则详见 `docs/TRADING_WORKBENCH.md`。
+本地 Python 回归 87 项、原生交易 51 项通过；CI 的 16 项桌面/手机浏览器测试和 14 项 TypeScript 测试通过。恢复另核验原生 free balance 在撤销旧挂单后释放，现金总额和历史成交不变。发布和 15 分钟生产观察结果待填写，尚未宣称上线。新规则详见 `docs/TRADING_WORKBENCH.md`。
 
 ## 2026-09-13：Nautilus VM 部署验收
 
