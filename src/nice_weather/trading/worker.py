@@ -237,7 +237,8 @@ def backtest(root: Path, request: dict, *, cancelled=lambda: False) -> str:
 def backtest_worker(root: Path, *, once=False):
     requests = Requests(root / "requests" / "requests.sqlite3")
     results = Results(root / "results.sqlite3")
-    with single_writer(root / "backtest.lock"):
+    # Keep WAL sidecars present so the dashboard can open the results on a read-only mount.
+    with single_writer(root / "backtest.lock"), connect(results.path):
         with connect(requests.path) as con:
             interrupted = list(
                 con.execute(
@@ -304,7 +305,8 @@ def sandbox_worker(
     )
     if not re.fullmatch(r"sandbox-[A-Za-z0-9_-]{1,64}", account):
         raise ValueError("Sandbox account must have sandbox- prefix")
-    with single_writer(root / (account + ".lock")):
+    # No transaction is held; this connection only keeps WAL sidecars alive between writes.
+    with single_writer(root / (account + ".lock")), connect(results.path):
         run = results.run(account=account)
         if run is None:
             run_id = str(uuid.uuid4())

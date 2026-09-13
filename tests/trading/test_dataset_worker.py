@@ -12,6 +12,19 @@ from nice_weather.trading.storage import Requests, Results, connect
 from nice_weather.trading.worker import backtest_worker
 
 
+def test_idle_worker_keeps_results_wal_available_for_readonly_dashboard(tmp_path, monkeypatch):
+    def check_idle(_seconds):
+        assert (tmp_path / "results.sqlite3-wal").exists()
+        assert (tmp_path / "results.sqlite3-shm").exists()
+        with connect(tmp_path / "results.sqlite3", readonly=True) as con:
+            assert con.execute("SELECT count(*) FROM runs").fetchone()[0] == 0
+        raise InterruptedError("End idle-worker probe")
+
+    monkeypatch.setattr("nice_weather.trading.worker.time.sleep", check_idle)
+    with pytest.raises(InterruptedError, match="End idle-worker probe"):
+        backtest_worker(tmp_path)
+
+
 def test_sandbox_skips_old_tick_backlog_and_loads_latest_contract(
     tmp_path, fixture_manifest, monkeypatch
 ):
