@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime
 from pathlib import Path
@@ -20,8 +21,14 @@ from nice_weather.trading_chart import _component
 def rows(path, sql, parameters=()):
     if not path.exists():
         return []
-    with connect(path, readonly=True) as con:
-        return [dict(r) for r in con.execute(sql, parameters)]
+    try:
+        with connect(path, readonly=True) as con:
+            return [dict(r) for r in con.execute(sql, parameters)]
+    except sqlite3.OperationalError as exc:
+        # A new worker can create the file before committing its schema.
+        if "no such table:" not in str(exc):
+            raise
+        return []
 
 
 @st.cache_data(ttl=30, max_entries=8, show_spinner=False)
@@ -77,6 +84,8 @@ def terminal(root: Path, db: Path, mode: str, account: str):
         ):
             return False
         st.session_state["terminal-action"] = action.get("id")
+        if action.get("selectedToken") in {m["token"] for m in markets}:
+            st.session_state[token_key] = action["selectedToken"]
         if action.get("kind") == "ready":
             st.session_state.pop(component_key + "-history", None)
         if action.get("kind") == "select" and action.get("token") in {m["token"] for m in markets}:

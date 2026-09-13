@@ -1,6 +1,24 @@
 from streamlit.testing.v1 import AppTest
 
 
+def test_rows_waits_for_worker_schema_without_hiding_invalid_queries(tmp_path):
+    import sqlite3
+
+    import pytest
+
+    from nice_weather.trading.terminal import rows
+
+    path = tmp_path / "results.sqlite3"
+    with sqlite3.connect(path) as con:
+        assert rows(path, "SELECT * FROM runs") == []
+        con.execute("CREATE TABLE runs (run_id TEXT)")
+        con.execute("INSERT INTO runs VALUES ('ready')")
+    rows.clear()
+    assert rows(path, "SELECT * FROM runs") == [{"run_id": "ready"}]
+    with pytest.raises(sqlite3.OperationalError, match="no such column"):
+        rows(path, "SELECT invalid FROM runs")
+
+
 def show_terminal():
     from pathlib import Path
 

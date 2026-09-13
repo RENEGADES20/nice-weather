@@ -33,6 +33,7 @@ test("real component → queue → native Paper: switch, buy, cash edit, close, 
   await frame.locator("#t-cash-form button[type=submit]").click();
   await frame.locator("#t-confirm").click();
   await expect(frame.locator("#t-funding")).toContainText("Cash $250.00", {timeout: 15_000});
+  await frame.locator('[data-token="3"]').click();
   await frame.locator('[data-action="close"]').click();
   await frame.locator("#t-confirm").click();
   await expect(frame.locator("#t-table")).toContainText("No positions", {timeout: 15_000});

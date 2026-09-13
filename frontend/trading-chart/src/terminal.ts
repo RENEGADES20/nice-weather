@@ -10,7 +10,7 @@ type Row = Record<string, any>;
 export type TerminalPayload = { mode: string; account: string; accountMode: string; connected: boolean; snapshot: Row; markets: Market[]; selectedToken: string; depth: Record<string, Book>; performance: {points: {time: number; value: number | null}[]; days: Row[]}; history: Row[] | null; historyReady?: boolean; historyError?: string | null; notices: Row[]; updated: number | null };
 let data: TerminalPayload;
 let mounted = false;
-let pendingToken = "", pendingOrder = "", binsSignature = "", datesSignature = "";
+let desiredToken = "", pendingOrder = "", binsSignature = "", datesSignature = "";
 const histories = new Map<string, Row[]>();
 let pnlSignature = "", priceSignature: Row[] | null = null, lastPriceTime = 0, renderedRange = "";
 
@@ -27,7 +27,7 @@ const input = (id: string) => el(id) as HTMLInputElement;
 const escape = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));
 const money = (v: unknown) => v === null || v === undefined ? "—" : `${Number(v) < 0 ? "−" : ""}$${Math.abs(Number(v)).toFixed(2)}`;
 const cents = (v: unknown) => v === null || v === undefined ? "—" : `${(Number(v) * 100).toFixed(1)}¢`;
-const send = (kind: string, payload: Row = {}) => {const id=crypto.randomUUID();Streamlit.setComponentValue({id,kind,...payload});return id;};
+const send = (kind: string, payload: Row = {}) => {const id=crypto.randomUUID();Streamlit.setComponentValue({id,kind,selectedToken:data?.selectedToken,...payload});return id;};
 const market = () => data.markets.find(m => m.token === data.selectedToken);
 const book = (): Book => data.depth[data.selectedToken] || {valid:false,bids:[],asks:[]};
 const height = () => requestAnimationFrame(() => Streamlit.setFrameHeight(Math.ceil(el("terminal").getBoundingClientRect().height)+4));
@@ -129,7 +129,7 @@ function shell() {
   mounted=true;
 }
 
-function selectToken(token?:string){if(token&&token!==data.selectedToken){saveDraft();localStorage.setItem(`terminal-selection-${data.account}`,token);preview=null;(el("t-dialog") as HTMLDialogElement).close();pendingToken=token;renderTerminal({...data,selectedToken:token,history:null,historyReady:histories.has(token)},true);send("select",{token});}}
+function selectToken(token?:string){if(token&&token!==data.selectedToken){saveDraft();localStorage.setItem(`terminal-selection-${data.account}`,token);preview=null;(el("t-dialog") as HTMLDialogElement).close();desiredToken=token;renderTerminal({...data,selectedToken:token,history:null,historyReady:histories.has(token)},true);send("select",{token});}}
 function buyingCapacity(){
   const m=market();if(!m)return 0;
   let bin=0,day=0;
@@ -155,6 +155,9 @@ function draft():Row{
 }
 function estimate(){
   saveDraft();
+  const locked=!!pendingOrder||!data.connected||data.accountMode!=="Paper";
+  for(const id of ["t-confirm","t-balance","t-reset","t-start","t-stop"])(el(id) as HTMLButtonElement).disabled=locked;
+  document.querySelectorAll<HTMLButtonElement>("[data-action]").forEach(button=>button.disabled=locked);
   const side=input("t-side-value").value, marketOrder=input("t-type").value==="Market";
   el("t-limit-label").hidden=marketOrder;el("t-slip-label").hidden=!marketOrder;
   el("t-size-label").textContent=input("t-unit").value==="Amount"&&side==="BUY"?"Amount (pUSD)":"Shares";
@@ -177,7 +180,7 @@ function estimate(){
   }catch(e){el("t-estimate").textContent=String(e).replace("Error: ","");(el("t-review") as HTMLButtonElement).disabled=true;}
 }
 function review(kind:string,payload:Row){
-  if(data.accountMode!=="Paper"||!data.connected)return;
+  if(data.accountMode!=="Paper"||!data.connected||pendingOrder)return;
   preview={kind,payload};
   const m=data.markets.find(m=>m.token===payload.token)||market();
   el("t-review-summary").innerHTML=`<p>Paper · ${escape(data.account)}</p><h4>${escape(m?.date)} · ${escape(m?.bin)} · ${escape(m?.outcome)}</h4><p>${escape(kind)} ${escape(payload.side||"")} ${payload.quantity!==undefined?`${escape(payload.quantity)} shares`:payload.amount!==undefined?money(payload.amount):""}${payload.price!==undefined?` · ${cents(payload.price)}`:""}</p><p>${escape(payload.tif||"")}</p>${kind==="order"?el("t-estimate").innerHTML:""}<p>Worker rechecks current liquidity, fees and account limits. Partial fills are possible.</p>`;
@@ -229,7 +232,7 @@ function renderTable(){
   el("t-table").onclick=e=>{const b=(e.target as HTMLElement).closest<HTMLElement>("[data-row]");if(!b)return;const r=rows[Number(b.dataset.row)];const action=b.dataset.action!;
     if(action==="cancel")review("cancel",{order_id:r.order_id});
     else if(action==="replace"){if(data.accountMode!=="Paper"||!data.connected)return;preview={kind:"replace",payload:{order_id:r.order_id,token:r.token,side:r.side,tif:"GTC"}};input("t-edit-price").value=String(r.price*100);input("t-edit-price").step=String((data.markets.find(m=>m.token===r.token)?.tick_size||.01)*100);input("t-edit-size").value=String(r.quantity);openDialog("t-edit");}
-    else {input("t-side-value").value="SELL";input("t-unit").value="Shares";input("t-size").value=String(r.quantity);input("t-type").value="Market";if(action==="close")pendingClose=r;selectToken(r.token);finishClose();el("t-review").scrollIntoView({behavior:"smooth",block:"center"});estimate();}
+    else {selectToken(r.token);input("t-side-value").value="SELL";input("t-unit").value="Shares";input("t-size").value=String(r.quantity);input("t-type").value="Market";initialPrice=false;saveDraft();if(action==="close")pendingClose=r;finishClose();if(action!=="close")el("t-review").scrollIntoView({behavior:"smooth",block:"center"});estimate();}
   };
 }
 function renderCalendar(){
@@ -244,8 +247,8 @@ function renderCalendar(){
 function finishClose(){if(pendingClose?.token===data.selectedToken&&book().valid){const r=pendingClose;pendingClose=null;try{const p=draft();review("close",{token:r.token,quantity:r.quantity,price:p.price});}catch{estimate();}}}
 export function renderTerminal(next:TerminalPayload,optimistic=false){
   if(!optimistic&&next.history!==null){histories.set(next.selectedToken,next.history);while(histories.size>32)histories.delete(histories.keys().next().value!);}
-  if(!optimistic&&(pendingToken===next.selectedToken||!next.markets.some(m=>m.token===pendingToken)))pendingToken="";
-  if(pendingToken)next={...next,selectedToken:pendingToken,historyReady:histories.has(pendingToken)};
+  if(!optimistic&&!next.markets.some(m=>m.token===desiredToken))desiredToken="";
+  if(desiredToken)next={...next,selectedToken:desiredToken,historyReady:histories.has(desiredToken)};
   next={...next,history:histories.get(next.selectedToken)||[]};
   if(pendingOrder&&next.notices.some(n=>n.request_id===pendingOrder&&n.status!=="queued"))pendingOrder="";
   const first=!mounted, changed=data?.selectedToken!==next.selectedToken;
@@ -271,7 +274,6 @@ export function renderTerminal(next:TerminalPayload,optimistic=false){
   if(pendingOrder)el("t-estimate").textContent="Submitted · waiting for Worker confirmation";
   el("t-notices").innerHTML=data.notices.map(n=>`<p class="${n.status==="rejected"?"t-error":""}">${escape(n.kind)} · ${escape(n.status)} ${escape(n.error||"")}</p>`).join("");
   el("t-strategy-status").textContent=`Strategy ${s.strategy_enabled?"ON":"OFF"}`;
-  for(const id of ["t-start","t-stop","t-balance","t-reset"])(el(id) as HTMLButtonElement).disabled=!data.connected||data.accountMode!=="Paper";
   finishClose();
   height();
   if(first){const saved=localStorage.getItem(`terminal-selection-${data.account}`);if(saved!==data.selectedToken&&data.markets.some(m=>m.token===saved))selectToken(saved!);else send("ready");}
