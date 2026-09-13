@@ -2,13 +2,13 @@
 
 最后更新：2026-09-13 UTC
 
-## Trading 统一工作台：本地验收，待发布
+## Trading 统一工作台：已发布，生产补修验收中
 
 导航统一为 Overview → Repricing → Trading → Backtest → System & Audit。Paper/Live 共用日期、温度区间、YES/NO、多档盘口、价格图与交易票据；Live 未接入账户且禁用操作。PnL 曲线和月度日历独立折叠，曲线缺口分段，纽约时区归日。
 
 实时 Paper execution_version=3 使用 Worker 内存 WebSocket 多档簿和 Nautilus L2_MBP；回环只读接口提供展示，新增盘口不落库、文件或日志。结果库保存原生交易/账户事实及稀疏权益，常规每分钟一条。原生旧会话按旧规则核验恢复后转换检查点；独立旧 Paper 历史与 Backtest 余额不迁入。重启取消无法恢复排队位置的旧挂单，现金、持仓、成交与费用保留。
 
-本地 Python 回归 87 项、原生交易 51 项通过；CI 的 16 项桌面/手机浏览器测试和 14 项 TypeScript 测试通过。恢复另核验原生 free balance 在撤销旧挂单后释放，现金总额和历史成交不变。发布和 15 分钟生产观察结果待填写，尚未宣称上线。新规则详见 `docs/TRADING_WORKBENCH.md`。
+本地 Python 回归 87 项、原生交易 51 项通过；CI 的 16 项桌面/手机浏览器测试和 14 项 TypeScript 测试通过。PR #37 经六项 CI 通过后合并，运行提交 f083227 于 05:30:53 UTC 部署完成。旧账目与新版检查点重启均保留现金 99.95752、费用 0.00248、两笔成交、零持仓。生产发现大合约库扫描阻塞心跳及默认日期随元数据排序变化，补修改用当前源记录指针与增量游标，并固定所选合约；完整 15 分钟验收待补修发布后重新开始。新规则详见 `docs/TRADING_WORKBENCH.md`，证据见 [部署验收](acceptance/trading-terminal-2026-09-13.md)。
 
 ## 2026-09-13：Nautilus VM 部署验收
 

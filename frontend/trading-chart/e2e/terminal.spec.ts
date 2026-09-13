@@ -21,6 +21,10 @@ test("terminal retains input and folds independently; depth click cannot submit"
   await page.locator("#t-asks button").last().click();
   await expect(page.locator("#t-limit")).toHaveValue("41");
   await expect(page.locator("#t-dialog")).not.toBeVisible();
+  await page.reload();
+  await page.evaluate(p=>window.postMessage({type:"streamlit:render",args:{payload:p},disabled:false},"*"),payload);
+  await expect(page.locator("#t-size")).toHaveValue("2.5");
+  await expect(page.locator("#t-limit")).toHaveValue("41");
   await page.locator("#t-pnl summary").click();
   await expect(page.locator("#t-pnl")).not.toHaveAttribute("open");
   await expect(page.locator("#t-calendar")).toHaveAttribute("open","");

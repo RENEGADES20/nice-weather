@@ -123,6 +123,7 @@ function draft():Row{
   return p;
 }
 function estimate(){
+  saveDraft();
   const side=input("t-side-value").value, marketOrder=input("t-type").value==="Market";
   el("t-limit-label").hidden=marketOrder;el("t-slip-label").hidden=!marketOrder;
   el("t-size-label").textContent=input("t-unit").value==="Amount"&&side==="BUY"?"Amount (pUSD)":"Shares";

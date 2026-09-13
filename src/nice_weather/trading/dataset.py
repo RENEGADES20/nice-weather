@@ -26,9 +26,6 @@ def contracts(
     latest_only=False,
     include_legacy=True,
 ) -> list[dict]:
-    from nice_weather.config import load_city_config
-    from nice_weather.contract import parse_gamma_contract
-
     # contract_bins is an upserted display table. Rebuild versions from immutable captures.
     captures = con.execute(
         """
@@ -53,6 +50,49 @@ def contracts(
         for capture in captures:
             latest[capture["event_id"] or capture["source_id"]] = capture
         captures = list(latest.values())
+    result = _parse_captures(con, captures)
+    if latest_only:
+        latest_bins = {}
+        for definition in sorted(
+            result, key=lambda r: (timestamp(r["received_at"]), r["source_id"])
+        ):
+            latest_bins[(definition["event_id"], definition["yes_token_id"])] = definition
+        return list(latest_bins.values())
+    return result
+
+
+def live_contracts(con, cursor=0):
+    """Current normalized pointers at startup, then only newly appended captures."""
+    from datetime import UTC
+
+    cutoff = datetime.now(UTC).isoformat()
+    upper = con.execute("SELECT COALESCE(MAX(rowid),0) FROM market_captures").fetchone()[0]
+    if cursor:
+        captures = con.execute(
+            "SELECT capture_id source_id,received_at,content_hash,event_id,"
+            "'market_captures' origin FROM market_captures WHERE rowid>? AND rowid<=? "
+            "AND source='polymarket_gamma' AND kind='event' "
+            "AND julianday(received_at)<=julianday(?) ORDER BY rowid",
+            (cursor, upper, cutoff),
+        ).fetchall()
+    else:
+        # The normalized table points to the immutable source without scanning its large payloads.
+        captures = con.execute(
+            "SELECT m.capture_id source_id,m.received_at,m.content_hash,m.event_id,"
+            "'market_captures' origin FROM market_captures m JOIN "
+            "(SELECT source_snapshot_id,MAX(julianday(received_at)) FROM contract_versions "
+            "WHERE julianday(received_at)<=julianday(?) GROUP BY event_id) v "
+            "ON m.capture_id=v.source_snapshot_id WHERE m.rowid<=? "
+            "AND julianday(m.received_at)<=julianday(?)",
+            (cutoff, upper, cutoff),
+        ).fetchall()
+    return upper, _parse_captures(con, captures)
+
+
+def _parse_captures(con, captures):
+    from nice_weather.config import load_city_config
+    from nice_weather.contract import parse_gamma_contract
+
     result = []
     for capture in captures:
         table = capture["origin"]
@@ -92,13 +132,6 @@ def contracts(
                     "fee_known": known,
                 }
             )
-    if latest_only:
-        latest_bins = {}
-        for definition in sorted(
-            result, key=lambda r: (timestamp(r["received_at"]), r["source_id"])
-        ):
-            latest_bins[(definition["event_id"], definition["yes_token_id"])] = definition
-        return list(latest_bins.values())
     return result
 
 

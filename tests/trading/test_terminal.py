@@ -45,6 +45,24 @@ def book():
     )
 
 
+def test_restarting_flat_account_does_not_append_duplicate_valuation(tmp_path):
+    results = Results(tmp_path / "results.sqlite3")
+    results.create("run", "sandbox-test", "sandbox", run_config("sandbox-test", "sandbox"))
+    runner = PaperRunner(results, results.run("run"))
+    runner.apply("clock", event("clock", 1, {}))
+    runner.session.dispose()
+    with connect(results.path, readonly=True) as con:
+        baseline = list(con.execute("SELECT * FROM paper_equity"))
+    assert len(baseline) == 1
+    for _ in range(2):
+        runner = PaperRunner(results, results.run("run"))
+        runner.session.dispose()
+    with connect(results.path, readonly=True) as con:
+        assert [tuple(r) for r in con.execute("SELECT * FROM paper_equity")] == [
+            tuple(r) for r in baseline
+        ]
+
+
 def test_cross_depth_restore_and_no_book_storage(tmp_path):
     results = Results(tmp_path / "results.sqlite3")
     results.create(
