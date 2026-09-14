@@ -25,6 +25,44 @@ async function openRepricing(page: Page): Promise<FrameLocator> {
   throw lastError;
 }
 
+test("difference dropdown shows an update-aligned sampled price response", async ({page}) => {
+  await page.addInitScript(() => window.addEventListener("message", (event) => {
+    if (event.data?.type === "streamlit:render" && event.data.args?.payload?.gzip) {
+      Object.assign(window, {testWire: event.data.args.payload});
+    }
+  }));
+  const frame = await openRepricing(page);
+  await frame.locator("#app").evaluate(async (root) => {
+    const wire = (window as unknown as {testWire: {gzip: string}}).testWire;
+    const bytes = Uint8Array.from(atob(wire.gzip), (char) => char.charCodeAt(0));
+    const payload = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).json();
+    payload.signature = "response-check";
+    payload.sequence = Number((root as HTMLElement).dataset.sequence) + 1000;
+    payload.asOf = payload.windowStart + 600;
+    for (const spec of payload.differenceInputs) {
+      spec.points = Array.from({length: 10}, (_, index) => ({
+        time: payload.windowStart + index * 60,
+        value: spec.id === "price" ? (index < 4 ? 20 : 22) : (index < 2 ? 70 : 72),
+        priceSource: spec.id === "price" ? "CLOB mid" : undefined,
+        binId: payload.selectedBinId,
+        captureId: index < 2 ? "a" : "b",
+      }));
+    }
+    window.postMessage({type: "streamlit:render", args: {payload}, dfs: [], disabled: false}, "*");
+  });
+  await expect(frame.locator("#app")).toHaveAttribute("data-signature", "response-check");
+  await frame.getByRole("combobox", {name: "Difference view"}).selectOption("price-minus-metar");
+  await expect(frame.locator("#difference-detail")).toContainText("≈2 min");
+  await expect(frame.getByRole("combobox", {name: "Weather update"})).toBeEnabled();
+  await frame.getByRole("button", {name: "Zoom to update"}).click();
+  await expect(frame.locator("#follow-button")).toHaveAttribute("aria-pressed", "false");
+  await frame.getByRole("combobox", {name: "Difference view"}).selectOption("metar-minus-forecast");
+  await expect(frame.locator("#response-controls")).toBeHidden();
+  await frame.getByRole("combobox", {name: "Difference view"}).selectOption("price-minus-forecast");
+  await expect(frame.locator("#difference-detail")).toContainText("≈2 min");
+  await page.screenshot({path: `test-results/response-${test.info().project.name}.png`, fullPage: true});
+});
+
 test("crosshair canvas labels use the same New York time as the legends", async ({page}) => {
   const frame = await openRepricing(page);
   await frame.locator("#app").evaluate(() => {
