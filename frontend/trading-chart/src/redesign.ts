@@ -987,16 +987,13 @@ function applyPayload(next: Payload): void {
 
   const signatureChanged = signature !== next.signature;
   const windowChanged = !payload || next.windowStart !== payload.windowStart || next.windowEnd !== payload.windowEnd;
-  const previousMode = payload?.comparisonMode;
   const previousRange = mainChart?.timeScale().getVisibleRange();
   payload = { ...payload, ...next, mode: next.mode, series: next.series };
   if (next.mode === "full") {
     rangeLeader = "main";
     resyncPending = false;
     const validDifferenceIds = new Set(next.differenceSpecs.map((spec) => spec.id));
-    selectedDifferenceIds = differenceSelectionInitialized && previousMode === next.comparisonMode
-      ? new Set([...selectedDifferenceIds].filter((id) => validDifferenceIds.has(id)))
-      : new Set((next.selectedDifferenceIds || []).filter((id) => validDifferenceIds.has(id)));
+    selectedDifferenceIds = new Set([...selectedDifferenceIds].filter((id) => validDifferenceIds.has(id)));
     selectedDifferenceIds = new Set([differenceSelectionInitialized
       ? [...selectedDifferenceIds][0] || "price-minus-metar" : "price-minus-metar"]);
     if (signatureChanged) responseEventTime = null;
