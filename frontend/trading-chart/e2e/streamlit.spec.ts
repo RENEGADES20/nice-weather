@@ -25,7 +25,7 @@ async function openRepricing(page: Page): Promise<FrameLocator> {
   throw lastError;
 }
 
-test("difference dropdown shows an update-aligned sampled price response", async ({page}) => {
+test("difference dropdown compares minute changes without event selection", async ({page}) => {
   await page.addInitScript(() => window.addEventListener("message", (event) => {
     if (event.data?.type === "streamlit:render" && event.data.args?.payload?.gzip) {
       Object.assign(window, {testWire: event.data.args.payload});
@@ -46,21 +46,39 @@ test("difference dropdown shows an update-aligned sampled price response", async
         priceSource: spec.id === "price" ? "CLOB mid" : undefined,
         binId: payload.selectedBinId,
         captureId: index < 2 ? "a" : "b",
+        revisionDelta: index === 2 ? 2 : 0,
       }));
     }
+    Object.assign(window, {testResponsePayload: payload});
     window.postMessage({type: "streamlit:render", args: {payload}, dfs: [], disabled: false}, "*");
   });
   await expect(frame.locator("#app")).toHaveAttribute("data-signature", "response-check");
   await frame.getByRole("combobox", {name: "Difference view"}).selectOption("price-minus-metar");
-  await expect(frame.locator("#difference-detail")).toContainText("≈2 min");
-  await expect(frame.getByRole("combobox", {name: "Weather update"})).toBeEnabled();
-  await frame.getByRole("button", {name: "Zoom to update"}).click();
-  await expect(frame.locator("#follow-button")).toHaveAttribute("aria-pressed", "false");
-  await frame.getByRole("combobox", {name: "Difference view"}).selectOption("metar-minus-forecast");
-  await expect(frame.locator("#response-controls")).toBeHidden();
-  await frame.getByRole("combobox", {name: "Difference view"}).selectOption("price-minus-forecast");
-  await expect(frame.locator("#difference-detail")).toContainText("≈2 min");
-  await page.screenshot({path: `test-results/response-${test.info().project.name}.png`, fullPage: true});
+  await expect(frame.getByRole("combobox", {name:"Weather update"})).toHaveCount(0);
+  await expect(frame.getByRole("button", {name:"Zoom to update"})).toHaveCount(0);
+  await expect(frame.locator("#app")).toHaveAttribute("data-difference-series-count", "2");
+  const sequence = await frame.locator("#app").getAttribute("data-sequence");
+  const before = await frame.locator("#app").getAttribute("data-change-calculations");
+  for (const choice of ['metar-minus-forecast','price-minus-forecast','price-minus-weather-gov','price-minus-metar']) {
+    await frame.getByRole('combobox',{name:'Difference view'}).selectOption(choice);
+    expect(Number(await frame.locator('#app').getAttribute('data-difference-switch-ms'))).toBeLessThan(100);
+  }
+  await expect(frame.locator('#app')).toHaveAttribute('data-sequence',sequence!);
+  await expect(frame.locator('#app')).toHaveAttribute('data-change-calculations',before!);
+  const basis = await frame.locator('#app').getAttribute('data-time-basis-writes');
+  await frame.locator('#app').evaluate(root => {
+    const previous = (window as unknown as {testResponsePayload:any}).testResponsePayload;
+    const payload = {...previous, mode:'delta', baseSequence:Number((root as HTMLElement).dataset.sequence),
+      sequence:Number((root as HTMLElement).dataset.sequence)+1,
+      series:previous.series.map((s:any)=>({...s,points:[]})),
+      differenceInputs:previous.differenceInputs.map((s:any)=>({...s,points:[]}))};
+    window.postMessage({type:'streamlit:render',args:{payload},dfs:[],disabled:false},'*');
+  });
+  await expect(frame.locator('#app')).toHaveAttribute('data-sequence',String(Number(sequence)+1));
+  await expect(frame.locator('#app')).toHaveAttribute('data-change-calculations',before!);
+  await expect(frame.locator('#app')).toHaveAttribute('data-time-basis-writes',basis!);
+  await page.screenshot({path: `test-results/changes-${test.info().project.name}.png`, fullPage: true});
+  await frame.locator('#difference-chart').screenshot({path:`test-results/difference-${test.info().project.name}.png`});
 });
 
 test("crosshair canvas labels use the same New York time as the legends", async ({page}) => {
@@ -381,14 +399,14 @@ test("keeps one bin state and fits the requested viewport", async ({ page }, tes
 });
 
 
-test("future market uses a current price snapshot without response delay", async ({ page }, testInfo) => {
+test("future market uses a current price snapshot without minute changes", async ({ page }, testInfo) => {
   const frame = await openRepricing(page);
   await page.getByRole("combobox").first().click();
   await page.getByRole("option").filter({ hasText: "Future fixture" }).click();
   await expect(frame.locator("#app")).toHaveAttribute("data-comparison-mode", "future-snapshot");
   await expect(frame.locator("#mode-notice")).toContainText("Current snapshot comparison");
   await expect(frame.locator("#difference-select")).toHaveCount(1);
-  await expect(frame.locator("#difference-detail")).toContainText("future snapshots cannot measure delay");
+  await expect(frame.locator(".difference-title")).toContainText("minute changes unavailable");
   await expect(frame.locator("#difference-empty")).toBeVisible();
   await expect(frame.locator("#price-readout")).toContainText("20.0%");
   await expect(frame.locator("#main-legend")).not.toContainText("METAR");

@@ -166,16 +166,17 @@ def test_incremental_inputs_equal_full_reconstruction(monkeypatch):
     rows = [tick(start + timedelta(seconds=10))]
     history = {"observations": [], "settlement_rows": [], "forecasts": []}
     weather_reads = []
+    versions = [0, 0, 0, 0]
 
     class Query:
         def __init__(self, path):
-            pass
+            self.sql_ms = 0.0
 
         def repricing_weather_version(self):
-            return (0, 0, 0)
+            return tuple(versions)
 
         def get_repricing_weather_history(self, *args):
-            weather_reads.append(1)
+            weather_reads.append(args[-1])
             return history
 
         def get_weather_timeline(self, *args):
@@ -237,14 +238,46 @@ def test_incremental_inputs_equal_full_reconstruction(monkeypatch):
     clock[0] += timedelta(minutes=11)
     _, expired, _, _, _ = read()
     assert expired[-1]["points"][-1]["value"] is None
+    cached_forecast = dashboard.st.session_state["_repricing_data_cache"]["weather"]["forecast"]
+    cached_metar = dashboard.st.session_state["_repricing_data_cache"]["weather"]["metar"]["points"]
+    history["observations"].append(
+        {
+            "observation_id": "late-metar",
+            "source": "aviationweather",
+            "received_at": (clock[0] - timedelta(minutes=2)).isoformat(),
+            "observed_at": (clock[0] - timedelta(minutes=3)).isoformat(),
+            "temperature_f": 72,
+            "revision": 0,
+        }
+    )
+    versions[0] += 1
+    _, revised, _, _, _ = read()
+    assert revised == dashboard._repricing_difference_inputs(
+        history, rows, start, end, clock[0], "bin", 5400, 21600
+    )
+    assert revised[2]["points"][0] is cached_metar[0]
+    assert weather_reads[-1] == ("metar",)
+    assert (
+        dashboard.st.session_state["_repricing_data_cache"]["weather"]["forecast"]
+        is cached_forecast
+    )
 
 
 def test_receipt_cursor_includes_recovery_of_unchanged_old_book(tmp_path, seed_yes_token):
     database = tmp_path / "seed.sqlite3"
     seed_yes_token(database)
+    with WeatherStore(database, read_only=True) as store:
+        contract = dict(
+            store.connection.execute(
+                "SELECT c.event_id,b.bin_id FROM contract_bins b "
+                "JOIN contract_versions c USING(contract_version_id) WHERE b.yes_token_id='token'"
+            ).fetchone()
+        )
     collector = MarketStreamCollector(load_city_config(), str(database))
     now = datetime(2026, 9, 5, 4, tzinfo=UTC)
-    metadata = TokenMetadata("event", "condition", "market", "bin", "token", "80 F")
+    metadata = TokenMetadata(
+        contract["event_id"], "condition", "market", contract["bin_id"], "token", "80 F"
+    )
     for seconds in [0, 300]:
         assert collector._save(
             metadata,
@@ -258,11 +291,15 @@ def test_receipt_cursor_includes_recovery_of_unchanged_old_book(tmp_path, seed_y
         )
     query = DashboardQuery(database)
     first = query.get_repricing_ticks(
-        "event", "bin", now - timedelta(minutes=10), now + timedelta(days=1), now
+        contract["event_id"],
+        contract["bin_id"],
+        now - timedelta(minutes=10),
+        now + timedelta(days=1),
+        now,
     )
     later = query.get_repricing_ticks(
-        "event",
-        "bin",
+        contract["event_id"],
+        contract["bin_id"],
         now - timedelta(minutes=10),
         now + timedelta(days=1),
         now + timedelta(minutes=5),

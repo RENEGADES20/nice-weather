@@ -9,9 +9,10 @@ const payload = {mode:"terminal",account:"sandbox-fixture",accountMode:"Paper",c
 
 test("terminal retains input and folds independently; depth click cannot submit",async({page},testInfo)=>{
   await page.goto("/");
-  await page.getByRole("tab",{name:"Trading",exact:true}).click();
+  // This fixture has no trading worker; use the shared component asset for synthetic payloads.
+  await page.getByRole("tab",{name:"Repricing",exact:true}).click();
   const iframe=page.locator("iframe:visible").first();
-  await expect(iframe).toBeVisible();
+  await expect(iframe).toBeVisible({timeout:20_000});
   const src=await iframe.getAttribute("src");
   await page.goto(new URL(src!,page.url()).href);
   await page.evaluate(p=>window.postMessage({type:"streamlit:render",args:{payload:p},disabled:false},"*"),payload);

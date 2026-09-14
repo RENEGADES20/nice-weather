@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from nice_weather.adapters.fixture import load_fixture
@@ -46,13 +47,18 @@ def test_dashboard_renders_fixture(fixture_manifest, tmp_path, monkeypatch) -> N
         "Backtest",
         "System & Audit",
     ]
+    assert any("dashboard-status" in item.value for item in app.markdown)
+    assert "KLGA Tmax and market repricing" not in [item.value for item in app.subheader]
+    app.session_state["dashboard_tab"] = "Repricing"
+    app.run()
+    assert not app.exception
+    assert "KLGA Tmax and market repricing" in [item.value for item in app.subheader]
+    assert "Executable quote" not in [item.value for item in app.subheader]
+    app.session_state["dashboard_tab"] = "System & Audit"
+    app.run()
+    assert not app.exception
     assert any("Build" in caption.value for caption in app.caption)
     assert any(metric.label == "Quote age" for metric in app.metric)
-    assert any("dashboard-status" in item.value for item in app.markdown)
-    subheaders = [item.value for item in app.subheader]
-    assert "KLGA Tmax and market repricing" in subheaders
-    assert "Executable quote" in subheaders
-    assert "Market Detail" not in subheaders
 
 
 def test_dashboard_handles_empty_database(tmp_path, monkeypatch) -> None:
@@ -278,17 +284,59 @@ def test_repricing_inputs_use_as_of_forecast_observations_and_selected_bin() -> 
     assert by_id["price"]["binId"] == "selected"
 
 
-def test_difference_specs_are_the_six_fixed_left_minus_right_pairs() -> None:
+def test_forecast_change_compares_the_same_valid_time() -> None:
+    start = datetime(2026, 9, 4, 12, tzinfo=UTC)
+    rows = [
+        {
+            "forecast_point_id": f"{capture}-{hour}",
+            "capture_id": capture,
+            "received_at": (start + timedelta(minutes=minute)).isoformat(),
+            "issued_at": (start - timedelta(minutes=5)).isoformat(),
+            "valid_at": (start + timedelta(hours=hour)).isoformat(),
+            "temperature_f": 70 + hour * 6 + offset,
+        }
+        for capture, minute, offset in [("old", -2, 0), ("new", 2, 2)]
+        for hour in [0, 1]
+    ]
+    inputs = _repricing_difference_inputs(
+        {"forecasts": rows},
+        [],
+        start,
+        start + timedelta(hours=1),
+        start + timedelta(minutes=4),
+        "bin",
+        5400,
+        21600,
+    )
+    points = inputs[0]["points"]
+    assert points[1]["revisionDelta"] == 0  # Forecast slope is not new information.
+    assert points[2]["revisionDelta"] == pytest.approx(2)
+    assert points[2]["revisionPreviousValue"] == pytest.approx(70.2)
+    assert points[2]["previousCaptureId"] == "old"
+    assert points[3]["revisionDelta"] == 0
+    incremental = _repricing_difference_inputs(
+        {"forecasts": rows},
+        [],
+        start + timedelta(minutes=2),
+        start + timedelta(hours=1),
+        start + timedelta(minutes=4),
+        "bin",
+        5400,
+        21600,
+    )
+    assert incremental[0]["points"] == points[2:]
+
+
+def test_difference_specs_keep_legacy_ids_with_explicit_units() -> None:
     assert [
-        (item["id"], item["leftId"], item["rightId"], item["unit"])
-        for item in _DIFFERENCE_SPECS
+        (item["id"], item["leftId"], item["rightId"], item["unit"]) for item in _DIFFERENCE_SPECS
     ] == [
         ("metar-minus-forecast", "metar", "forecast", "°F"),
         ("weather-gov-minus-forecast", "weather-gov", "forecast", "°F"),
         ("weather-gov-minus-metar", "weather-gov", "metar", "°F"),
-        ("price-minus-forecast", "price", "forecast", "display spread"),
-        ("price-minus-metar", "price", "metar", "display spread"),
-        ("price-minus-weather-gov", "price", "weather-gov", "display spread"),
+        ("price-minus-forecast", "price", "forecast", "pp"),
+        ("price-minus-metar", "price", "metar", "pp"),
+        ("price-minus-weather-gov", "price", "weather-gov", "pp"),
     ]
 
 
@@ -296,6 +344,9 @@ def test_repricing_feed_only_emits_new_or_revised_points() -> None:
     initial = [{"id": "price", "name": "Price", "points": [{"time": 60, "value": 0.4}]}]
     first, hashes = _series_delta(initial, {})
     assert first[0]["points"] == [{"time": 60, "value": 0.4}]
+    unchanged, same_hashes = _series_delta(initial, hashes, {"price": initial[0]["points"]})
+    assert unchanged[0]["points"] == []
+    assert same_hashes["price"] is hashes["price"]
     next_series = [
         {
             "id": "price",

@@ -18,6 +18,9 @@ export type RawPoint = {
   binId?: string;
   quality?: string;
   reason?: string;
+  revisionDelta?: number | null;
+  previousCaptureId?: string;
+  revisionPreviousValue?: number;
 };
 
 export type PointSeries = {
@@ -79,34 +82,27 @@ export type DifferencePoint = {
   right: RawPoint | null;
 };
 
-// Events use the existing received-as-of minute grid; sub-minute latency is unavailable.
-export function weatherUpdates(points: RawPoint[], forecast = false): RawPoint[] {
-  return points.filter((point, index) => {
-    const previous = points[index - 1];
-    if (!previous || previous.value == null || point.value == null
-      || point.time - previous.time !== 60) return false;
-    return forecast
-      ? Boolean(point.captureId && previous.captureId && point.captureId !== previous.captureId)
-      : point.value !== previous.value;
-  });
-}
-
-export function priceResponse(prices: RawPoint[], event: RawPoint, end: number) {
-  const baseline = prices.find((point) => point.time === event.time - 60);
-  const valid = (point?: RawPoint) => point?.value != null && point.priceSource === "CLOB mid";
-  const points: DifferencePoint[] = [];
-  let firstMove: number | null = null;
-  let interrupted = false;
-  if (!valid(baseline)) return { points, firstMove, interrupted: true };
-  let previousTime = event.time - 60;
-  for (const point of prices.filter((item) => item.time >= event.time && item.time <= end)) {
-    if (!valid(point) || point.time - previousTime !== 60) { interrupted = true; break; }
-    const value = point.value! - baseline!.value!;
-    points.push({ time: point.time, value, left: point, right: baseline! });
-    if (firstMove === null && Math.abs(value) >= 1 - 1e-9) firstMove = point.time;
-    previousTime = point.time;
+// Revisions affect t and t+1 only. Retain untouched audit points during a delta.
+export function minuteChanges(points: RawPoint[], source: string,
+  previous: DifferencePoint[] = [], changedTimes?: Set<number>): DifferencePoint[] {
+  const raw = new Map(points.map(point => [point.time, point]));
+  const result = new Map(previous.map(point => [point.time, point]));
+  const times = changedTimes ? new Set([...changedTimes].flatMap(t => [t, t + 60])) : new Set(raw.keys());
+  for (const time of times) {
+    const current = raw.get(time);
+    if (!current) { result.delete(time); continue; }
+    const before = raw.get(time - 60);
+    let value: number | null = null;
+    if (current.value != null && before?.value != null) {
+      if (source === 'forecast') value = current.revisionDelta ?? null;
+      else if (source !== 'price' || (current.priceSource === 'CLOB mid'
+        && before.priceSource === 'CLOB mid' && current.binId === before.binId))
+        value = current.value - before.value;
+    }
+    result.set(time, {time, value: value != null && Number.isFinite(value) ? value : null,
+      left: current, right: before || null});
   }
-  return { points, firstMove, interrupted };
+  return [...result.values()].sort((a,b) => a.time-b.time);
 }
 
 export function differencePoints(

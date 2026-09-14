@@ -98,28 +98,28 @@ _DIFFERENCE_SPECS = (
     },
     {
         "id": "price-minus-forecast",
-        "name": "Price × 100 − Forecast",
+        "name": "ΔPrice / ΔForecast revision",
         "leftId": "price",
         "rightId": "forecast",
-        "unit": "display spread",
+        "unit": "pp",
         "axis": "right",
         "color": "#1D4ED8",
     },
     {
         "id": "price-minus-metar",
-        "name": "Price × 100 − METAR",
+        "name": "ΔPrice / ΔMETAR",
         "leftId": "price",
         "rightId": "metar",
-        "unit": "display spread",
+        "unit": "pp",
         "axis": "right",
         "color": "#0F766E",
     },
     {
         "id": "price-minus-weather-gov",
-        "name": "Price × 100 − Weather.gov Hourly Temp",
+        "name": "ΔPrice / ΔHourly Temp",
         "leftId": "price",
         "rightId": "weather-gov",
-        "unit": "display spread",
+        "unit": "pp",
         "axis": "right",
         "color": "#9333EA",
     },
@@ -817,6 +817,7 @@ def _repricing_difference_inputs(
     selected_bin_id: str,
     observation_age_seconds: int,
     forecast_issue_seconds: int,
+    only_sources: tuple[str, ...] = ("forecast", "metar", "weather-gov", "price"),
 ) -> list[dict[str, Any]]:
     wrong_bins = {
         str(item.get("bin_id"))
@@ -850,7 +851,15 @@ def _repricing_difference_inputs(
     }
     source_state: dict[str, dict[str, Any] | None] = {key: None for key in sources}
     source_index = {key: 0 for key in sources}
-    snapshots = _forecast_snapshots(history.get("forecasts", []))
+    snapshots = (
+        _forecast_snapshots(history.get("forecasts", [])) if "forecast" in only_sources else []
+    )
+    prior_forecast = (
+        _forecast_point(snapshots, grid[0] - 60, forecast_issue_seconds)
+        if grid and snapshots
+        else {}
+    )
+    snapshots_by_id = {item["capture_id"]: item for item in snapshots}
     ordered_ticks = sorted(
         ticks,
         key=lambda item: (
@@ -873,6 +882,8 @@ def _repricing_difference_inputs(
     for target in grid:
         # Empty history is the price-only incremental path.
         for source_id, rows in sources.items() if history else []:
+            if source_id not in only_sources:
+                continue
             while source_index[source_id] < len(rows):
                 row = rows[source_index[source_id]]
                 if max(_epoch(row["received_at"]), _epoch(row["observed_at"])) > target:
@@ -906,8 +917,24 @@ def _repricing_difference_inputs(
                 )
             )
 
-        if history:
-            points["forecast"].append(_forecast_point(snapshots, target, forecast_issue_seconds))
+        if history and "forecast" in only_sources:
+            forecast = _forecast_point(snapshots, target, forecast_issue_seconds)
+            delta = None
+            if forecast.get("value") is not None and prior_forecast.get("value") is not None:
+                if forecast.get("captureId") == prior_forecast.get("captureId"):
+                    delta = 0.0
+                else:
+                    old = snapshots_by_id.get(prior_forecast.get("captureId"))
+                    same_time = (
+                        _forecast_point([old], target, forecast_issue_seconds) if old else {}
+                    )
+                    if same_time.get("value") is not None:
+                        delta = forecast["value"] - same_time["value"]
+                        forecast["revisionPreviousValue"] = same_time["value"]
+                        forecast["previousCaptureId"] = old["capture_id"]
+            forecast["revisionDelta"] = delta
+            points["forecast"].append(forecast)
+            prior_forecast = forecast
 
         while tick_index < len(ordered_ticks):
             tick = ordered_ticks[tick_index]
@@ -935,6 +962,8 @@ def _repricing_difference_inputs(
             ):
                 latest_gamma = tick
             tick_index += 1
+        if "price" not in only_sources:
+            continue
         selected = _price_state_selection(
             latest_clob,
             latest_trade,
@@ -969,7 +998,12 @@ def _repricing_difference_inputs(
             "points": points["weather-gov"],
         },
         {"id": "metar", "name": "METAR", "points": points["metar"]},
-        {"id": "price", "name": "Price × 100", "binId": selected_bin_id, "points": points["price"]},
+        {
+            "id": "price",
+            "name": "Price (percentage points)",
+            "binId": selected_bin_id,
+            "points": points["price"],
+        },
     ]
 
 
@@ -1100,7 +1134,7 @@ def _future_inputs(
         {"id": "forecast", "name": "Forecast", "points": forecast},
         {"id": "weather-gov", "name": "Weather.gov Hourly Temp", "points": []},
         {"id": "metar", "name": "METAR", "points": []},
-        {"id": "price", "name": "Price × 100", "binId": bin_id, "points": prices},
+        {"id": "price", "name": "Price (percentage points)", "binId": bin_id, "points": prices},
     ]
 
 
@@ -1132,59 +1166,113 @@ def _timeline_data(
         cache.update(key=key, bins={})
     version = query.repricing_weather_version()
     minute = int(cutoff.timestamp() // 60)
-    weather_changed = cache.get("version") != version
-    if weather_changed:
-        cache["history"] = query.get_repricing_weather_history(
-            object_day, 1, now, object_timezone, age
+    names = ("metar", "nws", "forecast", "weather-gov")
+    previous_version = cache.get("version", ())
+    changed = tuple(
+        name
+        for i, name in enumerate(names)
+        if i >= len(previous_version) or previous_version[i] != version[i]
+    )
+    weather_dirty = {}
+    if changed:
+        incoming_weather = query.get_repricing_weather_history(
+            object_day, 1, now, object_timezone, age, changed
         )
-        cache["timeline"] = query.get_weather_timeline(object_day, 1, now, object_timezone)
-        cache["events"] = [
-            {
-                "id": f"forecast:{row['capture_id']}",
-                "type": "forecast_revised",
-                "time": _epoch(row["received_at"]),
-                "title": f"Forecast revised to {row['forecast_tmax_f']:.0f}°F",
-            }
-            for row in query.get_forecast_revision_events(object_day, now, object_timezone)
-        ]
+        history = cache.setdefault(
+            "history", {"observations": [], "forecasts": [], "settlement_rows": []}
+        )
+        for name in changed:
+            field, identifier = (
+                ("forecasts", "forecast_point_id")
+                if name == "forecast"
+                else ("settlement_rows", "row_id")
+                if name == "weather-gov"
+                else ("observations", "observation_id")
+            )
+            prior_rows = {row.get(identifier): row for row in history[field]}
+            affected = [
+                _epoch(row["received_at"])
+                for row in incoming_weather[field]
+                if prior_rows.get(row.get(identifier)) != row
+                and (
+                    name not in {"metar", "nws"}
+                    or row["source"] == {"metar": "aviationweather", "nws": "nws"}[name]
+                )
+            ]
+            weather_dirty[name] = max(
+                start.timestamp(), math.floor(min(affected, default=start.timestamp()) / 60) * 60
+            )
+        changed_observations = {
+            source
+            for name, source in (("metar", "aviationweather"), ("nws", "nws"))
+            if name in changed
+        }
+        history["observations"] = [
+            row for row in history["observations"] if row["source"] not in changed_observations
+        ] + incoming_weather["observations"]
+        for name, field in (("forecast", "forecasts"), ("weather-gov", "settlement_rows")):
+            if name in changed:
+                history[field] = incoming_weather[field]
+        if "forecast" in changed:
+            cache["events"] = [
+                {
+                    "id": f"forecast:{row['capture_id']}",
+                    "type": "forecast_revised",
+                    "time": _epoch(row["received_at"]),
+                    "title": f"Forecast revised to {row['forecast_tmax_f']:.0f}°F",
+                }
+                for row in query.get_forecast_revision_events(object_day, now, object_timezone)
+            ]
         cache["version"] = version
-    if weather_changed or cache.get("minute") != minute:
+    weather = cache.setdefault("weather", {})
+    for name in names:
+        if name not in changed and cache.get("minute") == minute:
+            continue
         weather_start = (
             start
-            if weather_changed or "weather" not in cache
-            else datetime.fromtimestamp(cache["minute"] * 60, UTC)
+            if name not in weather
+            else datetime.fromtimestamp(
+                min(weather_dirty.get(name, minute * 60), cache["minute"] * 60), UTC
+            )
         )
-        updated = _repricing_difference_inputs(
-            cache["history"], [], weather_start, end, cutoff, selected_bin_id, age, issue_age
-        )
-        nws_history = {
-            "observations": [
-                {**row, "source": "aviationweather"}
-                for row in cache["history"]["observations"]
-                if row.get("source") == "nws"
-            ]
-        }
-        nws_points = _repricing_difference_inputs(
-            nws_history, [], weather_start, end, cutoff, selected_bin_id, age, issue_age
-        )[2]["points"]
-        cache["nws"] = _merge_input_points(
-            [] if weather_changed else cache.get("nws", []),
-            [{**point, "source": "NWS Station Observations"} for point in nws_points],
-        )
-        previous = {item["id"]: item for item in cache.get("weather", [])}
-        cache["weather"] = [
-            {
-                **item,
-                "points": _merge_input_points(
-                    previous.get(item["id"], {}).get("points", []), item["points"]
-                ),
+        history = cache["history"]
+        input_name = "metar" if name == "nws" else name
+        if name == "nws":
+            history = {
+                "observations": [
+                    {**row, "source": "aviationweather"}
+                    for row in history["observations"]
+                    if row.get("source") == "nws"
+                ]
             }
-            if not weather_changed
-            else item
-            for item in updated
-            if item["id"] != "price"
-        ]
-        cache["minute"] = minute
+        updated = next(
+            item
+            for item in _repricing_difference_inputs(
+                history,
+                [],
+                weather_start,
+                end,
+                cutoff,
+                selected_bin_id,
+                age,
+                issue_age,
+                (input_name,),
+            )
+            if item["id"] == input_name
+        )
+        if name == "nws":
+            updated = {
+                **updated,
+                "id": "nws-observations",
+                "points": [
+                    {**point, "source": "NWS Station Observations"} for point in updated["points"]
+                ],
+            }
+        updated["points"] = _merge_input_points(
+            weather.get(name, {}).get("points", []), updated["points"]
+        )
+        weather[name] = updated
+    cache["minute"] = minute
     market = cache["bins"].setdefault(selected_bin_id, {"ticks": [], "cursor": None})
     market_start = (now if future else start) - timedelta(seconds=600)
     incoming = query.get_repricing_ticks(
@@ -1226,8 +1314,11 @@ def _timeline_data(
                 ),
             )
         dirty = max(start.timestamp(), math.floor(dirty / 60) * 60)
-        tail = [row for row in ticks if _epoch(row["received_at"]) >= dirty - 600]
-        if incoming["ticks"] or market.get("minute") != minute or "price_input" not in market:
+        tail = ticks[bisect_left(ticks, dirty - 600, key=lambda row: _epoch(row["received_at"])) :]
+        price_changed = (
+            bool(incoming["ticks"]) or market.get("minute") != minute or "price_input" not in market
+        )
+        if price_changed:
             price_input = _repricing_difference_inputs(
                 {},
                 tail,
@@ -1237,28 +1328,41 @@ def _timeline_data(
                 selected_bin_id,
                 age,
                 issue_age,
+                ("price",),
             )[-1]
             price_input["points"] = _merge_input_points(
                 market.get("price_input", {}).get("points", []), price_input["points"]
             )
             market["price_input"] = price_input
             market["minute"] = minute
-        inputs = [*cache["weather"], market["price_input"]]
-        old_main = market.get("main_points", [])
-        main_tail = _price_points(
-            tail, selected_bin_id, datetime.fromtimestamp(dirty, UTC), end, cutoff
-        )
-        market["main_points"] = [point for point in old_main if point["time"] < dirty] + main_tail
+        inputs = [
+            *(weather[name] for name in ("forecast", "weather-gov", "metar")),
+            market["price_input"],
+        ]
+        if price_changed:
+            old_main = market.get("main_points", [])
+            main_tail = _price_points(
+                tail, selected_bin_id, datetime.fromtimestamp(dirty, UTC), end, cutoff
+            )
+            market["main_points"] = [
+                point for point in old_main if point["time"] < dirty
+            ] + main_tail
 
     series = _timeline_series(
-        cache["timeline"], [], visible_sources, age, cutoff, selected_bin_id, start
+        {"observations": [], "forecasts": [], "running_tmax": []},
+        [],
+        visible_sources,
+        age,
+        cutoff,
+        selected_bin_id,
+        start,
     )
     by_id = {item["id"]: item for item in inputs}
     for item in series:
         if item["id"] == "nws-observations":
-            item["points"] = cache["nws"]
+            item["points"] = weather["nws"]["points"]
         if item["id"] in {"forecast", "weather-gov", "metar"}:
-            item["points"] = list(by_id[item["id"]]["points"])
+            item["points"] = by_id[item["id"]]["points"]
             if item["id"] == "weather-gov":
                 item.update(
                     name="Weather.gov Hourly Temp",
@@ -1267,13 +1371,16 @@ def _timeline_data(
                     description="Official hourly temperature, as known at each minute.",
                 )
             if item["id"] == "forecast" and not future and now < end:
-                forward = _future_inputs(
-                    cache["history"], None, now, end, now, issue_age, selected_bin_id
-                )[0]["points"]
-                item["points"] = [
-                    *item["points"],
-                    *[point for point in forward if point["time"] > now.timestamp()],
-                ]
+                if "forecast" in changed or cache.get("forward_minute") != minute:
+                    cache["forward"] = _future_inputs(
+                        cache["history"], None, now, end, now, issue_age, selected_bin_id
+                    )[0]["points"]
+                    cache["forward_minute"] = minute
+                    cache["forecast_display"] = [
+                        *item["points"],
+                        *[p for p in cache["forward"] if p["time"] > now.timestamp()],
+                    ]
+                item["points"] = cache["forecast_display"]
         if item["id"] == "price":
             item["currentPrice"] = current_price
             item["points"] = (
@@ -1319,19 +1426,28 @@ def _timeline_data(
             + [latest_actual]
         ),
         "queryMs": round((perf_counter() - started) * 1000, 2),
+        "sqlMs": round(query.sql_ms, 2),
+        "prepareMs": round((perf_counter() - started) * 1000 - query.sql_ms, 2),
         "legacyWarning": market["legacy"],
     }
     return series, inputs, revisions, start, end
 
 
 def _series_delta(
-    series: list[dict[str, Any]], previous: dict[str, dict[str, Any]]
+    series: list[dict[str, Any]],
+    previous: dict[str, dict[str, Any]],
+    previous_points: dict[str, list[dict[str, Any]]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
     delta: list[dict[str, Any]] = []
     current: dict[str, dict[str, Any]] = {}
     for item in series:
         series_id = str(item["id"])
         prior = previous.get(series_id, {})
+        # Timeline caches replace point lists on change; unchanged lists need no day-wide diff.
+        if previous_points is not None and previous_points.get(series_id) is item["points"]:
+            delta.append({**item, "points": [], "removedTimes": []})
+            current[series_id] = prior
+            continue
         # Scalar point fields can be compared directly without serializing the entire day.
         hashes = {str(point["time"]): dict(point) for point in item["points"]}
         changed = [
@@ -1362,6 +1478,8 @@ def _render_repricing_feed(
     channel_id: str,
     signature: str,
 ) -> None:
+    if not st.session_state.get("_repricing_active", True):
+        return
     if st.session_state.get("_repricing_feed_signature") != signature:
         return
     if perf_counter() - st.session_state.get("_repricing_full_at", 0) < 1:
@@ -1382,10 +1500,17 @@ def _render_repricing_feed(
             if state_signature == signature
             else {}
         )
-        series_delta, series_hashes = _series_delta(series, previous.get("series", {}))
-        difference_delta, difference_hashes = _series_delta(
-            difference_inputs, previous.get("difference", {})
+        previous_points = st.session_state.get("_repricing_feed_points", {})
+        series_delta, series_hashes = _series_delta(
+            series, previous.get("series", {}), previous_points.get("series")
         )
+        difference_delta, difference_hashes = _series_delta(
+            difference_inputs, previous.get("difference", {}), previous_points.get("difference")
+        )
+        st.session_state["_repricing_feed_points"] = {
+            "series": {item["id"]: item["points"] for item in series},
+            "difference": {item["id"]: item["points"] for item in difference_inputs},
+        }
         st.session_state["_repricing_feed_signature"] = signature
         st.session_state["_repricing_feed_hashes"] = {
             "series": series_hashes,
@@ -1478,10 +1603,10 @@ def _render_trading_timeline(db: Path) -> None:
         st.info("No verified bins are available for this market.")
         return
     if st.session_state.get("selected_bin_id") not in bin_ids:
-        running = query.get_weather_timeline(object_day, 1, datetime.now(UTC), object_timezone)[
-            "running_tmax"
-        ]
-        latest_tmax = float(running[-1]["temperature_f"]) if running else None
+        running = query.get_repricing_weather_history(
+            object_day, 1, datetime.now(UTC), object_timezone, 0, ("weather-gov",)
+        )["settlement_rows"]
+        latest_tmax = max((float(row["temperature_f"]) for row in running), default=None)
         st.session_state["selected_bin_id"] = _default_timeline_bin(
             bins, latest_tmax, query.get_latest_event_probabilities(event_id)
         )
@@ -1504,7 +1629,7 @@ def _render_trading_timeline(db: Path) -> None:
         selected_sources = controls[2].multiselect(
             "Weather data sources",
             list(_SOURCE_SPECS),
-            default=list(_DEFAULT_SOURCES),
+            default=None if "visible_source_ids" in st.session_state else list(_DEFAULT_SOURCES),
             format_func=lambda value: str(_SOURCE_SPECS[value]["name"]),
             key="visible_source_ids",
         )
@@ -1570,6 +1695,10 @@ def _render_trading_timeline(db: Path) -> None:
     }
     _, series_hashes = _series_delta(series, {})
     _, difference_hashes = _series_delta(difference_inputs, {})
+    st.session_state["_repricing_feed_points"] = {
+        "series": {item["id"]: item["points"] for item in series},
+        "difference": {item["id"]: item["points"] for item in difference_inputs},
+    }
     st.session_state["_repricing_feed_signature"] = signature
     st.session_state["_repricing_feed_hashes"] = {
         "series": series_hashes,
@@ -1595,24 +1724,46 @@ def _render_trading_timeline(db: Path) -> None:
         signature,
     )
     st.caption(
-        "Difference offers weather spreads in °F and price responses in percentage points "
-        "relative to the CLOB mid immediately before a received weather update. "
-        "The first ±1 pp move is measured at minute resolution; timing association does not "
-        "establish causality or an executable delay. These views are excluded from trading "
-        "decisions and historical labels."
+        "Difference compares weather spreads or one-minute changes across the full market day. "
+        "Temperature changes use °F; CLOB mid changes use percentage points. Forecast revisions "
+        "compare the same valid time. Gaps remain blank; timing does not establish causality."
     )
 
 
 def _render(db: Path) -> None:
     tabs = st.tabs(
-        ["Overview", "Repricing", "Trading", "Backtest", "System & Audit"]
+        ["Overview", "Repricing", "Trading", "Backtest", "System & Audit"],
+        key="dashboard_tab",
+        on_change="rerun",
     )
     overview, repricing_tab, trading_tab, backtest_tab, system_tab = tabs
-    with system_tab:
-        execution_tab = st.expander("Legacy execution evidence", expanded=False)
-        paper_tab = st.expander("Legacy Paper history", expanded=False)
+    selection_keys = ("market_day", "selected_bin_id", "visible_source_ids")
+    saved = st.session_state.setdefault("_repricing_saved_selection", {})
+    if st.session_state.get("_repricing_active"):
+        saved.update(
+            {key: st.session_state[key] for key in selection_keys if key in st.session_state}
+        )
+    st.session_state["_repricing_active"] = repricing_tab.open
+    if repricing_tab.open:
+        for key, value in saved.items():
+            st.session_state.setdefault(key, value)
+        with repricing_tab:
+            _render_trading_timeline(db)
+        return
     from nice_weather.trading.ui import render
-    render(db, trading_tab, backtest_tab, system_tab)
+
+    render(
+        db,
+        trading_tab if trading_tab.open else None,
+        backtest_tab if backtest_tab.open else None,
+        system_tab if system_tab.open else None,
+    )
+    if trading_tab.open or backtest_tab.open:
+        return
+    if system_tab.open:
+        with system_tab:
+            execution_tab = st.expander("Legacy execution evidence", expanded=False)
+            paper_tab = st.expander("Legacy Paper history", expanded=False)
     query = DashboardQuery(db)
     try:
         summary = query.get_latest_decision_summary()
@@ -1624,8 +1775,9 @@ def _render(db: Path) -> None:
         return
     if summary is None:
         with overview:
-            st.info("No completed decision is available. "
-                    "Run the fixture or live-shadow command first.")
+            st.info(
+                "No completed decision is available. Run the fixture or live-shadow command first."
+            )
             st.caption(f"Read-only database: {db.resolve()}")
         return
     decision_id = str(summary["decision_id"])
@@ -1649,288 +1801,301 @@ def _render(db: Path) -> None:
         ("City / station", f"{summary['city_code']} / {summary['station_id']}"),
         ("Decision time", _format_timestamp(summary["decision_time"], display_zone)),
     )
-    with overview:
-        _status_grid(status_values)
-        if summary["reason_codes"]:
-            st.warning("Reason codes: " + ", ".join(summary["reason_codes"]))
+    if overview.open:
+        with overview:
+            _status_grid(status_values)
+            if summary["reason_codes"]:
+                st.warning("Reason codes: " + ", ".join(summary["reason_codes"]))
 
-    with overview:
-        st.button("Refresh", icon=":material/refresh:", key="refresh-overview")
-        st.caption(_browser_timezone_note(browser_timezone, now))
-        with st.expander("Contract and settlement rules", expanded=False):
-            st.markdown(f"[{summary['event_title']}]({summary['market_url']})")
-            st.dataframe(
-                pd.DataFrame([_localize_record(contract["contract"], display_zone)]),
-                width="stretch",
+    if overview.open:
+        with overview:
+            st.button("Refresh", icon=":material/refresh:", key="refresh-overview")
+            st.caption(_browser_timezone_note(browser_timezone, now))
+            with st.expander("Contract and settlement rules", expanded=False):
+                st.markdown(f"[{summary['event_title']}]({summary['market_url']})")
+                st.dataframe(
+                    pd.DataFrame([_localize_record(contract["contract"], display_zone)]),
+                    width="stretch",
+                )
+                st.dataframe(
+                    pd.DataFrame(_localize_records(contract["bins"], display_zone)), width="stretch"
+                )
+            weather = query.get_weather_timeline(
+                date.fromisoformat(str(summary["local_day"])), 1, now, str(summary["timezone"])
             )
-            st.dataframe(
-                pd.DataFrame(_localize_records(contract["bins"], display_zone)), width="stretch"
-            )
-        weather = query.get_weather_timeline(
-            date.fromisoformat(str(summary["local_day"])), 1, now, str(summary["timezone"])
-        )
-        metar_rows = [
-            item for item in weather["observations"] if item["source"] == "aviationweather"
-        ]
-        nws_rows = [item for item in weather["observations"] if item["source"] == "nws"]
-        source_rows = {
-            "forecast": weather["forecasts"],
-            "weather-gov": weather["running_tmax"],
-            "metar": metar_rows,
-            "nws-observations": nws_rows,
-        }
-        frequency = {
-            "forecast": "15 minutes",
-            "weather-gov": "hourly; 2 minutes near close",
-            "metar": "30 seconds active; 2 minutes otherwise",
-            "nws-observations": "5 minutes",
-        }
-        cards = []
-        for source_id, spec in _SOURCE_SPECS.items():
-            rows = source_rows[source_id]
-            latest = rows[-1] if rows else None
-            value = (
-                float(latest.get("temperature_f"))
-                if latest and latest.get("temperature_f") is not None
-                else None
-            )
-            object_time = latest.get("valid_at") or latest.get("observed_at") if latest else None
-            received_at = latest.get("received_at") if latest else None
-            received = _display_datetime(received_at, UTC)
-            freshness = _age((now - received).total_seconds()) if received else "Unavailable"
-            tooltip = (
-                f"Data type: {spec['data_type']}. Object time: "
-                f"{_format_timestamp(object_time, display_zone)}. "
-                f"Update frequency: {frequency[source_id]}. Purpose: {spec['purpose']}. "
-                "Latest value: "
-                f"{f'{value:.1f}°F' if value is not None else 'Unavailable'}. "
-                f"Freshness: {freshness}."
-            )
-            display_value = f"{value:.1f} °F" if value is not None else "Unavailable"
-            cards.append(
-                '<div class="weather-source">'
-                f'<div class="weather-source__label">{escape(str(spec["name"]))}'
-                '<i class="weather-source__info" tabindex="0" '
-                f'title="{escape(tooltip)}">i</i></div>'
-                f'<div class="weather-source__value">{display_value}</div>'
-                "</div>"
-            )
-        st.markdown(
-            '<div class="weather-source-grid">' + "".join(cards) + "</div>",
-            unsafe_allow_html=True,
-        )
-        settlement_source = str(contract["contract"].get("settlement_source") or "")
-        configured_source = load_city_config().collector.settlement_url
-        if settlement_source:
-            host = urlparse(settlement_source).hostname or settlement_source
+            metar_rows = [
+                item for item in weather["observations"] if item["source"] == "aviationweather"
+            ]
+            nws_rows = [item for item in weather["observations"] if item["source"] == "nws"]
+            source_rows = {
+                "forecast": weather["forecasts"],
+                "weather-gov": weather["running_tmax"],
+                "metar": metar_rows,
+                "nws-observations": nws_rows,
+            }
+            frequency = {
+                "forecast": "15 minutes",
+                "weather-gov": "hourly; 2 minutes near close",
+                "metar": "30 seconds active; 2 minutes otherwise",
+                "nws-observations": "5 minutes",
+            }
+            cards = []
+            for source_id, spec in _SOURCE_SPECS.items():
+                rows = source_rows[source_id]
+                latest = rows[-1] if rows else None
+                value = (
+                    float(latest.get("temperature_f"))
+                    if latest and latest.get("temperature_f") is not None
+                    else None
+                )
+                object_time = (
+                    latest.get("valid_at") or latest.get("observed_at") if latest else None
+                )
+                received_at = latest.get("received_at") if latest else None
+                received = _display_datetime(received_at, UTC)
+                freshness = _age((now - received).total_seconds()) if received else "Unavailable"
+                tooltip = (
+                    f"Data type: {spec['data_type']}. Object time: "
+                    f"{_format_timestamp(object_time, display_zone)}. "
+                    f"Update frequency: {frequency[source_id]}. Purpose: {spec['purpose']}. "
+                    "Latest value: "
+                    f"{f'{value:.1f}°F' if value is not None else 'Unavailable'}. "
+                    f"Freshness: {freshness}."
+                )
+                display_value = f"{value:.1f} °F" if value is not None else "Unavailable"
+                cards.append(
+                    '<div class="weather-source">'
+                    f'<div class="weather-source__label">{escape(str(spec["name"]))}'
+                    '<i class="weather-source__info" tabindex="0" '
+                    f'title="{escape(tooltip)}">i</i></div>'
+                    f'<div class="weather-source__value">{display_value}</div>'
+                    "</div>"
+                )
             st.markdown(
-                '<div class="resolution-source">Contract resolution source: '
-                f'<a href="{escape(settlement_source)}" target="_blank">{escape(host)}</a></div>',
+                '<div class="weather-source-grid">' + "".join(cards) + "</div>",
                 unsafe_allow_html=True,
             )
-        if _resolution_source_matches(settlement_source, configured_source):
-            st.caption(
-                "The contract resolution source matches the system settlement evidence source."
-            )
-        else:
-            st.warning(
-                "Contract resolution source does not match the system settlement evidence source: "
-                f"{settlement_source or 'Unavailable'} · {configured_source}"
-            )
-        st.subheader("Model probability and executable market prices")
-        probability_sum = float(summary["probability_summary"]["probability_sum"])
-        if abs(probability_sum - 1.0) > 1e-6:
-            st.error(f"Probability sum invalid: {probability_sum:.9f}; candidates are blocked.")
-        st.plotly_chart(probability_figure(outcomes), width="stretch")
-        overview_rows = [
-            {
-                "Bin": item["label"],
-                "Model probability": item["model_probability"],
-                "Bid": item["best_bid"],
-                "Ask": item["best_ask"],
-                "Net edge": item["net_edge"],
-                "Status": item["action"],
-            }
-            for item in outcomes
-        ]
-        st.dataframe(pd.DataFrame(overview_rows), width="stretch", hide_index=True)
-        with st.expander("Outcome audit fields", expanded=False):
-            st.dataframe(
-                pd.DataFrame(_localize_records(outcomes, display_zone)),
-                width="stretch",
-                hide_index=True,
-            )
-        with st.expander("Model input and capture audit", expanded=False):
-            st.json(_localize_record(model_context, display_zone))
-
-    with repricing_tab:
-        _render_trading_timeline(db)
-
-    with execution_tab:
-        st.button("Refresh", icon=":material/refresh:", key="refresh-execution")
-        st.subheader("Executable quote")
-        bin_labels = {str(item["bin_id"]): str(item["label"]) for item in outcomes}
-        if not bin_labels:
-            st.warning("No parsed temperature bins are available for this blocked decision.")
-        else:
-            selected_bin = str(st.session_state.get("selected_bin_id") or "")
-            if selected_bin not in bin_labels:
-                selected_bin = next(iter(bin_labels))
-            st.caption(f"Repricing interval: {bin_labels[selected_bin]}")
-            selected = next(item for item in outcomes if item["bin_id"] == selected_bin)
-            quote = query.get_execution_quote(decision_id, selected_bin)
-            quote_received = quote.get("received_at") if quote else None
-            quote_time = _display_datetime(quote_received, UTC)
-            quote_age = (now - quote_time).total_seconds() if quote_time else None
-            requested_time = _display_datetime(quote.get("requested_at"), UTC) if quote else None
-            quote_latency_ms = (
-                (quote_time - requested_time).total_seconds() * 1_000
-                if quote_time is not None and requested_time is not None
-                else None
-            )
-            metrics = st.columns(6)
-            metrics[0].metric(
-                "Best Bid", _money(quote.get("best_bid") if quote else selected["best_bid"])
-            )
-            metrics[1].metric(
-                "Best Ask", _money(quote.get("best_ask") if quote else selected["best_ask"])
-            )
-            metrics[2].metric("Spread", _money(quote.get("spread") if quote else None))
-            metrics[3].metric("Ask VWAP", _money(quote.get("ask_vwap") if quote else None))
-            ask_depth = quote.get("ask_depth") if quote else None
-            metrics[4].metric(
-                "Executable qty",
-                f"{float(ask_depth):.2f}" if ask_depth is not None else "Unavailable",
-            )
-            metrics[5].metric("Quote age", _age(quote_age))
-            detail = {
-                "bin": bin_labels[selected_bin],
-                "source": "CLOB finite-depth snapshot" if quote else "Unavailable",
-                "quote_status": quote.get("status") if quote else "unavailable",
-                "target_quantity": quote.get("target_quantity") if quote else None,
-                "bid_vwap": quote.get("bid_vwap") if quote else None,
-                "bid_depth": quote.get("bid_depth") if quote else None,
-                "requested_at": (
-                    _format_timestamp(quote.get("requested_at"), display_zone)
-                    if quote and quote.get("requested_at") is not None
-                    else "Unavailable"
-                ),
-                "quote_received_at": (
-                    _format_timestamp(quote_received, display_zone)
-                    if quote_received is not None
-                    else "Unavailable"
-                ),
-                "request_latency_ms": (
-                    round(quote_latency_ms, 1) if quote_latency_ms is not None else None
-                ),
-                "market_id": quote.get("market_id") if quote else None,
-                "token_id": quote.get("token_id") if quote else None,
-                "error": quote.get("error_reason") if quote else None,
-            }
-            st.dataframe(pd.DataFrame([detail]), width="stretch", hide_index=True)
-            levels = query.get_order_book(decision_id, selected_bin)
-            if levels:
-                st.subheader("Current finite depth")
-                st.plotly_chart(depth_figure(levels), width="stretch")
-                st.dataframe(pd.DataFrame(levels), width="stretch", hide_index=True)
+            settlement_source = str(contract["contract"].get("settlement_source") or "")
+            configured_source = load_city_config().collector.settlement_url
+            if settlement_source:
+                host = urlparse(settlement_source).hostname or settlement_source
+                st.markdown(
+                    '<div class="resolution-source">Contract resolution source: '
+                    f'<a href="{escape(settlement_source)}" target="_blank">'
+                    f"{escape(host)}</a></div>",
+                    unsafe_allow_html=True,
+                )
+            if _resolution_source_matches(settlement_source, configured_source):
+                st.caption(
+                    "The contract resolution source matches the system settlement evidence source."
+                )
             else:
-                st.warning("Order book is empty or unavailable for the selected decision.")
+                st.warning(
+                    "Contract resolution source does not match "
+                    "the system settlement evidence source: "
+                    f"{settlement_source or 'Unavailable'} · {configured_source}"
+                )
+            st.subheader("Model probability and executable market prices")
+            probability_sum = float(summary["probability_summary"]["probability_sum"])
+            if abs(probability_sum - 1.0) > 1e-6:
+                st.error(f"Probability sum invalid: {probability_sum:.9f}; candidates are blocked.")
+            st.plotly_chart(probability_figure(outcomes), width="stretch")
+            overview_rows = [
+                {
+                    "Bin": item["label"],
+                    "Model probability": item["model_probability"],
+                    "Bid": item["best_bid"],
+                    "Ask": item["best_ask"],
+                    "Net edge": item["net_edge"],
+                    "Status": item["action"],
+                }
+                for item in outcomes
+            ]
+            st.dataframe(pd.DataFrame(overview_rows), width="stretch", hide_index=True)
+            with st.expander("Outcome audit fields", expanded=False):
+                st.dataframe(
+                    pd.DataFrame(_localize_records(outcomes, display_zone)),
+                    width="stretch",
+                    hide_index=True,
+                )
+            with st.expander("Model input and capture audit", expanded=False):
+                st.json(_localize_record(model_context, display_zone))
 
-    with paper_tab:
-        st.button("Refresh", icon=":material/refresh:", key="refresh-paper")
-        account = paper["account"]
-        if account:
-            metrics = st.columns(6)
-            for column, key in zip(
-                metrics,
-                ("cash", "used_notional", "realized_pnl", "unrealized_pnl", "total_pnl", "nav"),
-                strict=True,
-            ):
-                column.metric(key.replace("_", " ").title(), f"${account[key]:.2f}")
-            st.dataframe(
-                pd.DataFrame(_localize_records(list(account["positions"].values()), display_zone)),
-                width="stretch",
-            )
-            scenario = account["scenario_pnl"]
-            scenario_labels = {str(item["bin_id"]): str(item["label"]) for item in outcomes}
-            if scenario:
-                most_likely = max(outcomes, key=lambda item: item["model_probability"])["bin_id"]
-                worst = min(scenario, key=scenario.get)
-                best = max(scenario, key=scenario.get)
-                colors = [
-                    "#ffbf00"
-                    if key == most_likely
-                    else "#d62728"
-                    if key == worst
-                    else "#60A5FA"
-                    if key == best
-                    else "#7f7f7f"
-                    for key in scenario
-                ]
-                figure = go.Figure(
-                    go.Bar(
-                        x=[scenario_labels[key] for key in scenario],
-                        y=list(scenario.values()),
-                        marker_color=colors,
-                        text=[
-                            "most likely"
-                            if key == most_likely
-                            else "worst"
-                            if key == worst
-                            else "best"
-                            if key == best
-                            else ""
-                            for key in scenario
-                        ],
+    if system_tab.open:
+        with execution_tab:
+            st.button("Refresh", icon=":material/refresh:", key="refresh-execution")
+            st.subheader("Executable quote")
+            bin_labels = {str(item["bin_id"]): str(item["label"]) for item in outcomes}
+            if not bin_labels:
+                st.warning("No parsed temperature bins are available for this blocked decision.")
+            else:
+                selected_bin = str(st.session_state.get("selected_bin_id") or "")
+                if selected_bin not in bin_labels:
+                    selected_bin = next(iter(bin_labels))
+                st.caption(f"Repricing interval: {bin_labels[selected_bin]}")
+                selected = next(item for item in outcomes if item["bin_id"] == selected_bin)
+                quote = query.get_execution_quote(decision_id, selected_bin)
+                quote_received = quote.get("received_at") if quote else None
+                quote_time = _display_datetime(quote_received, UTC)
+                quote_age = (now - quote_time).total_seconds() if quote_time else None
+                requested_time = (
+                    _display_datetime(quote.get("requested_at"), UTC) if quote else None
+                )
+                quote_latency_ms = (
+                    (quote_time - requested_time).total_seconds() * 1_000
+                    if quote_time is not None and requested_time is not None
+                    else None
+                )
+                metrics = st.columns(6)
+                metrics[0].metric(
+                    "Best Bid", _money(quote.get("best_bid") if quote else selected["best_bid"])
+                )
+                metrics[1].metric(
+                    "Best Ask", _money(quote.get("best_ask") if quote else selected["best_ask"])
+                )
+                metrics[2].metric("Spread", _money(quote.get("spread") if quote else None))
+                metrics[3].metric("Ask VWAP", _money(quote.get("ask_vwap") if quote else None))
+                ask_depth = quote.get("ask_depth") if quote else None
+                metrics[4].metric(
+                    "Executable qty",
+                    f"{float(ask_depth):.2f}" if ask_depth is not None else "Unavailable",
+                )
+                metrics[5].metric("Quote age", _age(quote_age))
+                detail = {
+                    "bin": bin_labels[selected_bin],
+                    "source": "CLOB finite-depth snapshot" if quote else "Unavailable",
+                    "quote_status": quote.get("status") if quote else "unavailable",
+                    "target_quantity": quote.get("target_quantity") if quote else None,
+                    "bid_vwap": quote.get("bid_vwap") if quote else None,
+                    "bid_depth": quote.get("bid_depth") if quote else None,
+                    "requested_at": (
+                        _format_timestamp(quote.get("requested_at"), display_zone)
+                        if quote and quote.get("requested_at") is not None
+                        else "Unavailable"
+                    ),
+                    "quote_received_at": (
+                        _format_timestamp(quote_received, display_zone)
+                        if quote_received is not None
+                        else "Unavailable"
+                    ),
+                    "request_latency_ms": (
+                        round(quote_latency_ms, 1) if quote_latency_ms is not None else None
+                    ),
+                    "market_id": quote.get("market_id") if quote else None,
+                    "token_id": quote.get("token_id") if quote else None,
+                    "error": quote.get("error_reason") if quote else None,
+                }
+                st.dataframe(pd.DataFrame([detail]), width="stretch", hide_index=True)
+                levels = query.get_order_book(decision_id, selected_bin)
+                if levels:
+                    st.subheader("Current finite depth")
+                    st.plotly_chart(depth_figure(levels), width="stretch")
+                    st.dataframe(pd.DataFrame(levels), width="stretch", hide_index=True)
+                else:
+                    st.warning("Order book is empty or unavailable for the selected decision.")
+
+        with paper_tab:
+            st.button("Refresh", icon=":material/refresh:", key="refresh-paper")
+            account = paper["account"]
+            if account:
+                metrics = st.columns(6)
+                for column, key in zip(
+                    metrics,
+                    ("cash", "used_notional", "realized_pnl", "unrealized_pnl", "total_pnl", "nav"),
+                    strict=True,
+                ):
+                    column.metric(key.replace("_", " ").title(), f"${account[key]:.2f}")
+                st.dataframe(
+                    pd.DataFrame(
+                        _localize_records(list(account["positions"].values()), display_zone)
+                    ),
+                    width="stretch",
+                )
+                scenario = account["scenario_pnl"]
+                scenario_labels = {str(item["bin_id"]): str(item["label"]) for item in outcomes}
+                if scenario:
+                    most_likely = max(outcomes, key=lambda item: item["model_probability"])[
+                        "bin_id"
+                    ]
+                    worst = min(scenario, key=scenario.get)
+                    best = max(scenario, key=scenario.get)
+                    colors = [
+                        "#ffbf00"
+                        if key == most_likely
+                        else "#d62728"
+                        if key == worst
+                        else "#60A5FA"
+                        if key == best
+                        else "#7f7f7f"
+                        for key in scenario
+                    ]
+                    figure = go.Figure(
+                        go.Bar(
+                            x=[scenario_labels[key] for key in scenario],
+                            y=list(scenario.values()),
+                            marker_color=colors,
+                            text=[
+                                "most likely"
+                                if key == most_likely
+                                else "worst"
+                                if key == worst
+                                else "best"
+                                if key == best
+                                else ""
+                                for key in scenario
+                            ],
+                        )
                     )
-                )
-                figure.update_layout(
-                    xaxis_title="Final settlement bin", yaxis_title="Final portfolio P&L ($)"
-                )
-                st.plotly_chart(figure, width="stretch")
+                    figure.update_layout(
+                        xaxis_title="Final settlement bin", yaxis_title="Final portfolio P&L ($)"
+                    )
+                    st.plotly_chart(figure, width="stretch")
+                else:
+                    st.info("Scenario P&L is unavailable until contract bins are parsed.")
             else:
-                st.info("Scenario P&L is unavailable until contract bins are parsed.")
-        else:
-            st.info("Paper account snapshot is unavailable.")
-        st.subheader("Orders")
-        st.dataframe(
-            pd.DataFrame(_localize_records(paper["orders"], display_zone)), width="stretch"
-        )
-        st.subheader("Fills")
-        st.dataframe(pd.DataFrame(_localize_records(paper["fills"], display_zone)), width="stretch")
+                st.info("Paper account snapshot is unavailable.")
+            st.subheader("Orders")
+            st.dataframe(
+                pd.DataFrame(_localize_records(paper["orders"], display_zone)), width="stretch"
+            )
+            st.subheader("Fills")
+            st.dataframe(
+                pd.DataFrame(_localize_records(paper["fills"], display_zone)), width="stretch"
+            )
 
-    with system_tab:
-        st.button("Refresh", icon=":material/refresh:", key="refresh-system")
-        st.subheader("Data health and runner heartbeat")
-        git_sha = os.environ.get("NICE_WEATHER_GIT_SHA", "unknown")
-        st.caption(
-            f"Build {git_sha} · model {summary['model_version']} · "
-            f"rule {summary['rule_version']} · time zone {timezone_name} · database {db.resolve()}"
-        )
-        st.dataframe(
-            pd.DataFrame(_localize_records(health["checks"], display_zone)), width="stretch"
-        )
-        st.json(
-            _localize_record(health["heartbeat"], display_zone)
-            if health["heartbeat"]
-            else {"status": "missing"}
-        )
-        st.subheader("Decision log")
-        decisions = query.list_decisions()
-        st.dataframe(pd.DataFrame(_localize_records(decisions, display_zone)), width="stretch")
-        selected_decision = st.selectbox(
-            "Decision trace", [item["decision_id"] for item in decisions], key="trace-decision"
-        )
-        st.dataframe(
-            pd.DataFrame(
-                _localize_records(query.get_decision_trace(selected_decision), display_zone)
-            ),
-            width="stretch",
-        )
-        st.subheader("Recent system events")
-        st.dataframe(
-            pd.DataFrame(_localize_records(health["events"], display_zone)), width="stretch"
-        )
+        with system_tab:
+            st.button("Refresh", icon=":material/refresh:", key="refresh-system")
+            st.subheader("Data health and runner heartbeat")
+            git_sha = os.environ.get("NICE_WEATHER_GIT_SHA", "unknown")
+            st.caption(
+                f"Build {git_sha} · model {summary['model_version']} · "
+                f"rule {summary['rule_version']} · time zone {timezone_name} · "
+                f"database {db.resolve()}"
+            )
+            st.dataframe(
+                pd.DataFrame(_localize_records(health["checks"], display_zone)), width="stretch"
+            )
+            st.json(
+                _localize_record(health["heartbeat"], display_zone)
+                if health["heartbeat"]
+                else {"status": "missing"}
+            )
+            st.subheader("Decision log")
+            decisions = query.list_decisions()
+            st.dataframe(pd.DataFrame(_localize_records(decisions, display_zone)), width="stretch")
+            selected_decision = st.selectbox(
+                "Decision trace", [item["decision_id"] for item in decisions], key="trace-decision"
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    _localize_records(query.get_decision_trace(selected_decision), display_zone)
+                ),
+                width="stretch",
+            )
+            st.subheader("Recent system events")
+            st.dataframe(
+                pd.DataFrame(_localize_records(health["events"], display_zone)), width="stretch"
+            )
 
 
 def main() -> None:
