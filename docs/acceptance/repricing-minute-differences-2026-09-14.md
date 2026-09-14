@@ -1,5 +1,11 @@
 # Repricing 分钟变化验收
 
+## 首轮部署与回滚
+
+PR #43 六项 CI 全部通过，合并 `34d83fcebd7345a1334a57b4ce6a7cd773720383`。06:00 UTC 部署后同档位公网验收发现：切入包含多个缺口的历史价格时，图表库返回 `{priceRange: null}`，自动对称刻度读取 minValue 抛错，阻断后续更新。已从 `/var/backups/nice-weather/repricing-20260914T060042Z` 恢复旧版 `ad86088`；没有重启采集或 Paper 服务。
+
+追加空范围保护，并用空 info、空 priceRange、有效不对称范围的单元检查覆盖；TypeScript 16 项通过。该故障必须经修复 PR、完整 CI 和同一公网历史档位复验通过后才能重新交付，首轮部署不算线上验收通过。
+
 基线：`ad86088a7607435e191a428fdd98cb70ae914daa`。候选分支：`codex/repricing-minute-differences`。上线结果在发布后补记。
 
 ## 功能与调用链审核

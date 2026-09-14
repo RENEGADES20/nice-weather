@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   createBidirectionalSync,
   differencePoints,
+  symmetricAutoscale,
   mergeRawPoints,
   nonNullSegments,
   stepVertices,
@@ -9,6 +10,11 @@ import {
 } from "./difference";
 
 describe("difference alignment", () => {
+  it("handles an empty visible segment while switching bins", () => {
+    expect(symmetricAutoscale(null)).toBeNull();
+    expect(symmetricAutoscale({priceRange:null})).toBeNull();
+    expect(symmetricAutoscale({priceRange:{minValue:-2,maxValue:5}})).toEqual({priceRange:{minValue:-5,maxValue:5}});
+  });
   it("keeps weather and price changes on their own minutes, with gaps and late corrections", () => {
     const points = [20,20,21,null,24,25].map((value,index) => ({time:index*60,value,priceSource:'CLOB mid',binId:'a'}));
     const before = minuteChanges(points,'price');

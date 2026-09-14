@@ -82,6 +82,12 @@ export type DifferencePoint = {
   right: RawPoint | null;
 };
 
+export function symmetricAutoscale(info: {priceRange: {minValue: number; maxValue: number} | null} | null) {
+  if (!info?.priceRange) return null;
+  const extent = Math.max(Math.abs(info.priceRange.minValue), Math.abs(info.priceRange.maxValue), 0.1);
+  return {...info, priceRange: {minValue: -extent, maxValue: extent}};
+}
+
 // Revisions affect t and t+1 only. Retain untouched audit points during a delta.
 export function minuteChanges(points: RawPoint[], source: string,
   previous: DifferencePoint[] = [], changedTimes?: Set<number>): DifferencePoint[] {
