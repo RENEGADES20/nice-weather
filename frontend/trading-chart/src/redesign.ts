@@ -18,8 +18,7 @@ import { Streamlit, type RenderData } from "streamlit-component-lib";
 import { renderTerminal } from "./terminal";
 import {
   differencePoints,
-  weatherUpdates,
-  priceResponse,
+  minuteChanges,
   mergeRawPoints,
   nonNullSegments,
   stepVertices,
@@ -57,7 +56,7 @@ type DifferenceSpec = {
   name: string;
   leftId: string;
   rightId: string;
-  unit: "°F" | "display spread";
+  unit: "°F" | "pp" | "display spread";
   axis: "left" | "right";
   color: string;
 };
@@ -72,6 +71,8 @@ type Payload = {
   asOf?: number;
   latestActualTime?: number;
   queryMs?: number;
+  sqlMs?: number;
+  prepareMs?: number;
   sentAt?: number;
   legacyWarning?: boolean;
   error?: string;
@@ -102,9 +103,8 @@ const differenceData = new Map<string, DifferencePoint[]>();
 const lineOptionKeys = new WeakMap<ISeriesApi<"Line">, string>();
 let selectedDifferenceIds = new Set<string>();
 let differenceSelectionInitialized = false;
-let responseEventTime: number | null = null;
-let responseMarkers: ISeriesMarkersPluginApi<Time> | null = null;
-let responseSummary = "";
+const changeData = new Map<string, DifferencePoint[]>();
+const changedInputs = new Set<string>();
 let mainChart: IChartApi | null = null;
 let differenceChart: IChartApi | null = null;
 let mainTimeBasis: ISeriesApi<"Line"> | null = null;
@@ -113,6 +113,7 @@ let payload: Payload | null = null;
 let signature = "";
 let eventsVisible = false;
 let markers: ISeriesMarkersPluginApi<Time> | null = null;
+let markerKey = "";
 let channel: BroadcastChannel | null = null;
 let channelId = "";
 let rangeSyncReady = false;
@@ -202,12 +203,11 @@ function buildShell(): void {
       <div id="payload-warning" class="notice hidden">A chart update was rejected because its data was invalid or belonged to another selection.</div>
       <div class="legend" id="main-legend"></div>
       <div id="main-chart"></div>
-      <div class="difference-title"><strong>Difference / Price response</strong><span>Weather updates and subsequent price changes.</span></div>
+      <div class="difference-title"><strong>Difference</strong><span>Weather updates and subsequent price changes.</span></div>
       <div class="legend difference-controls" id="difference-controls"></div>
-      <div class="legend difference-controls hidden" id="response-controls"></div>
       <div class="legend difference-detail" id="difference-detail"><span class="legend-time">ET</span></div>
       <div class="difference-wrap"><div id="difference-chart"></div><div id="difference-empty" class="empty hidden">No selected difference has two valid inputs</div></div>
-      <div class="disclaimer">Weather spreads: °F. Price response: percentage-point change from the preceding minute's CLOB mid; first ±1 pp move, up to 60 minutes or the next weather update. Minute-sampled association, not a causal or executable delay. Gaps and fallback prices stop measurement.</div>
+      <div class="disclaimer">Weather spreads: °F. One-minute changes: temperature °F (left), CLOB mid percentage points (right). Forecast changes compare revisions at the same valid time. Gaps remain blank.</div>
     </div>`;
   createIcons({ icons: { Expand, Eye, LocateFixed, RotateCcw } });
   mainChart = createChart(document.querySelector<HTMLElement>("#main-chart")!, chartOptions());
@@ -471,6 +471,7 @@ function reconcileFull(specs: SeriesSpec[]): void {
 
 function reconcileDelta(specs: SeriesSpec[]): void {
   for (const spec of specs) {
+    if (!spec.points.length && !spec.removedTimes?.length) continue;
     const previous = seriesData.get(spec.id) || [];
     const removed = new Set(spec.removedTimes || []);
     const merged = mergeRawPoints(previous.filter((point) => !removed.has(point.time)), spec.points);
@@ -479,13 +480,19 @@ function reconcileDelta(specs: SeriesSpec[]): void {
 }
 
 function reconcileDifferenceInputs(specs: PointSeries[], full: boolean): void {
-  if (full) differenceInputData.clear();
+  changedInputs.clear();
+  if (full) { differenceInputData.clear(); changeData.clear(); }
   for (const spec of specs) {
+    if (!full && !spec.points.length && !spec.removedTimes?.length) continue;
+    changedInputs.add(spec.id);
     const previous = differenceInputData.get(spec.id) || [];
     const removed = new Set(spec.removedTimes || []);
     differenceInputData.set(spec.id, mergeRawPoints(full ? [] : previous.filter(
       (point) => !removed.has(point.time),
     ), spec.points));
+    root.dataset.changeCalculations = String(Number(root.dataset.changeCalculations || 0) + (full ? differenceInputData.get(spec.id)!.length : new Set([...spec.points.map(p => p.time), ...removed].flatMap(t => [t, t+60])).size));
+    changeData.set(spec.id, minuteChanges(differenceInputData.get(spec.id)!, spec.id,
+      full ? [] : changeData.get(spec.id), full ? undefined : new Set([...spec.points.map(p => p.time), ...removed])));
   }
 }
 
@@ -516,6 +523,7 @@ function reconcileDifferenceFull(spec: DifferenceSpec, points: DifferencePoint[]
     const api = reusable?.[1] || differenceChart!.addSeries(LineSeries, differenceOptions(spec));
     if (reusable) available.delete(reusable[0]);
     configureLine(api, differenceOptions(spec), !reusable);
+    if (!reusable) api.createPriceLine({price: 0, color: "#98A2B3", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false});
     api.setData(segment.map(valuedLineData));
     apis.set(key, api);
     times.set(key, segment.map((point) => point.time));
@@ -544,6 +552,7 @@ function reconcileDifferenceDelta(
     const created = !api;
     if (!api) {
       api = differenceChart!.addSeries(LineSeries, differenceOptions(spec));
+      api.createPriceLine({price: 0, color: "#98A2B3", lineWidth: 1, lineStyle: LineStyle.Dashed, axisLabelVisible: false});
       if (!differenceSegmentApis.has(spec.id)) differenceSegmentApis.set(spec.id, new Map());
       differenceSegmentApis.get(spec.id)!.set(key, api);
     }
@@ -578,7 +587,13 @@ function differenceOptions(spec: DifferenceSpec) {
     title: "",
     color: spec.color,
     lineWidth: 2 as const,
-    lineType: spec.leftId === "price" ? LineType.WithSteps : LineType.Simple,
+    lineType: LineType.Simple,
+    autoscaleInfoProvider: (original: () => {priceRange: {minValue: number; maxValue: number}} | null) => {
+      const info = original();
+      if (!info) return null;
+      const extent = Math.max(Math.abs(info.priceRange.minValue), Math.abs(info.priceRange.maxValue), 0.1);
+      return {...info, priceRange: {minValue: -extent, maxValue: extent}};
+    },
     priceScaleId: spec.axis,
     priceLineVisible: false,
     lastValueVisible: false,
@@ -586,7 +601,7 @@ function differenceOptions(spec: DifferenceSpec) {
     priceFormat: {
       type: "custom" as const,
       minMove: 0.01,
-      formatter: (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}${spec.leftId === "price" ? " pp" : "°F"}`,
+      formatter: (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}${spec.unit === "pp" ? " pp" : "°F"}`,
     },
   };
 }
@@ -621,6 +636,7 @@ function setTimeBasis(start: number, end: number, upcoming: SeriesSpec[] = []): 
   if (!differenceTimeBasis) {
     differenceTimeBasis = differenceChart.addSeries(LineSeries, options);
   }
+  root.dataset.timeBasisWrites = String(Number(root.dataset.timeBasisWrites || 0) + 1);
   mainTimeBasis.setData(points);
   differenceTimeBasis.setData(points);
 }
@@ -629,88 +645,49 @@ function renderDifferenceControls(): void {
   if (!payload) return;
   const target = document.querySelector<HTMLElement>("#difference-controls")!;
   const label = (spec: DifferenceSpec) => spec.leftId === "price"
-    ? `Price response · ${spec.rightId === "weather-gov" ? "Hourly Temp" : spec.rightId === "metar" ? "METAR" : "Forecast revision"}`
+    ? `ΔPrice / Δ${spec.rightId === "weather-gov" ? "Hourly Temp" : spec.rightId === "metar" ? "METAR" : "Forecast revision"}`
     : spec.name;
   target.innerHTML = `<label for="difference-select">View</label><select id="difference-select" aria-label="Difference view">${payload.differenceSpecs.map((spec) =>
     `<option value="${escapeHtml(spec.id)}" ${selectedDifferenceIds.has(spec.id) ? "selected" : ""}>${escapeHtml(label(spec))}</option>`).join("")}</select>`;
   target.querySelector<HTMLSelectElement>("select")!.addEventListener("change", (event) => {
       selectedDifferenceIds = new Set([(event.target as HTMLSelectElement).value]);
-      responseEventTime = null;
+      const start = performance.now();
+      sessionStorage.setItem("repricing-difference", [...selectedDifferenceIds][0]);
       renderDifferences(true);
-      Streamlit.setComponentValue({ selectedDifferenceIds: [...selectedDifferenceIds] });
+      root.dataset.differenceSwitchMs = String(performance.now() - start);
   });
 }
 
-function responsePoints(spec: DifferenceSpec, drawMarkers = false): DifferencePoint[] {
-  const controls = document.querySelector<HTMLElement>("#response-controls")!;
-  controls.classList.remove("hidden");
-  const weather = differenceInputData.get(spec.rightId) || [];
-  const events = payload?.comparisonMode === "future-snapshot" ? []
-    : weatherUpdates(weather, spec.rightId === "forecast");
-  const event = events.find((item) => item.time === responseEventTime) || events.at(-1);
-  responseEventTime = event?.time ?? null;
-  const key = `${spec.id}:${events.map((item) => item.time).join(",")}`;
-  if (controls.dataset.key !== key) {
-    controls.dataset.key = key;
-    controls.innerHTML = `<label for="response-event">Weather update</label><select id="response-event" aria-label="Weather update">${events.length ? [...events].reverse().map((item) => `<option value="${item.time}">${formatAxisTime(item.time, 3, "America/New_York")} ET · ${item.value!.toFixed(1)}°F</option>`).join("") : '<option>No comparable updates</option>'}</select><button id="response-zoom">Zoom to update</button>`;
-    controls.querySelector<HTMLSelectElement>("select")!.addEventListener("change", (event) => {
-      responseEventTime = Number((event.target as HTMLSelectElement).value);
-      renderDifferences(true);
-    });
-    controls.querySelector("button")!.addEventListener("click", () => {
-      if (responseEventTime == null || !payload) return;
-      setFollowing(false);
-      rangeLeader = "main";
-      mainChart?.timeScale().setVisibleRange({
-        from: Math.max(payload.windowStart, responseEventTime - 600) as UTCTimestamp,
-        to: Math.min(payload.windowEnd, Math.max(responseEventTime + 600,
-          (differenceData.get(spec.id)?.at(-1)?.time ?? responseEventTime) + 120)) as UTCTimestamp,
-      });
-    });
-  }
-  const selector = controls.querySelector<HTMLSelectElement>("select")!;
-  selector.disabled = !event;
-  if (!event) {
-    responseSummary = "No comparable received weather updates; future snapshots cannot measure delay.";
-    return [];
-  }
-  selector.value = String(event.time);
-  const next = events.find((item) => item.time > event.time);
-  const end = Math.min(event.time + 3600, next ? next.time - 60 : Infinity, payload?.asOf ?? Infinity);
-  const result = priceResponse(differenceInputData.get("price") || [], event, end);
-  const before = weather.find((item) => item.time === event.time - 60);
-  responseSummary = `${formatAxisTime(event.time, 3, "America/New_York")} ET · ${before?.value?.toFixed(1)} → ${event.value?.toFixed(1)}°F${spec.rightId === "forecast" ? " (adjacent-minute values across revision)" : ""} · First ±1 pp: ${result.firstMove === null ? (result.interrupted ? "unavailable / gap" : "not observed in window") : result.firstMove === event.time ? "same minute; ordering unresolved" : `≈${(result.firstMove - event.time) / 60} min`} · received ${formatEt(event.receivedAt || event.received_at)}`;
-  // Labels are placed on the response itself, keeping both charts on the same time axis.
-  const api = differenceApis.get(spec.id);
-  if (api && drawMarkers && result.points.length) {
-    responseMarkers = createSeriesMarkers(api, [
-      { time: event.time as UTCTimestamp, position: "aboveBar", color: "#667085", shape: "circle", text: "" },
-      ...(result.firstMove == null ? [] : [{ time: result.firstMove as UTCTimestamp, position: "belowBar" as const, color: "#2563EB", shape: "circle" as const, text: "" }]),
-    ]);
-  }
-  return result.points;
+function activeDifferenceSpecs(): DifferenceSpec[] {
+  const spec = payload?.differenceSpecs.find(item => selectedDifferenceIds.has(item.id));
+  if (!spec) return [];
+  if (spec.leftId !== 'price') return [spec];
+  const label = spec.rightId === 'forecast' ? 'Forecast revision' : spec.rightId === 'metar' ? 'METAR' : 'Hourly Temp';
+  return [
+    {...spec, id: 'change-price', name: 'ΔPrice', unit: 'pp', axis: 'right', color: '#2563EB'},
+    {...spec, id: 'change-' + spec.rightId, leftId: spec.rightId, name: 'Δ' + label, unit: '°F', axis: 'left', color: '#E76F51'},
+  ];
 }
 
 function renderDifferences(fullReplace: boolean): void {
   if (!payload || !differenceChart) return;
-  responseMarkers?.detach();
-  responseMarkers = null;
-  document.querySelector("#response-controls")?.classList.add("hidden");
+
   const validIds = new Set<string>();
-  for (const spec of payload.differenceSpecs) {
-    if (!selectedDifferenceIds.has(spec.id)) continue;
-    const isResponse = spec.leftId === "price";
-    const points = isResponse ? responsePoints(spec) : differencePoints(
-      differenceInputData.get(spec.leftId) || [],
-      differenceInputData.get(spec.rightId) || [],
-    );
+  for (const spec of activeDifferenceSpecs()) {
+    const isChange = spec.id.startsWith('change-');
+    if (!fullReplace && !changedInputs.has(spec.leftId) && (isChange || !changedInputs.has(spec.rightId))) {
+      if (differenceData.get(spec.id)?.some(point => point.value != null)) validIds.add(spec.id);
+      continue;
+    }
+    const points = isChange ? (payload.comparisonMode === 'future-snapshot' ? [] : changeData.get(spec.leftId) || [])
+      : differencePoints(differenceInputData.get(spec.leftId) || [], differenceInputData.get(spec.rightId) || []);
     if (!points.some((point) => point.value != null)) continue;
     validIds.add(spec.id);
     const previous = differenceData.get(spec.id) || [];
     if (fullReplace) reconcileDifferenceFull(spec, points);
     else reconcileDifferenceDelta(spec, previous, points);
     differenceData.set(spec.id, points);
-    if (isResponse) responsePoints(spec, true);
+
   }
   for (const id of [...differenceSegmentApis.keys()]) {
     if (validIds.has(id)) continue;
@@ -809,10 +786,8 @@ function renderMainLegend(time?: Time): void {
 function renderDifferenceDetails(time?: Time): void {
   if (!payload) return;
   const target = document.querySelector<HTMLElement>("#difference-detail")!;
-  const response = payload.differenceSpecs.find((spec) => selectedDifferenceIds.has(spec.id) && spec.leftId === "price");
-  if (response) {
-    const point = time == null ? undefined : differenceData.get(response.id)?.find((item) => item.time === Math.floor(Number(time) / 60) * 60);
-    target.innerHTML = `<span>${escapeHtml(responseSummary)}</span><span>● Gray: update · <span style="color:#2563EB">● Blue: first ±1 pp</span></span>${point?.value == null ? "" : `<strong>ΔPrice ${point.value >= 0 ? "+" : ""}${point.value.toFixed(2)} pp</strong>`}`;
+  if (payload.comparisonMode === 'future-snapshot' && activeDifferenceSpecs().some(spec => spec.id.startsWith('change-'))) {
+    target.textContent = 'Future snapshots have no one-minute change history.';
     return;
   }
   if (time == null) {
@@ -821,8 +796,7 @@ function renderDifferenceDetails(time?: Time): void {
   }
   const numericTime = Math.floor(Number(time) / 60) * 60;
   const stamp = `${formatAxisTime(numericTime, 3, "America/New_York")} ET`;
-  const items = payload.differenceSpecs
-    .filter((spec) => selectedDifferenceIds.has(spec.id))
+  const items = activeDifferenceSpecs()
     .map((spec) => {
       const point = differenceData.get(spec.id)?.find((item) => item.time === numericTime);
       if (!point || point.value == null || !point.left || !point.right) {
@@ -830,7 +804,8 @@ function renderDifferenceDetails(time?: Time): void {
       }
       const title = `Left: ${pointAudit(point.left)}; right: ${pointAudit(point.right)}`;
       const left = point.left.value == null ? "Unavailable" : point.left.value.toFixed(2);
-      const right = point.right.value == null ? "Unavailable" : point.right.value.toFixed(2);
+      const right = spec.id === "change-forecast" ? String(point.left.revisionPreviousValue ?? point.left.value) + " (prior at same valid time)"
+        : point.right.value == null ? "Unavailable" : point.right.value.toFixed(2);
       return `<span class="difference-value" title="${escapeHtml(title)}"><i style="background:${spec.color}"></i>${escapeHtml(spec.name)} <strong>${point.value >= 0 ? "+" : ""}${point.value.toFixed(2)} ${escapeHtml(spec.unit)}</strong><small>${left} − ${right}</small></span>`;
     }).join("");
   target.innerHTML = `<span class="legend-time">${stamp}</span>${items}`;
@@ -841,6 +816,9 @@ function renderMarkers(): void {
   const anchor = payload.series.find((spec) => spec.group === "Weather");
   const api = anchor ? seriesApis.get(anchor.id) : undefined;
   if (!api) return;
+  const key = JSON.stringify([anchor!.id, eventsVisible, payload.events]);
+  if (markers && markerKey === key) return;
+  markerKey = key;
   const items = eventsVisible ? (payload.events || []).map((event) => ({
     id: event.id,
     time: event.time as UTCTimestamp,
@@ -897,19 +875,20 @@ function restoreCrosshair(time: number, onDifference: boolean): boolean {
 }
 
 function updateIncrementally(next: Payload): void {
+  const seriesChanged = next.series.some(spec => spec.points.length || spec.removedTimes?.length);
   const visible = mainChart?.timeScale().getVisibleRange();
   rangeSyncReady = false;
-  setTimeBasis(next.windowStart, next.windowEnd, next.series);
+  if (seriesChanged)
+    setTimeBasis(next.windowStart, next.windowEnd, next.series);
   reconcileDelta(next.series);
   reconcileDifferenceInputs(next.differenceInputs, false);
   renderDifferences(false);
-  setTimeBasis(next.windowStart, next.windowEnd);
-  if (visible) {
+  if (visible && seriesChanged) {
     mainChart?.timeScale().setVisibleRange(visible);
     differenceChart?.timeScale().setVisibleRange(visible);
   }
   rangeSyncReady = true;
-  if (following) followLatest();
+  if (following && seriesChanged) followLatest();
   root.dataset.appliedRevision = String(next.revision);
   if (crosshairTime != null) syncCrosshair(crosshairTime, true);
 }
@@ -995,8 +974,7 @@ function applyPayload(next: Payload): void {
     const validDifferenceIds = new Set(next.differenceSpecs.map((spec) => spec.id));
     selectedDifferenceIds = new Set([...selectedDifferenceIds].filter((id) => validDifferenceIds.has(id)));
     selectedDifferenceIds = new Set([differenceSelectionInitialized
-      ? [...selectedDifferenceIds][0] || "price-minus-metar" : "price-minus-metar"]);
-    if (signatureChanged) responseEventTime = null;
+      ? [...selectedDifferenceIds][0] || "price-minus-metar" : (validDifferenceIds.has(sessionStorage.getItem("repricing-difference") || "") ? sessionStorage.getItem("repricing-difference")! : "price-minus-metar")]);
     differenceSelectionInitialized = true;
     renderDifferenceControls();
     rangeSyncReady = false;
@@ -1023,11 +1001,13 @@ function applyPayload(next: Payload): void {
   const notice = document.querySelector<HTMLElement>("#mode-notice")!;
   notice.classList.toggle("hidden", next.comparisonMode !== "future-snapshot");
   document.querySelector(".difference-title span")!.textContent = next.comparisonMode === "future-snapshot"
-    ? "Future snapshot: response delay unavailable" : "Select a weather spread or an update-aligned price response.";
+    ? "Future snapshot: minute changes unavailable" : "One-minute changes on the full market-day timeline.";
   notice.textContent = `Current snapshot comparison · ${formatEt(new Date((next.asOf || 0) * 1000).toISOString())}. The price line is the current quote, not future price history.`;
   document.querySelector("#legacy-warning")?.classList.toggle("hidden", !next.legacyWarning);
   root.dataset.sequence = String(lastSequence);
   root.dataset.queryMs = String(next.queryMs || 0);
+  root.dataset.sqlMs = String(next.sqlMs || 0);
+  root.dataset.prepareMs = String(next.prepareMs || 0);
   root.dataset.transportMs = String(next.sentAt ? Math.max(0, Date.now() - next.sentAt * 1000) : 0);
   root.dataset.comparisonMode = next.comparisonMode || "as-of";
   renderPrice();

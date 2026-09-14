@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -36,10 +37,15 @@ class DashboardQuery:
 
     def __init__(self, database_path: str | Path) -> None:
         self.database_path = Path(database_path)
+        self.sql_ms = 0.0
 
     def _query(self, sql: str, parameters: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        with WeatherStore(self.database_path, read_only=True) as store:
-            return _rows(store.connection.execute(sql, parameters).fetchall())
+        started = perf_counter()
+        try:
+            with WeatherStore(self.database_path, read_only=True) as store:
+                return _rows(store.connection.execute(sql, parameters).fetchall())
+        finally:
+            self.sql_ms += (perf_counter() - started) * 1000
 
     def get_latest_decision_summary(self) -> dict[str, Any] | None:
         rows = self._query(
@@ -281,7 +287,9 @@ class DashboardQuery:
 
     def repricing_weather_version(self) -> tuple[int, ...]:
         rows = self._query(
-            "SELECT (SELECT COALESCE(MAX(rowid),0) FROM weather_observations) AS observations,"
+            "SELECT (SELECT COALESCE(MAX(rowid),0) FROM weather_observations "
+            "WHERE source='aviationweather') AS metar,"
+            "(SELECT COALESCE(MAX(rowid),0) FROM weather_observations WHERE source='nws') AS nws,"
             "(SELECT COALESCE(MAX(rowid),0) FROM forecast_points) AS forecasts,"
             "(SELECT COALESCE(MAX(rowid),0) FROM settlement_rows) AS settlement"
         )
@@ -308,11 +316,14 @@ class DashboardQuery:
             stamp, identifier = cursor.split("|", 1)
             cursor_sql = "AND (received_at,tick_id)>(?,?)"
             parameters.extend((stamp, identifier))
+        parameters[2:2] = [event_id, bin_id]
         rows = self._query(
             "SELECT tick_id,event_id,bin_id,token_id,source,exchange_event_at,received_at,"
             "status,event_kind,best_bid,best_ask,mid,last_trade_price "
             "FROM market_top_ticks WHERE event_id=? AND bin_id=? "
-            "AND token_id IN (SELECT yes_token_id FROM contract_bins) "
+            "AND token_id IN (SELECT b.yes_token_id FROM contract_bins b "
+            "JOIN contract_versions c USING(contract_version_id) "
+            "WHERE c.event_id=? AND b.bin_id=?) "
             "AND received_at>=? AND exchange_event_at<? AND received_at<=? "
             f"{cursor_sql} ORDER BY received_at,tick_id",
             tuple(parameters),
@@ -328,23 +339,34 @@ class DashboardQuery:
         as_of: datetime,
         object_timezone: str,
         observation_age_seconds: int,
+        sources: tuple[str, ...] = ("metar", "nws", "forecast", "weather-gov"),
     ) -> dict[str, list[dict[str, Any]]]:
         """Return versioned raw inputs used to rebuild the information known at each minute."""
         start, end = object_day_bounds(object_local_date, horizon_days, object_timezone)
         as_of_text = as_of.astimezone(UTC).isoformat()
         observation_start = start - timedelta(seconds=observation_age_seconds)
-        observations = self._query(
-            """
+        observation_sources = tuple(
+            source
+            for name, source in (("metar", "aviationweather"), ("nws", "nws"))
+            if name in sources
+        )
+        observations = (
+            self._query(
+                f"""
             SELECT * FROM weather_observations
             WHERE station_id='KLGA' AND julianday(observed_at)>=julianday(?)
               AND julianday(observed_at)<julianday(?) AND received_at<=?
-              AND source IN ('aviationweather','nws')
+              AND source IN ({",".join("?" for _ in observation_sources)})
             ORDER BY received_at,julianday(observed_at),revision,observation_id
             """,
-            (observation_start.isoformat(), end.isoformat(), as_of_text),
+                (observation_start.isoformat(), end.isoformat(), as_of_text, *observation_sources),
+            )
+            if observation_sources
+            else []
         )
-        forecasts = self._query(
-            """
+        forecasts = (
+            self._query(
+                """
             SELECT p.*
             FROM forecast_points p
             WHERE p.source='nws' AND julianday(p.valid_at)>=julianday(?)
@@ -352,20 +374,27 @@ class DashboardQuery:
             ORDER BY p.received_at,p.capture_id,p.legacy_snapshot_id,julianday(p.valid_at),
                      p.forecast_point_id
             """,
-            (
-                (start - timedelta(days=1)).isoformat(),
-                (end + timedelta(days=1)).isoformat(),
-                as_of_text,
-            ),
+                (
+                    (start - timedelta(days=1)).isoformat(),
+                    (end + timedelta(days=1)).isoformat(),
+                    as_of_text,
+                ),
+            )
+            if "forecast" in sources
+            else []
         )
-        settlement = self._query(
-            """
+        settlement = (
+            self._query(
+                """
             SELECT * FROM settlement_rows
             WHERE station_id='KLGA' AND julianday(observed_at)>=julianday(?)
               AND julianday(observed_at)<julianday(?) AND received_at<=?
             ORDER BY received_at,julianday(observed_at),row_id
             """,
-            (observation_start.isoformat(), end.isoformat(), as_of_text),
+                (observation_start.isoformat(), end.isoformat(), as_of_text),
+            )
+            if "weather-gov" in sources
+            else []
         )
         return {
             "observations": observations,

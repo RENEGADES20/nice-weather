@@ -459,6 +459,8 @@ def render(db: Path, trading_tab, backtest_tab, system_tab=None):
         (trading_tab, lambda root: terminal_trading(root, db)),
         (backtest_tab, backtest),
     ):
+        if tab is None:
+            continue
         with tab:
             try:
                 renderer(root)

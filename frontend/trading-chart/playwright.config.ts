@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: ["streamlit.spec.ts", "terminal.spec.ts"],
+  testMatch: ["streamlit.spec.ts", "terminal.spec.ts", "repricing-performance.spec.ts"],
   timeout: 75_000,
   globalSetup: "./e2e/serve.mjs",
   use: { baseURL: "http://127.0.0.1:8511" },

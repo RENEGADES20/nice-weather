@@ -1,5 +1,13 @@
 # 当前状态
 
+## 2026-09-14 Repricing 分钟变化与性能修订
+
+Difference 保留六选一下拉框：三个天气温差，以及 ΔPrice 与 ΔMETAR、ΔForecast revision、ΔHourly Temp 的双轴比较。采用市场日真实时间、固定一分钟变化，价格用百分点，天气用 °F；Forecast 修订比较新旧 capture 对同一有效时刻的值。缺失、过期、回退价格处断线。移除 Weather update、事件基线、Zoom to update 和自动延迟阈值。
+
+Difference 本地切换不请求 Dashboard 重跑。分钟变化只重算受影响分钟及下一分钟；无变化刷新复用序列和时间轴，事件标记不重复设置。天气按来源失效、从新记录收到的分钟起重建，行情限定 event/bin 并使用既有游标索引。页签按激活状态计算，离开 Repricing 停止其展示刷新，返回恢复选择。最低 Streamlit 1.62，现有 VM 已兼容；没有新增数据库表、服务或缓存框架。
+
+验收方法、性能数据和发布门槛见 `docs/acceptance/repricing-minute-differences-2026-09-14.md`。下面的事件响应设计为已被本次修订替代的历史记录。
+
 ## 2026-09-14 Repricing 价格响应发布
 
 Difference 改为单选下拉框：保留三个天气温差，以 METAR、Forecast revision、Hourly Temp 更新后的价格响应替代三个价格减温度选项。事件前一分钟 CLOB mid 为基线，绘制百分点变化，标记首次绝对变化达到 1 pp 的近似等待时间；仅使用一分钟 as-of 输入，同分钟先后未确定，缺口与回退价格停止测量，下一事件或 60 分钟截断窗口。Forecast capture 更新的相邻分钟温度不能解释为同一有效时刻的修订幅度。未来快照不计算延迟。
