@@ -5,9 +5,26 @@ import {
   mergeRawPoints,
   nonNullSegments,
   stepVertices,
+  weatherUpdates,
+  priceResponse,
 } from "./difference";
 
 describe("difference alignment", () => {
+  it("measures sampled response without interpolation events, gaps or fallback price jumps", () => {
+    const weather = [70, 71, 72, 73].map((value, index) => ({ time: index * 60, value, captureId: index < 2 ? "a" : "b" }));
+    expect(weatherUpdates(weather, true).map((point) => point.time)).toEqual([120]);
+    expect(weatherUpdates(weather).map((point) => point.time)).toEqual([60, 120, 180]);
+    expect(weatherUpdates([{ time: 0, value: 70 }, { time: 120, value: 71 }])).toEqual([]);
+    const prices = [20, 20.2, 20.5, 21.1].map((value, index) => ({ time: index * 60, value, priceSource: "CLOB mid" }));
+    const response = priceResponse(prices, weather[1], 180);
+    expect(response.firstMove).toBe(180);
+    expect(response.points.at(-1)?.value).toBeCloseTo(1.1);
+    expect(priceResponse(prices, weather[1], 120).firstMove).toBeNull();
+    expect(priceResponse(prices.map((p) => p.time === 120 ? { ...p, value: null } : p), weather[1], 180).interrupted).toBe(true);
+    expect(priceResponse(prices.map((p) => p.time === 180 ? { ...p, priceSource: "Gamma approximate" } : p), weather[1], 180).firstMove).toBeNull();
+    expect(priceResponse(prices.slice(1), weather[1], 180).points).toEqual([]);
+    expect(priceResponse(prices.filter((p) => p.time !== 120), weather[1], 180).firstMove).toBeNull();
+  });
   it("keeps exact step changes, zeros, gaps and endpoints without changing audit points", () => {
     const points = [0.05, 0.05, 0.002, 0.002, 0.05, 0.05, null, 0, 0, 0]
       .map((value, time) => ({time, value, receivedAt: String(time)}));

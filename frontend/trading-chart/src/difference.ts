@@ -79,6 +79,36 @@ export type DifferencePoint = {
   right: RawPoint | null;
 };
 
+// Events use the existing received-as-of minute grid; sub-minute latency is unavailable.
+export function weatherUpdates(points: RawPoint[], forecast = false): RawPoint[] {
+  return points.filter((point, index) => {
+    const previous = points[index - 1];
+    if (!previous || previous.value == null || point.value == null
+      || point.time - previous.time !== 60) return false;
+    return forecast
+      ? Boolean(point.captureId && previous.captureId && point.captureId !== previous.captureId)
+      : point.value !== previous.value;
+  });
+}
+
+export function priceResponse(prices: RawPoint[], event: RawPoint, end: number) {
+  const baseline = prices.find((point) => point.time === event.time - 60);
+  const valid = (point?: RawPoint) => point?.value != null && point.priceSource === "CLOB mid";
+  const points: DifferencePoint[] = [];
+  let firstMove: number | null = null;
+  let interrupted = false;
+  if (!valid(baseline)) return { points, firstMove, interrupted: true };
+  let previousTime = event.time - 60;
+  for (const point of prices.filter((item) => item.time >= event.time && item.time <= end)) {
+    if (!valid(point) || point.time - previousTime !== 60) { interrupted = true; break; }
+    const value = point.value! - baseline!.value!;
+    points.push({ time: point.time, value, left: point, right: baseline! });
+    if (firstMove === null && Math.abs(value) >= 1 - 1e-9) firstMove = point.time;
+    previousTime = point.time;
+  }
+  return { points, firstMove, interrupted };
+}
+
 export function differencePoints(
   left: RawPoint[],
   right: RawPoint[],

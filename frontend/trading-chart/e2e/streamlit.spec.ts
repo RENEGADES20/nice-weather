@@ -25,6 +25,44 @@ async function openRepricing(page: Page): Promise<FrameLocator> {
   throw lastError;
 }
 
+test("difference dropdown shows an update-aligned sampled price response", async ({page}) => {
+  await page.addInitScript(() => window.addEventListener("message", (event) => {
+    if (event.data?.type === "streamlit:render" && event.data.args?.payload?.gzip) {
+      Object.assign(window, {testWire: event.data.args.payload});
+    }
+  }));
+  const frame = await openRepricing(page);
+  await frame.locator("#app").evaluate(async (root) => {
+    const wire = (window as unknown as {testWire: {gzip: string}}).testWire;
+    const bytes = Uint8Array.from(atob(wire.gzip), (char) => char.charCodeAt(0));
+    const payload = await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))).json();
+    payload.signature = "response-check";
+    payload.sequence = Number((root as HTMLElement).dataset.sequence) + 1000;
+    payload.asOf = payload.windowStart + 600;
+    for (const spec of payload.differenceInputs) {
+      spec.points = Array.from({length: 10}, (_, index) => ({
+        time: payload.windowStart + index * 60,
+        value: spec.id === "price" ? (index < 4 ? 20 : 22) : (index < 2 ? 70 : 72),
+        priceSource: spec.id === "price" ? "CLOB mid" : undefined,
+        binId: payload.selectedBinId,
+        captureId: index < 2 ? "a" : "b",
+      }));
+    }
+    window.postMessage({type: "streamlit:render", args: {payload}, dfs: [], disabled: false}, "*");
+  });
+  await expect(frame.locator("#app")).toHaveAttribute("data-signature", "response-check");
+  await frame.getByRole("combobox", {name: "Difference view"}).selectOption("price-minus-metar");
+  await expect(frame.locator("#difference-detail")).toContainText("≈2 min");
+  await expect(frame.getByRole("combobox", {name: "Weather update"})).toBeEnabled();
+  await frame.getByRole("button", {name: "Zoom to update"}).click();
+  await expect(frame.locator("#follow-button")).toHaveAttribute("aria-pressed", "false");
+  await frame.getByRole("combobox", {name: "Difference view"}).selectOption("metar-minus-forecast");
+  await expect(frame.locator("#response-controls")).toBeHidden();
+  await frame.getByRole("combobox", {name: "Difference view"}).selectOption("price-minus-forecast");
+  await expect(frame.locator("#difference-detail")).toContainText("≈2 min");
+  await page.screenshot({path: `test-results/response-${test.info().project.name}.png`, fullPage: true});
+});
+
 test("crosshair canvas labels use the same New York time as the legends", async ({page}) => {
   const frame = await openRepricing(page);
   await frame.locator("#app").evaluate(() => {
@@ -226,12 +264,9 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     (node, index) => node.setAttribute("data-identity", `stable-canvas-${index}`),
   ));
   await frame.locator("#events-button").click();
-  await expect(frame.locator("input[name='difference']")).toHaveCount(6);
-  await expect(
-    frame.locator("input[name='difference'][value='price-minus-forecast']"),
-  ).toBeChecked();
-  await expect(frame.locator("input[name='difference'][value='weather-gov-minus-metar']"))
-    .not.toBeChecked();
+  const differenceSelect = frame.getByRole("combobox", {name: "Difference view"});
+  await expect(frame.locator("#difference-select option")).toHaveCount(6);
+  await expect(differenceSelect).toHaveValue("price-minus-metar");
   const differenceIds = [
     "metar-minus-forecast",
     "weather-gov-minus-forecast",
@@ -240,21 +275,11 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     "price-minus-metar",
     "price-minus-weather-gov",
   ];
-  for (const id of [
-    "weather-gov-minus-forecast",
-    "weather-gov-minus-metar",
-    "price-minus-weather-gov",
-  ]) {
-    await frame.locator(`input[name='difference'][value='${id}']`).click();
-    await expect(frame.locator(`input[name='difference'][value='${id}']`)).toBeChecked();
-  }
   for (const id of differenceIds) {
-    await frame.locator(`input[name='difference'][value='${id}']`).click();
-    await expect(frame.locator(`input[name='difference'][value='${id}']`)).not.toBeChecked();
+    await differenceSelect.selectOption(id);
+    await expect(differenceSelect).toHaveValue(id);
   }
-  for (const id of [differenceIds[0], differenceIds[3], differenceIds[4]]) {
-    await frame.locator(`input[name='difference'][value='${id}']`).click();
-  }
+  await differenceSelect.selectOption("price-minus-forecast");
   await frame.locator("#reset-button").click();
   await frame.locator("#main-chart").hover();
   await page.mouse.wheel(0, -500);
@@ -292,9 +317,7 @@ test("keeps the real Streamlit chart stable for ten feed cycles", async ({ page 
     await expect(frame.locator("#app")).toHaveAttribute("data-mount-count", "1");
     await expect(frame.locator("#shell")).toHaveCSS("opacity", "1");
     await expect(frame.locator("#events-button")).toHaveAttribute("aria-pressed", "true");
-    await expect(
-      frame.locator("input[name='difference'][value='price-minus-forecast']"),
-    ).toBeChecked();
+    await expect(differenceSelect).toHaveValue("price-minus-forecast");
     await expect(frame.locator("#app")).toHaveAttribute("data-feed-paused", "false");
     await expect(frame.locator("#app")).toHaveAttribute("data-main-crosshair", /.+/);
     await expect(frame.locator("#app")).toHaveAttribute("data-difference-crosshair", /.+/);
@@ -358,13 +381,15 @@ test("keeps one bin state and fits the requested viewport", async ({ page }, tes
 });
 
 
-test("future market uses a current price snapshot and one difference", async ({ page }, testInfo) => {
+test("future market uses a current price snapshot without response delay", async ({ page }, testInfo) => {
   const frame = await openRepricing(page);
   await page.getByRole("combobox").first().click();
   await page.getByRole("option").filter({ hasText: "Future fixture" }).click();
   await expect(frame.locator("#app")).toHaveAttribute("data-comparison-mode", "future-snapshot");
   await expect(frame.locator("#mode-notice")).toContainText("Current snapshot comparison");
-  await expect(frame.locator("input[name='difference']")).toHaveCount(1);
+  await expect(frame.locator("#difference-select")).toHaveCount(1);
+  await expect(frame.locator("#difference-detail")).toContainText("future snapshots cannot measure delay");
+  await expect(frame.locator("#difference-empty")).toBeVisible();
   await expect(frame.locator("#price-readout")).toContainText("20.0%");
   await expect(frame.locator("#main-legend")).not.toContainText("METAR");
   const latencies: number[] = [];
