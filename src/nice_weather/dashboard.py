@@ -1595,9 +1595,11 @@ def _render_trading_timeline(db: Path) -> None:
         signature,
     )
     st.caption(
-        "Difference uses six fixed real-time subtractions. Price comparisons are display spreads "
-        "without a shared physical unit; they are visual research aids and are excluded from "
-        "trading decisions and historical labels."
+        "Difference offers weather spreads in °F and price responses in percentage points "
+        "relative to the CLOB mid immediately before a received weather update. "
+        "The first ±1 pp move is measured at minute resolution; timing association does not "
+        "establish causality or an executable delay. These views are excluded from trading "
+        "decisions and historical labels."
     )
 
 
