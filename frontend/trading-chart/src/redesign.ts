@@ -18,6 +18,7 @@ import { Streamlit, type RenderData } from "streamlit-component-lib";
 import { renderTerminal } from "./terminal";
 import {
   differencePoints,
+  symmetricAutoscale,
   minuteChanges,
   mergeRawPoints,
   nonNullSegments,
@@ -589,10 +590,7 @@ function differenceOptions(spec: DifferenceSpec) {
     lineWidth: 2 as const,
     lineType: LineType.Simple,
     autoscaleInfoProvider: (original: () => {priceRange: {minValue: number; maxValue: number}} | null) => {
-      const info = original();
-      if (!info) return null;
-      const extent = Math.max(Math.abs(info.priceRange.minValue), Math.abs(info.priceRange.maxValue), 0.1);
-      return {...info, priceRange: {minValue: -extent, maxValue: extent}};
+      return symmetricAutoscale(original());
     },
     priceScaleId: spec.axis,
     priceLineVisible: false,
