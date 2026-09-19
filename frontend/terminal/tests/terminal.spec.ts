@@ -117,12 +117,18 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
     wsMock = ws;
   });
   const errors: string[] = [];
+  const measuredNames = new Set<string>();
   page.on("console", (m) => {
     if (m.text().includes("error occurred in")) errors.push(m.text());
+    if (m.text().startsWith("terminal-performance ")) {
+      const value = JSON.parse(m.text().slice("terminal-performance ".length));
+      expect(Number.isFinite(value.ms)).toBe(true);
+      measuredNames.add(value.name);
+    }
   });
   page.on("pageerror", (e) => errors.push(e.message));
   const started = Date.now();
-  await page.goto("/");
+  await page.goto("/?measure=1");
   await expect(
     page.getByRole("heading", { name: "KNYC 每日最高温" }),
   ).toBeVisible();
@@ -266,6 +272,9 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
     fullPage: true,
   });
   expect(errors).toEqual([]);
+  expect(measuredNames).toEqual(new Set([
+    "terminal-ready", "bin-select-display", "market-event-display",
+  ]));
   const percentile = (a: number[]) =>
     a.toSorted((a, b) => a - b)[Math.ceil(a.length * 0.95) - 1];
   const p95 = percentile(timings),

@@ -75,6 +75,13 @@ const money = (n?: number | null) =>
 const price = (n?: number) => (n == null ? "—" : `${(n * 100).toFixed(1)}¢`);
 const clock = (n?: number) =>
   n ? new Date(n * 1000).toLocaleTimeString() : "—";
+const recordPerformance = new URLSearchParams(location.search).get("measure") === "1";
+function measureDisplay(name: string, start: number) {
+  performance.clearMeasures(name);
+  const measured = performance.measure(name, { start, end: performance.now() });
+  if (recordPerformance)
+    console.debug("terminal-performance " + JSON.stringify({ name, ms: measured.duration }));
+}
 
 async function api(path: string, body?: unknown, csrf = "") {
   const response = await fetch("/api/" + path, {
@@ -529,17 +536,32 @@ function App() {
   const [replayDay, setReplayDay] = useState(""),
     [replayStrategy, setReplayStrategy] = useState("S1_S2_S3");
   const [receipts, setReceipts] = useState<Record<string, any>[]>([]);
+  const readyMeasured = useRef(false);
+  useLayoutEffect(() => {
+    if (!recordPerformance || !connected || !state.contracts.length || readyMeasured.current) return;
+    const frame = requestAnimationFrame(() => {
+      measureDisplay("terminal-ready", 0);
+      readyMeasured.current = true;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [connected, state.contracts.length]);
+  useLayoutEffect(() => {
+    const started = performance.getEntriesByName("bin-select").at(-1)?.startTime;
+    if (started == null) return;
+    const frame = requestAnimationFrame(() => {
+      measureDisplay("bin-select-display", started);
+      performance.clearMarks("bin-select");
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [selected]);
   useLayoutEffect(() => {
     const started = performance
       .getEntriesByName("market-event-received")
       .at(-1)?.startTime;
     if (started == null) return;
     const frame = requestAnimationFrame(() => {
-      performance.clearMeasures("market-event-display");
-      performance.measure("market-event-display", {
-        start: started,
-        end: performance.now(),
-      });
+      measureDisplay("market-event-display", started);
+      performance.clearMarks("market-event-received");
     });
     return () => cancelAnimationFrame(frame);
   }, [state.cursor]);
@@ -576,9 +598,11 @@ function App() {
           setConnected(true);
         };
         socket.onmessage = (e) => {
-          performance.clearMarks("market-event-received");
-          performance.mark("market-event-received");
           const message = JSON.parse(e.data);
+          if (message.events?.some((event: { kind: string }) => event.kind === "book")) {
+            performance.clearMarks("market-event-received");
+            performance.mark("market-event-received");
+          }
           setState((old) => {
             const next = {
               ...old,
@@ -833,6 +857,7 @@ function App() {
                   aria-pressed={token === c.yes_token_id}
                   className={token === c.yes_token_id ? "selected" : ""}
                   onClick={() => {
+                    performance.clearMarks("bin-select");
                     performance.mark("bin-select");
                     setSelected(c.yes_token_id);
                   }}
