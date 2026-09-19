@@ -36,6 +36,7 @@ def scenario():
                 "fee_rounding": "ceil_cent",
                 "tick_size": "0.01",
                 "minimum_order_size": 0.01,
+                "quantity_step": "0.01",
                 "active": True,
                 "closed": False,
                 "accepting_orders": True,

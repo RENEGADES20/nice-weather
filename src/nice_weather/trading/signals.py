@@ -45,7 +45,9 @@ def select(strategy, contracts, weather, asof):
     required = ("received_at", "data_cutoff", "p_end", "floor", "model_trained_at")
     if any(not finite(weather.get(k)) for k in required):
         raise ValueError("INVALID_WEATHER_INPUT")
-    if not weather.get("model_version", "").startswith("knyc-"):
+    if not isinstance(weather.get("model_version"), str) or not weather["model_version"].startswith(
+        "knyc-"
+    ):
         raise ValueError("KNYC_MODEL_REQUIRED")
     if weather.get("station") != "KNYC" or not contracts:
         raise ValueError("STATION_OR_CONTRACT_MISSING")
@@ -79,6 +81,8 @@ def select(strategy, contracts, weather, asof):
     ):
         raise ValueError("CONTRACT_MODEL_MISMATCH")
     probs = weather.get("probabilities", {})
+    if not isinstance(probs, dict):
+        raise ValueError("INVALID_BIN_PROBABILITIES")
     q = [probs.get(c["yes_token_id"]) for c in contracts]
     if any(not finite(p) or not 0 <= p <= 1 for p in q) or abs(sum(q) - 1) > 1e-6:
         raise ValueError("INVALID_BIN_PROBABILITIES")

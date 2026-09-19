@@ -222,8 +222,10 @@ class Session:
                         currency=self.currency,
                         price_precision=increment.precision,
                         price_increment=increment,
-                        size_precision=6,
-                        size_increment=Quantity.from_str("0.000001"),
+                        size_precision=Quantity.from_str(
+                            row.get("quantity_step", "0.000001")
+                        ).precision,
+                        size_increment=Quantity.from_str(row.get("quantity_step", "0.000001")),
                         activation_ns=0,
                         expiration_ns=4102444800000000000,
                         ts_event=self.now,

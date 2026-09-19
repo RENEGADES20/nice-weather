@@ -846,6 +846,19 @@ function App() {
                       {id} <span>{name}</span>
                     </b>
                     <p>{signal?.reason ?? "等待 KNYC 专属模型与有效输入"}</p>
+                    {signal?.execution_reason && (
+                      <p className="warn">
+                        组合后续下单已停止；已成交部分保留。
+                      </p>
+                    )}
+                    {signal?.executions?.map((leg: Record<string, any>) => (
+                      <p key={leg.token}>
+                        {markets.find((c) => c.yes_token_id === leg.token)
+                          ?.title ?? leg.token}
+                        {" · "}
+                        {leg.filled} / {leg.requested} 份
+                      </p>
+                    ))}
                     <small>
                       {signal?.net_edge != null
                         ? `净优势 ${(signal.net_edge * 100).toFixed(2)}¢`
