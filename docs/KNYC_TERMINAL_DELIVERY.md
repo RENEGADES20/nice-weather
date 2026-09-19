@@ -9,7 +9,7 @@
 ## 验收清单
 
 - [x] 精简 AGENTS 和启动提示，取消常规继续确认。
-- [ ] 核验 worktree、远端 main、VM manifest 和运行服务，保留已有未提交改动。
+- [x] 核验 worktree、远端 main、VM manifest 和运行服务，保留已有未提交改动。
 - [ ] KNYC 观测、HRRR、CLI 原文版本与真实接收时间持续采集；独立气候日与民用日。
 - [ ] Kalshi 与 Poly US 实际 KNYC 合约、费用、结算源、舍入、深度及认证分别验证。
 - [ ] React/TypeScript/Vite 独立终端、统一选择、增量行情、缓存 bin 切换、后台回测。
@@ -41,6 +41,6 @@ OpenAI [Rethinking skills and prompts](https://developers.openai.com/blog/rethin
 
 已实现的独立部分：React 单入口、天气/盘口/票据/账户/回测工作区、公开双平台原文与实际接收时间采集、HRRR KNYC 格点、共享冻结信号函数、Nautilus 模拟成交与首次触发恢复、请求去重、后台重放。公开市场规则尚未完成观察窗口/舍入/修订核验，采集到的实际合约默认 ambiguous / no-trade；测试合约的成交验证不能解除此门禁。
 
-尚未交付：经验证的 KNYC 模型及前瞻信号生产、真实历史研究复现与可执行收益对照、平台原生行情订阅、Kalshi/Poly US 实盘认证与 Nautilus Live 适配、用户账户/风险/白名单配置、US 最终结算事件接入、全市场日观察、线上性能与故障恢复、VM 发布。以上继续保留为待办，不用默认关闭的接口冒充已实现。
+尚未交付：经验证的 KNYC 模型及前瞻信号生产、真实历史研究复现与可执行收益对照、平台原生行情订阅、Kalshi/Poly US 真实账户认证验收与 Nautilus Live 适配、用户账户/风险/白名单配置、US 最终结算事件接入、全市场日观察、线上性能与故障恢复、VM 发布。签名传输和稳定请求日志已随 PR #46 合并；这些模块不能代替原生账户/成交对账。以上继续保留为待办，不用默认关闭的接口冒充已实现。
 
-VM 浏览器管理页可读取实例 running；SSH 页面可连接但输入及输出核验失败、截图连续超时。未取得实际 manifest/SHA，未发起服务变更或切换入口。缺失真实账户凭据也阻止认证、对账与平台恢复的集成验收。模型方面，现有 KNYC 历史试验缺真实 received_at 与 HRRR，Kalshi 标签源还需独立核验，不复制 KLGA 权重或把 CLI 自动视为 Weather Company 标签。
+VM 已通过 SSH 核验运行清单 fc83189 及逐文件哈希、服务、磁盘与独立数据路径。发布包已按合并版本 6c29161 构建并验证，但尚未上传、安装或切换入口。扩展重连后，自动审批要求明确授权 ssh.cloud.google.com 的已登录会话访问，等待此项权限；本地文件访问权限已由用户开启。缺失真实账户凭据也阻止认证、对账与平台恢复的集成验收。模型方面，现有 KNYC 历史试验缺真实 received_at 与 HRRR，Kalshi 标签源还需独立核验，不复制 KLGA 权重或把 CLI 自动视为 Weather Company 标签。

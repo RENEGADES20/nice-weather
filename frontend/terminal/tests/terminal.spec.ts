@@ -3,6 +3,7 @@ import { test, expect, type WebSocketRoute } from "@playwright/test";
 test("cached bin interaction stays local; trading, stale feed and responsive layout", async ({
   page,
 }, testInfo) => {
+  test.setTimeout(60000);
   const now = Date.now() / 1000;
   const contracts = Array.from({ length: 6 }, (_, i) => ({
     venue: "kalshi",
@@ -80,11 +81,23 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
     });
   });
   await page.route("**/api/requests", (r) => r.fulfill({ json: [] }));
+  await page.route("**/api/requests/*", (r) =>
+    r.fulfill({
+      json: {
+        account: "sandbox-kalshi-knyc",
+        kind: "order",
+        status: "accepted",
+      },
+    }),
+  );
   await page.route("**/api/commands", (r) => {
     commands++;
     return r.fulfill({
       status: 202,
-      json: { request_id: "fixture-command", status: "queued" },
+      json: {
+        request_id: r.request().postDataJSON().request_id,
+        status: "queued",
+      },
     });
   });
   let wsMock: WebSocketRoute;
@@ -126,6 +139,7 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
   const feedback: number[] = [],
     display: number[] = [];
   for (let i = 0; i < 24; i++) {
+    await expect(page.locator(".ticket button.primary")).toBeEnabled();
     feedback.push(
       await page.evaluate(async () => {
         const start = performance.now();
@@ -138,16 +152,33 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
         if (
           !document
             .querySelector('.ticket [role="status"]')
-            ?.textContent?.match(/提交中|已排队/)
+            ?.textContent?.match(/提交中|已排队|accepted/)
         )
           throw new Error("Missing immediate command status");
         return performance.now() - start;
       }),
     );
-    await expect(page.getByRole("status")).toContainText("已排队");
+    await expect(page.getByRole("status")).toContainText(/已排队|accepted/);
     const ask = 0.61 + i * 0.001;
     wsMock!.send(
       JSON.stringify({
+        accounts: [
+          {
+            account: "sandbox-kalshi-knyc",
+            mode: "sandbox",
+            status: "running",
+            updated: Date.now() / 1000,
+            snapshot: {
+              cash: 100,
+              equity: 100,
+              available: 100,
+              total_pnl: 0,
+              orders: [],
+              positions: [],
+              fills: [],
+            },
+          },
+        ],
         events: [
           {
             seq: 2 + i,
@@ -221,4 +252,118 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
   expect(firstPaint).toBeLessThanOrEqual(3000);
   expect(feedbackP95).toBeLessThanOrEqual(100);
   expect(displayP95).toBeLessThanOrEqual(100);
+});
+
+test("unknown command survives reload and retries only the original payload and ID", async ({
+  page,
+  context,
+}) => {
+  const now = Date.now() / 1000;
+  await context.route("**/api/session", (r) =>
+    r.fulfill({ json: { csrf: "fixture" } }),
+  );
+  await context.route("**/api/snapshot", (r) =>
+    r.fulfill({
+      json: {
+        cursor: 1,
+        contracts: [
+          {
+            venue: "kalshi",
+            station_id: "KNYC",
+            local_day: "2026-09-19",
+            yes_token_id: "kalshi:test",
+            title: "69 to 70",
+            parse_status: "parsed",
+            fee_known: true,
+            fee_rate: 0.07,
+            minimum_order_size: 0.01,
+            tick_size: "0.01",
+          },
+        ],
+        books: {
+          "kalshi:test": {
+            bids: [[0.4, 10]],
+            asks: [[0.5, 10]],
+            complete: true,
+            received_at: now,
+          },
+        },
+        weather: {},
+        health: {},
+        live: { enabled: false, reason: "test" },
+        accounts: [
+          {
+            account: "sandbox-kalshi-knyc",
+            status: "running",
+            mode: "sandbox",
+            updated: now,
+            snapshot: {
+              cash: 100,
+              orders: [],
+              positions: [],
+              strategy_enabled: true,
+            },
+          },
+        ],
+      },
+    }),
+  );
+  await context.route("**/api/history?*", (r) => r.fulfill({ json: [] }));
+  await context.route("**/api/requests", (r) => r.fulfill({ json: [] }));
+  await context.routeWebSocket("**/api/events*", () => {});
+  let visibleReceipt = false;
+  const bodies: Record<string, any>[] = [];
+  await context.route("**/api/requests/*", (r) =>
+    visibleReceipt
+      ? r.fulfill({
+          json: {
+            account: "sandbox-kalshi-knyc",
+            kind: "order",
+            status: "accepted",
+          },
+        })
+      : r.fulfill({ status: 404, json: { detail: "not recorded" } }),
+  );
+  await context.route("**/api/commands", async (r) => {
+    bodies.push(r.request().postDataJSON());
+    if (bodies.length === 1) return r.abort("failed");
+    return r.fulfill({
+      status: 202,
+      json: { request_id: bodies.at(-1)!.request_id, status: "queued" },
+    });
+  });
+  await page.goto("/");
+  const buy = page.getByRole("button", { name: "买入 YES", exact: true });
+  await expect(buy).toBeEnabled();
+  await buy.click();
+  await expect(page.getByRole("status")).toContainText("请求未确认");
+  await expect(buy).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "停止策略", exact: true }),
+  ).toBeEnabled();
+  const second = await context.newPage();
+  await second.goto("/");
+  await expect(
+    second.getByRole("button", { name: "买入 YES", exact: true }),
+  ).toBeDisabled();
+  await expect(second.getByText(/待核验 · kalshi/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByText(/待核验 · kalshi/)).toBeVisible();
+  await expect(buy).toBeDisabled();
+  expect(bodies).toHaveLength(1); // Reload and background lookup never submit.
+  await page.getByLabel("限价（美元）").fill("0.60");
+  await page.getByRole("button", { name: "查询回执 / 原 ID 重试" }).click();
+  await expect.poll(() => bodies.length).toBe(2);
+  expect(bodies[1]).toEqual(bodies[0]);
+  expect(bodies[1].payload.price).toBe(0.5);
+  await expect(buy).toBeDisabled(); // A queue acknowledgement is not execution confirmation.
+  visibleReceipt = true;
+  await page.reload();
+  await expect(buy).toBeEnabled();
+  expect(bodies).toHaveLength(2);
+  await expect(
+    second.getByRole("button", { name: "买入 YES", exact: true }),
+  ).toBeEnabled();
+  await second.close();
+  await expect(page.getByText(/待核验 · kalshi/)).toHaveCount(0);
 });

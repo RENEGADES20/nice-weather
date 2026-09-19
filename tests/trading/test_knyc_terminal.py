@@ -235,6 +235,17 @@ def test_api_authentication_csrf_and_disabled_live(tmp_path):
         headers = {"Origin": origin, "X-CSRF-Token": csrf}
         assert client.post("/api/commands", json=replay, headers=headers).status_code == 202
         assert client.post("/api/commands", json=replay, headers=headers).status_code == 202
+        # Exact lookup still recovers a request after it falls outside the recent 30 rows.
+        from nice_weather.trading.storage import Requests
+
+        requests = Requests(tmp_path / "requests" / "requests.sqlite3")
+        for i in range(31):
+            requests.submit(f"later-{i}", "backtest-kalshi", "backtest", "backtest", {})
+        assert not any(r["request_id"] == "replay-1" for r in client.get("/api/requests").json())
+        receipt = client.get("/api/requests/replay-1")
+        assert receipt.status_code == 200 and receipt.json()["status"] == "queued"
+        assert "payload" not in receipt.json()
+        assert client.get("/api/requests/not-recorded").status_code == 404
         replay["payload"]["end"] = 3
         assert client.post("/api/commands", json=replay, headers=headers).status_code == 409
 

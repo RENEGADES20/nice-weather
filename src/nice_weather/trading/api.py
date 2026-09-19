@@ -165,6 +165,19 @@ def create_app(root: Path, *, password=None, origin=None):
                 )
             ]
 
+    @app.get("/api/requests/{request_id}")
+    def receipt(request_id: str):
+        if len(request_id) > 100:
+            raise HTTPException(400, "Invalid request ID")
+        with connect(requests.path, readonly=True) as con:
+            row = con.execute(
+                "SELECT request_id,account,mode,kind,status,error,created FROM requests "
+                "WHERE request_id=?", (request_id,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Request not recorded; absence is not execution confirmation")
+        return dict(row)
+
     @app.post("/api/commands", status_code=202)
     def command(body: Command):
         if body.venue in VENUES and body.mode == "backtest" and body.kind == "backtest":
