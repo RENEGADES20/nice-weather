@@ -44,6 +44,7 @@ def build(revision, output):
         | ({"deploy/systemd/nice-weather-terminal.service"} if terminal in paths else set())
         | {
             "pyproject.toml",
+            "README.md",
             "deploy/journald-trading.conf",
             "deploy/systemd/nice-weather-sandbox.service",
             "deploy/systemd/nice-weather-backtest.service",
