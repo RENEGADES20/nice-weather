@@ -84,15 +84,160 @@ async function api(path: string, body?: unknown, csrf = "") {
       ? { "Content-Type": "application/json", "X-CSRF-Token": csrf }
       : {},
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) {
     let message = `请求失败 (${response.status})`;
     try {
       message = (await response.json()).detail ?? message;
     } catch {}
-    throw new Error(message);
+    throw Object.assign(new Error(message), { status: response.status });
   }
   return response.json();
+}
+
+type SavedCommand = {
+  request_id: string;
+  venue: string;
+  mode: string;
+  kind: string;
+  payload: Record<string, unknown>;
+};
+const commandStorage = "nw-unconfirmed-commands-v1";
+function readCommands(): SavedCommand[] {
+  const commands = JSON.parse(localStorage.getItem(commandStorage) ?? "[]");
+  if (
+    !Array.isArray(commands) ||
+    commands.some(
+      (c) => !c?.request_id || !c.venue || !c.kind || !c.mode || !c.payload,
+    )
+  )
+    throw new Error("本地请求记录损坏，交易已暂停");
+  return commands;
+}
+
+function useCommands(
+  csrf: string,
+  session: boolean,
+  notify: (text: string) => void,
+) {
+  const [blocked, setBlocked] = useState(false);
+  const [saved, setSaved] = useState<SavedCommand[]>([]);
+  const journal = useRef<SavedCommand[]>([]);
+  const sending = useRef(new Set<string>());
+  const [pending, setPending] = useState(false);
+  const update = (commands: SavedCommand[]) => {
+    journal.current = commands;
+    setSaved(commands);
+  };
+  const persist = async (
+    change: (current: SavedCommand[]) => SavedCommand[],
+  ) => {
+    // Browser-native lock also protects two terminal tabs submitting at the same time.
+    try {
+      await navigator.locks.request(commandStorage, () => {
+        const commands = change(readCommands());
+        localStorage.setItem(commandStorage, JSON.stringify(commands));
+        update(commands);
+      });
+    } catch (e) {
+      setBlocked(true);
+      throw e;
+    }
+  };
+  const forget = (id: string) =>
+    persist((current) => current.filter((c) => c.request_id !== id));
+  const reconcile = async (command: SavedCommand) => {
+    const row = await api(`requests/${encodeURIComponent(command.request_id)}`);
+    if (
+      row.account !== `${command.mode}-${command.venue}-knyc` ||
+      row.kind !== command.kind
+    )
+      throw new Error("回执账户或指令不匹配，保留待核验状态");
+    if (["accepted", "rejected"].includes(row.status)) {
+      await forget(command.request_id);
+      notify(
+        `${command.venue} · ${command.kind} · ${row.status}${row.error ? ` · ${row.error}` : ""}`,
+      );
+    }
+    return row;
+  };
+  useEffect(() => {
+    const refresh = () => {
+      try {
+        if (!navigator.locks) throw new Error("Browser locks unavailable");
+        update(readCommands());
+      } catch {
+        setBlocked(true);
+        notify("无法读取或保存本地请求记录，交易已暂停");
+      }
+    };
+    refresh();
+    window.addEventListener("storage", refresh);
+    return () => window.removeEventListener("storage", refresh);
+  }, []);
+  useEffect(() => {
+    if (!session) return;
+    const poll = () => {
+      for (const command of journal.current) reconcile(command).catch(() => {}); // Missing/failed lookup cannot authorize a new order.
+    };
+    poll();
+    const timer = setInterval(poll, 1000);
+    return () => clearInterval(timer);
+  }, [session]);
+  async function send(command: SavedCommand, retry = false) {
+    if (blocked || sending.current.has(command.request_id)) return;
+    if (
+      !retry &&
+      !["cancel", "stop"].includes(command.kind) &&
+      journal.current.length
+    ) {
+      notify("有未确认请求；先查询回执或用原请求 ID 重试");
+      return;
+    }
+    sending.current.add(command.request_id);
+    setPending(true);
+    notify("提交中…");
+    try {
+      if (retry) {
+        try {
+          await reconcile(command);
+          return; // A queued/unknown/terminal receipt never authorizes another POST.
+        } catch (e) {
+          if ((e as { status?: number }).status !== 404) throw e;
+        }
+      } else {
+        let added = false;
+        await persist((current) => {
+          if (!["cancel", "stop"].includes(command.kind) && current.length)
+            return current;
+          added = true;
+          return [...current, command];
+        });
+        if (!added) {
+          notify("有未确认请求；先查询回执或用原请求 ID 重试");
+          return;
+        }
+      }
+      const row = await api("commands", command, csrf);
+      if (row.request_id !== command.request_id)
+        throw new Error("请求回执 ID 不匹配");
+      notify(`已排队 · ${command.request_id.slice(0, 8)}，等待执行确认`);
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      // Only a first submission rejected before enqueue is conclusive. Retries retain ambiguity.
+      if (!retry && status && [400, 401, 403, 409, 422].includes(status)) {
+        await forget(command.request_id);
+        notify(`请求被拒绝 · ${(e as Error).message}`);
+      } else {
+        notify(`请求未确认 · ${(e as Error).message}；先核验回执`);
+      }
+    } finally {
+      sending.current.delete(command.request_id);
+      setPending(sending.current.size > 0);
+    }
+  }
+  return { saved, blocked, pending, send };
 }
 
 function Chart({ token, book }: { token: string; book?: Book }) {
@@ -369,8 +514,9 @@ function App() {
     [outcome, setOutcome] = useState("YES");
   const [qty, setQty] = useState("1"),
     [limit, setLimit] = useState("0.50"),
-    [pending, setPending] = useState(false),
     [tif, setTif] = useState("IOC");
+  const commands = useCommands(csrf, session, setNotice);
+  const pending = commands.pending;
   const [replayDay, setReplayDay] = useState(""),
     [replayStrategy, setReplayStrategy] = useState("S1_S2_S3");
   const [receipts, setReceipts] = useState<Record<string, any>[]>([]);
@@ -494,11 +640,11 @@ function App() {
     mode === "sandbox" ? (account?.snapshot ?? {}) : {};
   const fresh = Boolean(
     connected &&
-      book?.complete &&
-      Date.now() / 1000 - book.received_at >= 0 &&
-      Date.now() / 1000 - book.received_at <= 30 &&
-      account?.status === "running" &&
-      Date.now() / 1000 - account.updated < 10,
+    book?.complete &&
+    Date.now() / 1000 - book.received_at >= 0 &&
+    Date.now() / 1000 - book.received_at <= 30 &&
+    account?.status === "running" &&
+    Date.now() / 1000 - account.updated < 10,
   );
   const canTrade =
     fresh &&
@@ -507,22 +653,13 @@ function App() {
     contract.fee_known;
   const health = state.health[venue];
   async function submit(kind: string, payload: Record<string, unknown> = {}) {
-    if (pending) return;
-    setPending(true);
-    setNotice("提交中…");
-    try {
-      const receipt = await api(
-        "commands",
-        { request_id: crypto.randomUUID(), venue, mode, kind, payload },
-        csrf,
-      );
-      setNotice(`已排队 · ${receipt.request_id.slice(0, 8)}，等待执行确认`);
-      api("requests").then(setReceipts);
-    } catch (e) {
-      setNotice((e as Error).message);
-    } finally {
-      setPending(false);
-    }
+    await commands.send({
+      request_id: crypto.randomUUID(),
+      venue,
+      mode,
+      kind,
+      payload,
+    });
   }
   if (!session)
     return (
@@ -635,6 +772,14 @@ function App() {
       {mode === "live" && (
         <div className="banner">实盘尚未启用 · {state.live.reason}</div>
       )}
+      {commands.saved.map((c) => (
+        <div className="banner" key={c.request_id}>
+          待核验 · {c.venue} / {c.mode} / {c.kind} · {c.request_id.slice(0, 8)}
+          <button disabled={pending} onClick={() => commands.send(c, true)}>
+            查询回执 / 原 ID 重试
+          </button>
+        </div>
+      ))}
       <div className="metrics">
         {[
           ["账户权益", money(snapshot.equity)],
@@ -803,7 +948,15 @@ function App() {
                 <span>限价名义金额 · 未含费</span>
                 <strong>{money(Number(qty) * Number(limit))}</strong>
               </div>
-              <button className="primary" disabled={!canTrade || pending}>
+              <button
+                className="primary"
+                disabled={
+                  !canTrade ||
+                  pending ||
+                  commands.blocked ||
+                  commands.saved.length > 0
+                }
+              >
                 {pending
                   ? "提交中…"
                   : `${side === "BUY" ? "买入" : "卖出"} ${outcome}`}
@@ -822,7 +975,12 @@ function App() {
               <h2>天气策略</h2>
               <div>
                 <button
-                  disabled={!fresh || mode !== "sandbox" || pending}
+                  disabled={
+                    mode !== "sandbox" ||
+                    commands.blocked ||
+                    (!snapshot.strategy_enabled &&
+                      (!fresh || pending || commands.saved.length > 0))
+                  }
                   onClick={() =>
                     submit(snapshot.strategy_enabled ? "stop" : "start", {
                       strategy_id: "S1_S2_S3",
@@ -909,7 +1067,9 @@ function App() {
                       <td>
                         <button
                           disabled={
-                            !fresh || o.remaining <= 0 || mode !== "sandbox"
+                            commands.blocked ||
+                            o.remaining <= 0 ||
+                            mode !== "sandbox"
                           }
                           onClick={() =>
                             submit("cancel", { order_id: o.order_id })
