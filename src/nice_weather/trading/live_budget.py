@@ -27,7 +27,11 @@ def reserve(con, venue, account, request_id, contract, order):
     if not rate.is_finite() or rate < 0 or not exponent.is_finite() or exponent < 0:
         raise ValueError("Invalid fee schedule")
     fees = q * rate * Decimal(".25") ** exponent
-    if contract.get("fee_rounding") == "ceil_cent":
+    if contract.get("fee_rounding") in {"poly_us_order_half_even_v1", "kalshi_order_balance_v1"}:
+        from nice_weather.trading.us_fees import reserve as fee_reserve
+
+        fees = fee_reserve(q, contract)
+    elif contract.get("fee_rounding") == "ceil_cent":
         # Allow every minimum quantity execution to round its own fee upward.
         fees += (q / step).to_integral_value(rounding=ROUND_CEILING) * Decimal(".01")
     elif contract.get("fee_rounding") != "exact":

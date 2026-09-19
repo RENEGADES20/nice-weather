@@ -3,7 +3,8 @@
 from bisect import bisect_right
 from decimal import ROUND_CEILING, Decimal
 
-from nice_weather.trading.signals import fee, finite, select
+from nice_weather.trading.signals import finite, select
+from nice_weather.trading.us_fees import charge as fee
 
 VERSION = "knyc-executable-v2"
 

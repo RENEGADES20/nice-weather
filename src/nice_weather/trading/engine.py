@@ -72,6 +72,11 @@ class Fees(FeeModel):
             return Money(0, self.session.currency)  # No assumed maker rebates.
         p, q = fill_px.as_decimal(), fill_qty.as_decimal()
         if row.get("venue") in {"kalshi", "poly_us"}:
+            if row.get("fee_rounding") in {"poly_us_order_half_even_v1", "kalshi_order_balance_v1"}:
+                from nice_weather.trading.us_fees import charge
+
+                state = self.session.fee_accumulators.setdefault(str(order.client_order_id), {})
+                return Money(charge(q, p, row, state, side=order.side.name), self.session.currency)
             from nice_weather.trading.signals import fee as venue_fee
 
             return Money(venue_fee(q, p, row), self.session.currency)
@@ -139,6 +144,7 @@ class Session:
         self.strategy_state = {}
         self.signals = {}
         self.latest_weather = None
+        self.fee_accumulators = {}
         self.projection_version = config.get("projection_version", 1)
         self.parameters = validate_strategy(
             config["strategy_id"], config.get("parameters", {}), config["mode"]
@@ -420,6 +426,10 @@ class Session:
         return None
 
     def fee_reserve(self, row, quantity):
+        if row.get("fee_rounding") in {"poly_us_order_half_even_v1", "kalshi_order_balance_v1"}:
+            from nice_weather.trading.us_fees import reserve
+
+            return float(reserve(quantity, row))
         cap = float(quantity) * float(row["fee_rate"]) * 0.25 ** float(row["fee_exponent"])
         if row.get("venue") in {"kalshi", "poly_us"}:
             # Each partial execution can round up. Native US quantities have .01 increments.

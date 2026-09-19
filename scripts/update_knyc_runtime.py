@@ -18,10 +18,12 @@ def affected_services(changed):
     services = ["nice-weather-terminal.service"]
     if "src/nice_weather/trading/feed.py" in changed:
         services += ["nice-weather-knyc-feed.service", "nice-weather-knyc-hrrr.service"]
-    elif any(name in {"src/nice_weather/trading/knyc_model.py", "config/knyc-strategy-model.json"}
+    elif any(name in {"src/nice_weather/trading/knyc_model.py", "config/knyc-strategy-model.json",
+                     "src/nice_weather/trading/us_markets.py"}
              for name in changed):
         services += ["nice-weather-knyc-feed.service"]
     if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/us_runtime.py",
+                    "src/nice_weather/trading/us_fees.py", "src/nice_weather/trading/us_markets.py",
                     "src/nice_weather/trading/engine.py", "src/nice_weather/trading/signals_v2.py",
                     "src/nice_weather/trading/recovery.py"}
            for name in changed):
@@ -77,6 +79,8 @@ def main():
                "src/nice_weather/trading/credentials.py", "src/nice_weather/trading/live_budget.py",
                "src/nice_weather/trading/us_transport.py", "src/nice_weather/trading/knyc_model.py",
                "config/knyc-strategy-model.json"}
+    allowed.update({"src/nice_weather/trading/us_fees.py",
+                    "src/nice_weather/trading/us_markets.py"})
     if any(name not in allowed and not name.startswith("src/nice_weather/terminal_dist/")
            for name in changed):
         raise ValueError("Release changes services outside the terminal update scope")

@@ -1,6 +1,7 @@
 from decimal import Decimal
 from itertools import product
 
+import pytest
 from test_knyc_terminal import scenario
 
 from nice_weather.trading.signals_v2 import candidates, evaluate, optimize
@@ -67,12 +68,15 @@ def test_v2_quantity_risk_and_warning():
     assert warning["warning"]["near_boundary"] and warning["action"] == "no-trade"
 
 
-def test_disabled_signal_then_quote_reassessment_and_recovery():
+@pytest.mark.parametrize("rounding", ["ceil_cent", "poly_us_order_half_even_v1"])
+def test_disabled_signal_then_quote_reassessment_and_recovery(rounding):
     from nice_weather.trading.engine import Session
     from nice_weather.trading.recovery import native_state, restore
     from nice_weather.trading.worker import run_config
 
     now, contracts, weather, books = scenario()
+    for contract in contracts:
+        contract["fee_rounding"] = rounding
     session = Session(
         run_config("test", "sandbox", "S3")
         | {
@@ -109,6 +113,9 @@ def test_disabled_signal_then_quote_reassessment_and_recovery():
         recovered.apply(event | {"ts": event["ts"] + 1})
         assert len(recovered.snapshot()["fills"]) == 1
         assert recovered.latest_weather == weather
+        assert recovered.fee_accumulators == session.fee_accumulators
+        if rounding == "poly_us_order_half_even_v1":
+            assert session.fee_accumulators
     finally:
         session.dispose()
         if recovered:
