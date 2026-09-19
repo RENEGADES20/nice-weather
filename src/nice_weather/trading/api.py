@@ -237,6 +237,7 @@ def create_app(root: Path, *, password=None, origin=None):
         app.mount("/assets", StaticFiles(directory=static / "assets"), name="assets")
 
     @app.get("/")
+    @app.get("/terminal")
     def index():
         if not (static / "index.html").exists():
             raise HTTPException(503, "Build frontend/terminal before starting this service")

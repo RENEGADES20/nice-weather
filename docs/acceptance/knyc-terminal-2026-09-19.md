@@ -20,4 +20,4 @@ Kalshi 当前规则源为 The Weather Company，Poly US 为 NWS CLI。观察窗�
 
 实盘认证/执行/对账、用户风险与账户启用、原生平台行情订阅、US 结算事件、生产模型及完整日观察仍未交付。VM 控制台显示实例运行，但浏览器 SSH 无法核验命令输出，运行 SHA 尚未确认；未更改生产服务或撤下 Streamlit。完整验收清单保留未勾选。
 
-CI 证据：[当前源码的 Linux 验证](https://github.com/RENEGADES20/nice-weather/actions/runs/35425951757)。后续仅补充文档的提交仍等待自己的 required checks，不能绕过分支保护。
+CI 证据：[Linux 验证](https://github.com/RENEGADES20/nice-weather/actions/runs/35425951757)。PR #45 最终提交 `39924ee6` 的七项检查全部通过后合并；main 提交 `e00ac3cecb0cc262b86dafa6416d91785632f5b8`。该记录不代表 VM 已部署。

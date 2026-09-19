@@ -11,6 +11,26 @@ from nice_weather.trading.signals import evaluate
 from nice_weather.trading.us_markets import normalize_book
 
 
+def test_capture_pauses_without_deleting_data_when_disk_is_low(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    store = FeedStore(tmp_path / "feed.sqlite3")
+    store.capture("test", "https://example.com", 1, 2, b"original")
+    store.publish("weather", "test", {"received_at": 2}, 2)
+    before = store.snapshot()
+    monkeypatch.setattr(
+        "nice_weather.trading.feed.shutil.disk_usage", lambda _: SimpleNamespace(free=1024**3 - 1)
+    )
+    with pytest.raises(OSError, match="headroom"):
+        store.capture("test", "https://example.com", 3, 4, b"new")
+    with pytest.raises(OSError, match="headroom"):
+        store.publish("weather", "test", {"received_at": 4}, 4)
+    assert store.snapshot() == before
+    # Health can report the failure while bulk writes remain paused.
+    store.publish("health", "storage", {"status": "unavailable"}, 4)
+    assert store.snapshot()["weather"] == before["weather"]
+
+
 def scenario():
     now = datetime(2026, 9, 19, 19, tzinfo=UTC).timestamp()
     contracts = []

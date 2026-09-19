@@ -2,6 +2,12 @@
 
 状态：可本地启动的迁移实现，尚未通过完整产品验收。实盘适配和 KNYC 模型未完成；真实采集合约的规则门禁关闭。旧 Streamlit 入口继续保留。
 
+主分支已合并首批实现 PR #45（`e00ac3ce`）。后续 US 签名传输模块使用额外依赖 `.[us-live]`，仅供适配开发；安装该依赖不会读取密钥、启动实盘账户或解除终端门禁。它的验收边界见 US_ADAPTER_ACCEPTANCE.md。
+
+VM 发布前核验：原 `/opt/nice-weather/repo/runtime-manifest.json` 指向 `fc83189`，清单文件哈希全部匹配；旧 git HEAD 较早，不能单独作为运行版本依据。2026-09-19 06:43 UTC 剩余约 4.5 GB，KNYC 采集在磁盘余量不足 1 GiB 时拒绝新增原文及行情写入，保留旧数据与少量健康状态。此保护不清理其他服务的数据。
+
+迁移预览使用 `/terminal`，API `/api/*`、资源 `/assets/*` 由现有 HTTPS 隧道转发到回环端口 8767。其余路径沿用现有入口，完整验收后再做最终切换；同一个新终端内包含交易与回测。
+
 ## 本地运行
 
 Python 3.12 独立环境，安装 `pip install -e ".[trading,terminal,weather-feed]"`。旧 collector 的 PyArrow 版本范围与 Nautilus 环境分开。进入 `frontend/terminal` 执行 `npm ci && npm run build`。
