@@ -12,6 +12,10 @@ def test_first_receipt_does_not_refresh_on_repoll(tmp_path):
     assert store.observation_receipts([row], 20)[0]["first_received_at"] == 20
     store = FeedStore(store.path)
     assert store.observation_receipts([row], 1000)[0]["first_received_at"] == 20
+    revised = store.observation_receipts([row | {"temp": 30}], 2000)[0]
+    assert revised["first_received_at"] == 2000
+    assert revised["observation_first_received_at"] == 20
+    assert store.observation_receipts([row | {"temp": 30}], 3000)[0] == revised
 
 
 def test_features_require_day_coverage_and_received_forecast():

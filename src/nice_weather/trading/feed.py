@@ -46,6 +46,9 @@ class FeedStore:
                 CREATE TABLE IF NOT EXISTS observation_receipts (
                     station TEXT NOT NULL, observed REAL NOT NULL, received REAL NOT NULL,
                     PRIMARY KEY(station,observed));
+                CREATE TABLE IF NOT EXISTS observation_revisions (
+                    station TEXT NOT NULL, observed REAL NOT NULL, revision TEXT NOT NULL,
+                    received REAL NOT NULL, PRIMARY KEY(station,observed,revision));
             """)
 
     def require_space(self):
@@ -109,7 +112,16 @@ class FeedStore:
                             (stamp, received))
                 first = con.execute("SELECT received FROM observation_receipts "
                                     "WHERE station='KNYC' AND observed=?", (stamp,)).fetchone()[0]
-                result.append(row | {"first_received_at": first})
+                revision = hashlib.sha256(encoded({"temp": row.get("temp"),
+                                                   "rawOb": row.get("rawOb")}).encode()).hexdigest()
+                con.execute("INSERT OR IGNORE INTO observation_revisions VALUES ('KNYC',?,?,?)",
+                            (stamp, revision, received))
+                revision_received = con.execute(
+                    "SELECT received FROM observation_revisions WHERE station='KNYC' "
+                    "AND observed=? AND revision=?", (stamp, revision)).fetchone()[0]
+                result.append(row | {"first_received_at": revision_received,
+                                     "observation_first_received_at": first,
+                                     "revision_id": revision})
             return result
 
     def since(self, cursor, limit=256):
