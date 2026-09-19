@@ -138,6 +138,7 @@ class Session:
         self.currency = pUSD if venue_name == "polymarket" else USD
         self.strategy_state = {}
         self.signals = {}
+        self.latest_weather = None
         self.projection_version = config.get("projection_version", 1)
         self.parameters = validate_strategy(
             config["strategy_id"], config.get("parameters", {}), config["mode"]
@@ -372,6 +373,14 @@ class Session:
             )
         else:
             self._run(CustomData(DataType(Input), Input(event)), custom=True)
+        if (
+            self.config.get("signal_version") == "knyc-executable-v2"
+            and self.latest_weather is not None
+            and kind in {
+                "depth", "contract", "start", "order", "cancel", "close", "settlement", "clock"
+            }
+        ):
+            self.weather_signal(self.latest_weather)
         snapshot = self.snapshot()
         if snapshot["equity"] is not None:
             self.equity_peak = max(self.equity_peak, snapshot["equity"])
@@ -538,7 +547,12 @@ class Session:
     def weather_signal(self, weather):
         from nice_weather.trading.signals import STRATEGY_IDS, evaluate
 
-        if not self.enabled or self.config["strategy_id"] not in {*STRATEGY_IDS, "S1_S2_S3"}:
+        continuous = self.config.get("signal_version") == "knyc-executable-v2"
+        if continuous:
+            self.latest_weather = weather
+        if (not self.enabled and not continuous) or self.config["strategy_id"] not in {
+            *STRATEGY_IDS, "S1_S2_S3"
+        }:
             return
         contracts = sorted(
             [
@@ -563,8 +577,19 @@ class Session:
                     if side == OrderSide.SELL
                 ],
             }
+            if continuous:
+                for field, side in (("bids", OrderSide.BUY), ("asks", OrderSide.SELL)):
+                    books[token][field] = [
+                        [float(p), max(0, float(q) - self.depth_filled(token, side, p)
+                                      + getattr(self, "_depth_anchors", {}).get(
+                                          (token, side.name, p), 0))]
+                        for (level_side, p), q in levels.items() if level_side == side
+                    ]
         for strategy in STRATEGY_IDS:
             if self.config["strategy_id"] not in {strategy, "S1_S2_S3"}:
+                continue
+            if continuous:
+                self.continuous_signal(strategy, contracts, weather, books)
                 continue
             key = f"{weather.get('day')}:{strategy}"
             if key in self.strategy_state:
@@ -600,6 +625,100 @@ class Session:
                             {"request_id": key, "ts": self.now, "reason": str(exc)}
                         )
                         break
+
+    def continuous_signal(self, strategy, contracts, weather, books):
+        from nice_weather.trading.signals import finite
+        from nice_weather.trading.signals_v2 import evaluate
+
+        key = f"{weather.get('day')}:{strategy}"
+        state = self.strategy_state.setdefault(key, {"attempt": 0, "orders": []})
+        # Old v1 triggers retain their consumed meaning after an explicit upgrade.
+        if "attempt" not in state:
+            return
+        pending = [self.engine.cache.order(ClientOrderId(i)) for i in state["orders"]]
+        if any(o is None or not o.is_closed for o in pending):
+            self.signals[strategy] = self.signals.get(strategy, {}) | {
+                "action": "no-trade", "reason": "ORDER_RECONCILIATION_REQUIRED"
+            }
+            return
+        if state.get("consumed") or any(float(o.filled_qty) > 0 for o in pending):
+            state["consumed"] = True
+            return
+        snapshot = self.snapshot()
+        positions = self.engine.cache.positions_open()
+        open_buys = [o for o in self.open_orders() if o.side == OrderSide.BUY]
+        bins = {}
+        day_exposure = 0.0
+        for c in contracts:
+            ids = {self.instruments[t].id for t in (c["yes_token_id"], c["no_token_id"])}
+            exposure = sum(float(p.quantity) * p.avg_px_open for p in positions
+                           if p.instrument_id in ids)
+            exposure += sum(self.buy_reserve(o) for o in open_buys if o.instrument_id in ids)
+            bins[c["yes_token_id"]] = max(0, self.config.get("max_bin_notional", 5) - exposure)
+            day_exposure += exposure
+        risk = {
+            "cash": max(0, snapshot["cash"] - sum(self.buy_reserve(o) for o in open_buys)),
+            "budget": self.config.get("strategy_budget", 5),
+            "day_remaining": max(0, self.config.get("max_day_notional", 20) - day_exposure),
+            "loss_remaining": max(0, self.config.get("max_day_notional", 20) - day_exposure),
+            "bin_remaining": bins,
+        }
+        asof = self.now / 1e9
+        def fresh(stamp):
+            return finite(stamp) and 0 <= asof - stamp <= 120
+
+        signature = digest([
+            {k: v for k, v in weather.items()
+             if k not in {"received_at", "data_cutoff", "features"}},
+            fresh(weather.get("received_at")), fresh(weather.get("observation_received_at")),
+            [{k: c.get(k) for k in ("yes_token_id", "rules_version", "active", "closed",
+                                    "accepting_orders", "parse_status")} for c in contracts],
+            {t: [b["bids"], b["asks"], b["complete"], 0 <= asof - b["received_at"] <= 30]
+             for t, b in books.items()}, risk, self.enabled,
+            datetime.fromtimestamp(asof, UTC).strftime("%Y-%m-%d-%H"),
+        ])
+        if state.get("evaluation_signature") == signature:
+            return
+        state["evaluation_signature"] = signature
+        signal = evaluate(strategy, contracts, weather, books, self.now / 1e9, risk)
+        self.signals[strategy] = signal
+        if signal["triggered"]:
+            state.setdefault("first_trigger", signal["asof"])
+        if not self.enabled or signal["action"] != "buy":
+            return
+        # Preflight the whole basket, including conservative fragmented-fill fee reserves.
+        reserved = sum(leg["price"] * leg["quantity"] + self.fee_reserve(
+            self.metadata[leg["token"]], leg["quantity"]
+        ) for leg in signal["legs"])
+        if reserved > risk["cash"] + 1e-9:
+            signal.update(action="no-trade", reason="INSUFFICIENT_BASKET_RESERVE", legs=[])
+            return
+        if any(self.market_rejection(leg["token"]) for leg in signal["legs"]):
+            signal.update(action="no-trade", reason="MARKET_NOT_EXECUTABLE", legs=[])
+            return
+        state["attempt"] += 1
+        state["orders"] = []
+        for i, leg in enumerate(signal["legs"]):
+            request_id = f"{strategy}-{weather['day']}-v2-{state['attempt']}-{i}"
+            try:
+                order = self.order(request_id, leg, strategy)
+                state["orders"].append(request_id)
+                self._run(CustomData(DataType(Input), Input(
+                    {"kind": "clock", "ts": self.now, "data": {}}
+                )), custom=True)
+                filled = float(order.filled_qty)
+                signal.setdefault("executions", []).append({
+                    "token": leg["token"], "filled": filled,
+                    "requested": leg["quantity"], "status": order.status.name,
+                })
+                if filled:
+                    state["consumed"] = True
+                if not order.is_closed or filled < leg["quantity"]:
+                    signal["execution_reason"] = "PARTIAL_OR_UNFILLED_STOPPED_BASKET"
+                    break
+            except ValueError as exc:
+                signal["execution_reason"] = str(exc)
+                break
 
     def position_quantity(self, token):
         return sum(

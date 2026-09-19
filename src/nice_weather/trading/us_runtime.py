@@ -66,6 +66,8 @@ def paper(root, venue, once=False):
                 "venue": venue,
                 "station_id": "KNYC",
                 "execution_version": 3,
+                "signal_version": "knyc-executable-v2",
+                "strategy_version": "knyc-executable-v2",
                 "projection_version": 2,
                 "feed_cursor": 0,
                 "execution": "Native L2 IOC/GTC; received-time snapshots; no maker rebates",
@@ -75,6 +77,14 @@ def paper(root, venue, once=False):
             results.create(account, account, "sandbox", config)
             run = results.run(account=account)
         runner = PaperRunner(results, run)
+        if runner.session.config.get("signal_version") != "knyc-executable-v2":
+            runner.session.config.update(signal_version="knyc-executable-v2",
+                                         strategy_version="knyc-executable-v2")
+            runner.session.config["config_hash"] = digest({
+                k: v for k, v in runner.session.config.items() if k != "config_hash"
+            })
+            # Existing v1 trigger records keep their consumed semantics; account facts stay intact.
+            runner.commit("signal-v2-upgrade")
         last_heartbeat = float("-inf")
         try:
             while True:
@@ -133,7 +143,7 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
 
     if venue not in VENUES or not 0 <= start < end <= time.time():
         raise ValueError("Invalid received-time replay interval")
-    identifier = request_id or digest([venue, start, end, strategy])
+    identifier = request_id or digest([venue, start, end, strategy, "knyc-executable-v2"])
     results = Results(root / "results.sqlite3")
     existing = results.run(run_id=identifier)
     if existing:
@@ -145,6 +155,8 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
         "venue": venue,
         "station_id": "KNYC",
         "execution_version": 3,
+        "signal_version": "knyc-executable-v2",
+        "strategy_version": "knyc-executable-v2",
         "projection_version": 2,
         "start": start,
         "end": end,
@@ -156,32 +168,40 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
     session = Session(config)
     try:
         with connect(root / "feed.sqlite3", readonly=True) as con:
-            con.execute("BEGIN")
             # Seed only contract definitions known at start. Quotes require actual interval events.
             seed = con.execute(
                 "SELECT * FROM feed_events WHERE kind='contracts' AND key=? AND received<? "
                 "ORDER BY seq DESC LIMIT 1",
                 (venue, start),
             ).fetchall()
-            rows = con.execute(
-                "SELECT * FROM feed_events WHERE received>=? AND received<=? ORDER BY seq",
-                (start, end),
-            )
+            ceiling = con.execute("SELECT COALESCE(MAX(seq),0) FROM feed_events").fetchone()[0]
 
-            def apply(row):
-                event = dict(row) | {"data": json.loads(row["body"])}
-                for native in feed_event(session, event):
-                    session.apply(native)
+        def apply(row):
+            event = dict(row) | {"data": json.loads(row["body"])}
+            for native in feed_event(session, event):
+                session.apply(native)
 
-            for row in seed:
-                apply(row)
-            session.apply(
-                {"kind": "start", "ts": max(int(start * 1e9), session.now + 1), "data": {}}
-            )
-            predictions = 0
+        for row in seed:
+            apply(row)
+        session.apply(
+            {"kind": "start", "ts": max(int(start * 1e9), session.now + 1), "data": {}}
+        )
+        predictions, cursor = 0, 0
+        # Immutable receipt events and a fixed ceiling allow short read transactions.
+        # Release each WAL snapshot before running the potentially slow native replay.
+        while cursor < ceiling:
+            with connect(root / "feed.sqlite3", readonly=True) as con:
+                rows = con.execute(
+                    "SELECT * FROM feed_events WHERE seq>? AND seq<=? "
+                    "AND received>=? AND received<=? ORDER BY seq LIMIT 256",
+                    (cursor, ceiling, start, end),
+                ).fetchall()
+            if not rows:
+                break
             for row in rows:
                 predictions += row["kind"] == "prediction" and row["key"] == venue
                 apply(row)
+            cursor = rows[-1]["seq"]
         snapshot = session.snapshot()
         snapshot["prediction_events"] = predictions
         if not predictions:

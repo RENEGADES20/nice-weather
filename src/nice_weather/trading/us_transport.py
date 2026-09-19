@@ -125,6 +125,9 @@ class USRest:
         # Never follow a redirect with authentication material; no automatic HTTP retry.
         self.client = httpx.AsyncClient(timeout=10, follow_redirects=False, transport=transport)
         with connect(attempts) as con:
+            from nice_weather.trading.live_budget import install
+
+            install(con)
             con.execute("""CREATE TABLE IF NOT EXISTS transport_attempts (
                 account TEXT NOT NULL, request_id TEXT NOT NULL, identity TEXT NOT NULL,
                 status TEXT NOT NULL, response TEXT, error TEXT, updated REAL NOT NULL,
@@ -212,6 +215,45 @@ class USRest:
             cursors.add(cursor)
         raise ValueError("Account history exceeds bounded read; reconciliation incomplete")
 
+    async def account_history(self):
+        """Read both historical tiers; never treat a missing current order as cancelled."""
+        import asyncio
+
+        snapshot = await self.account_snapshot()
+        if self.venue == "kalshi":
+            cutoff = await self.read("/historical/cutoff")
+            old_orders, fills, old_fills, old_positions = await asyncio.gather(
+                self._pages("/historical/orders", "orders"),
+                self._pages("/portfolio/fills", "fills"),
+                self._pages("/historical/fills", "fills"),
+                self._pages("/historical/positions", "market_positions"),
+            )
+            if cutoff != await self.read("/historical/cutoff"):
+                raise ValueError("History cutoff moved during reconciliation")
+
+            def combine(rows, identity):
+                result = {}
+                for row in rows:
+                    key = row.get(identity)
+                    if not isinstance(key, str) or not key:
+                        raise ValueError("Missing historical record identity")
+                    if key in result and result[key] != row:
+                        raise ValueError("Conflicting live/historical records")
+                    result[key] = row
+                return list(result.values())
+
+            snapshot.update(
+                orders=combine(snapshot["orders"] + old_orders, "order_id"),
+                fills=combine(fills + old_fills, "fill_id"),
+                historical_positions=old_positions,
+                cutoff=cutoff,
+            )
+        else:
+            snapshot["activities"] = await self._pages("/portfolio/activities", "activities")
+        snapshot["history_received_at"] = time.time()
+        # Native order/fill/position matching is still required after collecting history.
+        return snapshot
+
     def _path(self, path):
         if not re.fullmatch(r"/[A-Za-z0-9_./-]+", path) or ".." in path or "//" in path:
             raise ValueError("Invalid API path")
@@ -288,6 +330,10 @@ class USRest:
                 "INSERT OR IGNORE INTO transport_attempts VALUES (?,?,?,'submitting',NULL,NULL,?)",
                 (self.account, request_id, identity, time.time()),
             ).rowcount
+            if inserted:
+                from nice_weather.trading.live_budget import reserve
+
+                reserve(con, self.venue, self.account, request_id, contract, order)
         if not inserted:
             previous = self.attempt(request_id)
             if previous["identity"] != identity:
@@ -322,6 +368,10 @@ class USRest:
             error = type(exc).__name__ + "; exchange state unknown"
         finally:
             with connect(self.path) as con:
+                if status == "rejected":
+                    from nice_weather.trading.live_budget import rejected
+
+                    rejected(con, self.account, request_id)
                 con.execute(
                     "UPDATE transport_attempts SET status=?,response=?,error=?,updated=? "
                     "WHERE account=? AND request_id=?",

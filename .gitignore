@@ -23,6 +23,8 @@ var/
 *.sqlite3-wal
 *.log
 weather data api.txt
+KALSHI.txt
+POLY.txt
 
 # Local research and presentation artifacts are reviewed separately before publication.
 research_runs/

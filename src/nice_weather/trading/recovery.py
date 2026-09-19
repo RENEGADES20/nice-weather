@@ -29,6 +29,7 @@ def native_state(session):
         "parameters": session.parameters,
         "strategy_state": session.strategy_state,
         "signals": session.signals,
+        "latest_weather": session.latest_weather,
         "rejections": session.rejections,
         "peak": session.equity_peak,
         "maximum_drawdown": session.maximum_drawdown,
@@ -105,6 +106,7 @@ def restore(state):
     session.counts, session.parameters = state["counts"], state["parameters"]
     session.strategy_state = state.get("strategy_state", {})
     session.signals = state.get("signals", {})
+    session.latest_weather = state.get("latest_weather")
     session.rejections = state["rejections"]
     session.equity_peak, session.maximum_drawdown = state["peak"], state["maximum_drawdown"]
     # Only closed orders are loaded; native startup has no order to re-submit.
@@ -235,6 +237,7 @@ class PaperRunner:
                     "metadata",
                     "strategy_state",
                     "signals",
+                    "latest_weather",
                 )
             }
         )

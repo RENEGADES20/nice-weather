@@ -18,7 +18,12 @@ def affected_services(changed):
     services = ["nice-weather-terminal.service"]
     if "src/nice_weather/trading/feed.py" in changed:
         services += ["nice-weather-knyc-feed.service", "nice-weather-knyc-hrrr.service"]
-    if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/us_runtime.py"}
+    elif any(name in {"src/nice_weather/trading/knyc_model.py", "config/knyc-strategy-model.json"}
+             for name in changed):
+        services += ["nice-weather-knyc-feed.service"]
+    if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/us_runtime.py",
+                    "src/nice_weather/trading/engine.py", "src/nice_weather/trading/signals_v2.py",
+                    "src/nice_weather/trading/recovery.py"}
            for name in changed):
         # us_runtime is used only by Paper and replay. Terminal restarts to expose
         # the current release identity; collectors continue for Paper-only changes.
@@ -67,7 +72,11 @@ def main():
     # Other changes need a separately reviewed service-impact plan.
     allowed = {"pyproject.toml", "README.md", "src/nice_weather/trading/api.py",
                "src/nice_weather/trading/access.py", "src/nice_weather/trading/feed.py",
-               "src/nice_weather/trading/us_runtime.py"}
+               "src/nice_weather/trading/us_runtime.py", "src/nice_weather/trading/engine.py",
+               "src/nice_weather/trading/signals_v2.py", "src/nice_weather/trading/recovery.py",
+               "src/nice_weather/trading/credentials.py", "src/nice_weather/trading/live_budget.py",
+               "src/nice_weather/trading/us_transport.py", "src/nice_weather/trading/knyc_model.py",
+               "config/knyc-strategy-model.json"}
     if any(name not in allowed and not name.startswith("src/nice_weather/terminal_dist/")
            for name in changed):
         raise ValueError("Release changes services outside the terminal update scope")
@@ -88,8 +97,7 @@ def main():
         if hashlib.sha256((runtime / name).read_bytes()).hexdigest() not in hashes:
             raise ValueError("Deployed base differs: " + name)
     py = str(runtime / ".venv/bin/python")
-    subprocess.run([py, "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check",
-                    "PyJWT[crypto]>=2.10,<3"], check=True)
+    subprocess.run([py, "-c", "import jwt, cryptography, nautilus_trader"], check=True)
     subprocess.run(["systemctl", "stop", *services], check=True)
     for name in changed + ["runtime-manifest.json"]:
         target = runtime / name
