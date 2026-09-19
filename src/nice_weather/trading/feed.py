@@ -266,18 +266,21 @@ async def weather_feed(store, stop):
 
 async def run(root, once=False):
     store, stop = FeedStore(root / "feed.sqlite3"), asyncio.Event()
-    tasks = [asyncio.create_task(market_feed(store, v, stop)) for v in VENUES]
-    tasks.append(asyncio.create_task(weather_feed(store, stop)))
-    try:
-        if once:
-            await asyncio.sleep(20)
+    # Keep WAL sidecars alive between short durable writes, as in the native workers.
+    # This connection holds no transaction and performs no feed writes itself.
+    with connect(store.path):
+        tasks = [asyncio.create_task(market_feed(store, v, stop)) for v in VENUES]
+        tasks.append(asyncio.create_task(weather_feed(store, stop)))
+        try:
+            if once:
+                await asyncio.sleep(20)
+                stop.set()
+            await asyncio.gather(*tasks)
+        finally:
             stop.set()
-        await asyncio.gather(*tasks)
-    finally:
-        stop.set()
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 if __name__ == "__main__":

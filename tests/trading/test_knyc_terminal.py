@@ -31,6 +31,51 @@ def test_capture_pauses_without_deleting_data_when_disk_is_low(tmp_path, monkeyp
     assert store.snapshot()["weather"] == before["weather"]
 
 
+def test_capture_keeps_wal_between_independent_durable_writes(tmp_path, monkeypatch):
+    import asyncio
+
+    from nice_weather.trading.feed import run
+    from nice_weather.trading.storage import connect
+
+    async def source(store, *args):
+        store.publish("health", "probe", {"status": "connected"})
+        assert Path(str(store.path) + "-wal").exists()
+        with connect(store.path, readonly=True) as con:
+            assert con.execute("SELECT count(*) FROM feed_events").fetchone()[0] > 0
+        await asyncio.sleep(0)
+
+    from pathlib import Path
+
+    monkeypatch.setattr("nice_weather.trading.feed.market_feed", source)
+    monkeypatch.setattr("nice_weather.trading.feed.weather_feed", source)
+    asyncio.run(run(tmp_path))
+    assert len(FeedStore(tmp_path / "feed.sqlite3").since(0)) == 3
+
+
+def test_us_paper_keeps_wal_and_recovers_committed_cursor(tmp_path, monkeypatch):
+    from nice_weather.trading.storage import Results
+    from nice_weather.trading.us_runtime import paper
+
+    store = FeedStore(tmp_path / "feed.sqlite3")
+    cursor = store.publish("health", "probe", {"status": "connected"})
+
+    def check_idle(_seconds):
+        assert (tmp_path / "results.sqlite3-wal").exists()
+        run = Results(tmp_path / "results.sqlite3").run(account="sandbox-kalshi-knyc")
+        assert run["status"] == "running"
+        raise InterruptedError("End Paper probe")
+
+    monkeypatch.setattr("nice_weather.trading.us_runtime.time.sleep", check_idle)
+    with pytest.raises(InterruptedError, match="End Paper probe"):
+        paper(tmp_path, "kalshi")
+    paper(tmp_path, "kalshi", once=True)
+    import json
+
+    run = Results(tmp_path / "results.sqlite3").run(account="sandbox-kalshi-knyc")
+    assert json.loads(run["config"])["feed_cursor"] == cursor
+    assert json.loads(run["snapshot"])["cash"] == 100
+
+
 def scenario():
     now = datetime(2026, 9, 19, 19, tzinfo=UTC).timestamp()
     contracts = []

@@ -23,6 +23,8 @@
 
 ## 协议依据
 
+2026-09-19 补充规则审计：实际 KXHIGHNY 当日合约指定 The Weather Company，并允许因初次正式数据的重大错误延期处理；`Final` 状态不能直接替代交易所最终结算。官方 [Daily Climate 页面](https://weather.com/kalshi) 说明日值来自 NWS/NOAA CLI、CF6 备用，并保留后续修订；页面所见 9 月 18 日 NYC 最高值为 80°F。此证据支持继续比较 CLI 标签与平台结果，尚不能补造历史接收时间、推断全部修订截止或解除 no-trade。另，系列所链接的 2025 年产品认证文本与当日来源指定不同，不能只按旧 PDF 放行。
+
 - [Kalshi 认证](https://docs.kalshi.com/getting_started/quick_start_authenticated_requests)、[V2 下单](https://docs.kalshi.com/api-reference/orders/create-order-v2)、[V2 撤单](https://docs.kalshi.com/api-reference/orders/cancel-order-v2)、[持仓](https://docs.kalshi.com/api-reference/portfolio/get-positions)。
 - [Poly US 认证](https://docs.polymarket.us/api-reference/authentication)、[下单](https://docs.polymarket.us/api-reference/orders/create-order)、[撤单](https://docs.polymarket.us/api-reference/orders/cancel-order)、[账户持仓](https://docs.polymarket.us/api-reference/portfolio/get-user-positions)、[官方 SDK](https://github.com/Polymarket/polymarket-us-python)。
 

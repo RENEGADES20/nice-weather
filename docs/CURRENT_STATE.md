@@ -2,6 +2,10 @@
 
 ## 2026-09-19 KNYC 终端迁移（开发中）
 
+最新运行：PR #50 七项 CI 通过，`abe66becc04ce25cea932565ad82e4c10227461f` 已原位部署，双平台公网历史初载和继续分页通过，无新增环境副本。原 1,500 行/1.43 MB 请求调整为 200 行顶档投影后，VM 单次查询约 10–23 ms、18 KB；缓存及负载不同，不能当作 p95。实盘视图下下单与启动策略均禁用，未发送真实订单。
+
+用户批准后，已为现有 VM 服务账户保存 Logs Writer 和 Monitoring Metric Writer；权限传播后的两分钟检查中，两类代理均无 PermissionDenied。新进程写入量采样显示 feed 约 2.97 MB/5 秒、两个 Paper 合计约 2.76 MB/5 秒。当前修复复用旧运行器已有的空闲 SQLite 连接，避免短连接反复触发 WAL 检查点，并移除 Paper 每轮末尾重复提交；持久化与重启回归通过，待 CI/部署复测。主库完整性检查仍在运行，已批准旧快照仍未删除。
+
 产品目标：KNYC 单站、Kalshi 优先与 Poly US 其次、S1/S2/S3、统一桌面终端及用户控制实盘启用。Poly Intl 本轮排除。完整验收见 KNYC_TERMINAL_DELIVERY.md。
 
 PR #49 已通过七项 CI，合并版本 8ac85c7740460dceee1cedeba378d8502ea8319d 已复用 VM 现役环境部署，只重启 terminal。`https://niceweather.trade/terminal` 复用现有 Cloudflare Access 登录，无新增密码；公网已显示实时盘口、天气和模拟账户。历史首批 1,500 行在 VM 耗时 8.649 秒、约 1.43 MB，公网出现超时；当前修订将图表历史分页降至 200 行，只投影顶档，完整原始深度仍保留。线上性能尚未验收。
