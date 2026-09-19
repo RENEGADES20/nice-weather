@@ -7,6 +7,10 @@
 基线：远端 main fc83189ae168ffcdc386ee714a8fe89cb846930d，隔离分支 codex/knyc-terminal；根目录 main 较旧且有未提交研究记录，已保留。Nautilus 模拟/回测已接入，现有 Live 关闭，S1/S2/S3 已接入共享选择函数及 Nautilus 模拟/重放调用，尚缺实际 KNYC 模型输入和实盘适配。VM 实例在管理页显示 running，但 SSH 输入/输出不可核验，当前实际 SHA 与部署仍未完成。新终端真实合约规则门禁关闭；运行说明见 TERMINAL_OPERATIONS.md。下方记录为历史事实，不作为当前授权限制。
 
 
+当前实施证据：[本地验收](acceptance/knyc-terminal-2026-09-19.md)。PR #45 的 `667cd588` 已通过 Linux Nautilus（含 Redis 恢复）、新终端、lint、安全、单元与原看板检查，原前端 E2E 尚在运行；尚未合并或部署。
+
+已在本机隔离目录启动 24 小时公开前瞻采集（2026-09-19 06:14 UTC 至 2026-09-20 06:14 UTC），覆盖双平台盘口、METAR/NWS/CLI、KNYC HRRR；本机休眠或断网会造成真实缺口。状态文件 `var/knyc/forward-capture.json`，日志同目录。该采集不涉及账户、付费 X 或真实下单，不能替代完整市场日终端运行验收。原文与采集库未提交 Git。
+
 ## 补充研究及部署记录
 
 ## 2026-09-15 KLGA / KNYC 错位档位假设 H4

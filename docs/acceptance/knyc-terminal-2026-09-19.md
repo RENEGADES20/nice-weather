@@ -4,7 +4,7 @@
 
 ## 检查事实
 
-- 本地交易测试：66 passed；另 2 项 Redis 恢复测试在 Windows 缺 redis-server，待 Linux CI。新增 7 项覆盖冻结选择、无未来输入、来源不混用、深度/费用、原文版本、分页、认证/CSRF、幂等请求及原生策略恢复。S1 部分成交用先前订单消耗深度构造，验证只提交第一腿并在重启后不重试。
+- 本地交易测试：66 passed；另 2 项 Redis 恢复测试在 Windows 缺 redis-server，已由 PR #45 的 `667cd588` Linux Nautilus CI 补齐通过。新增 7 项覆盖冻结选择、无未来输入、来源不混用、深度/费用、原文版本、分页、认证/CSRF、幂等请求及原生策略恢复。S1 部分成交用先前订单消耗深度构造，验证只提交第一腿并在重启后不重试。
 - Python ruff 与仓库高置信度密钥扫描通过。TypeScript 与 Vite 构建通过。
 - Playwright：1440×1100 桌面、390×844 手机布局检查；6 档，每档 1500 历史点，24 次切换/命令/行情推送。缓存切档 p95 28.8 ms，命令本地反馈 39.5 ms，消息到显示 29.2 ms。首屏 628 ms，只有一次样本，不能称为首屏 p95。原始本地测量见 `knyc-terminal-local-2026-09-19.json`。
 - 测试网络为本机 Vite 开发服务器及拦截的合成 API/WebSocket；不含 VM、交易所和真实网络延迟，不证明整日稳定性。截图保留在本地 Playwright test-results，未发布私有页面。
@@ -19,3 +19,5 @@
 Kalshi 当前规则源为 The Weather Company，Poly US 为 NWS CLI。观察窗口、舍入及最终修订规则仍需完成逐平台审计，实际公开合约一律标记 ambiguous / no-trade。现有 KNYC 研究模型缺真实历史 received_at 和 HRRR，未将其伪装成生产模型；无模型回放明确 no-data。
 
 实盘认证/执行/对账、用户风险与账户启用、原生平台行情订阅、US 结算事件、生产模型及完整日观察仍未交付。VM 控制台显示实例运行，但浏览器 SSH 无法核验命令输出，运行 SHA 尚未确认；未更改生产服务或撤下 Streamlit。完整验收清单保留未勾选。
+
+CI 证据：[当前源码的 Linux 验证](https://github.com/RENEGADES20/nice-weather/actions/runs/35425951757)。后续仅补充文档的提交仍等待自己的 required checks，不能绕过分支保护。
