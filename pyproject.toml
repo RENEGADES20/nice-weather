@@ -27,6 +27,7 @@ weather-feed = [
 terminal = [
   "fastapi>=0.115,<1",
   "uvicorn>=0.30,<1",
+  "PyJWT[crypto]>=2.10,<3",
 ]
 trading = [
   "nautilus_trader[polymarket]==1.231.0; python_version == '3.12'",

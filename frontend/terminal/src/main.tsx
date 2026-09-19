@@ -501,6 +501,7 @@ function App() {
   const [session, setSession] = useState(false),
     [csrf, setCsrf] = useState(""),
     [password, setPassword] = useState("");
+  const [authMode, setAuthMode] = useState("loading");
   const [state, setState] = useState<State>(empty),
     [venue, setVenue] = useState("kalshi"),
     [day, setDay] = useState(""),
@@ -535,6 +536,7 @@ function App() {
     return () => cancelAnimationFrame(frame);
   }, [state.cursor]);
   useEffect(() => {
+    api("auth").then((r) => setAuthMode(r.mode)).catch(() => setAuthMode("unavailable"));
     api("session")
       .then((r) => {
         setCsrf(r.csrf);
@@ -669,7 +671,7 @@ function App() {
         </div>
         <h1>交易终端</h1>
         <p>KNYC · Kalshi / Polymarket US</p>
-        <form
+        {authMode === "password" ? <form
           onSubmit={async (e) => {
             e.preventDefault();
             try {
@@ -694,7 +696,9 @@ function App() {
             />
           </label>
           <button className="primary">登录</button>
-        </form>
+        </form> : <p>{authMode === "loading" ? "正在验证登录状态…" :
+          authMode === "cloudflare" ? "使用网站现有登录。若会话失效，请重新加载页面完成登录。" :
+          "终端认证接入尚未就绪，请稍后重试。"}</p>}
         <p role="alert">{notice}</p>
       </main>
     );

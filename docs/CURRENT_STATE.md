@@ -4,6 +4,8 @@
 
 产品目标：KNYC 单站、Kalshi 优先与 Poly US 其次、S1/S2/S3、统一桌面终端及用户控制实盘启用。Poly Intl 本轮排除。完整验收见 KNYC_TERMINAL_DELIVERY.md。
 
+当前后续实现：Cloudflare Access 身份复用、无第二密码的终端入口，以及复用现役环境的有限范围发布脚本已完成本地检查，实际配置/部署仍需运行证据。用户已批准删除所列缓存、安装文件及两份旧数据库快照；缓存和安装文件已释放 340,844,544 bytes，旧快照等待现役主库校验。VM 主库约 11.9 GB、syslog 约 1.39 GB，监控代理反复报告写入 Cloud Logging/Monitoring 的 PermissionDenied；不将其误归因于代码历史。详见 VM_DEPLOYMENT.md 的存储修订。
+
 迁移起点为远端 main fc83189ae168ffcdc386ee714a8fe89cb846930d；根目录 main 较旧且有未提交研究记录，已保留。PR #45、#46、#47 均已通过七项 CI 并合并；2026-09-19 16:42:11 UTC，版本 59e0b3e32f3cdb5ea29801ddf346a32de88481c9 已独立部署 VM，六个新服务运行。旧 KLGA 入口和数据继续保留。Nautilus 模拟/回测已接入，S1/S2/S3 共享选择函数参与模拟/重放，尚缺实际 KNYC 模型输入和原生实盘适配。Live 与真实合约规则门禁继续关闭；运行说明见 TERMINAL_OPERATIONS.md，部署事实见 [VM 记录](acceptance/knyc-vm-2026-09-19.md)。下方记录为历史事实，不作为当前授权限制。
 
 

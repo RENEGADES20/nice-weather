@@ -23,7 +23,9 @@ python -m nice_weather.trading.us_runtime --root var/knyc --backtests
 python -m nice_weather.trading.api --root var/knyc
 ```
 
-API 启动前在服务端环境设置 `NICE_WEATHER_TERMINAL_PASSWORD` 和 `NICE_WEATHER_TERMINAL_ORIGIN`（本机默认 `http://127.0.0.1:8767`）。密码不写入仓库或浏览器存储。默认仅监听回环地址，部署必须经过现有 HTTPS 代理并配置准确 Origin。重启使浏览器会话失效；订单、回测请求和采集数据保留。
+生产复用网站已有 Cloudflare Access。在服务端设置准确的 `NICE_WEATHER_TERMINAL_ORIGIN`、`NICE_WEATHER_ACCESS_ISSUER` 和应用 `NICE_WEATHER_ACCESS_AUDIENCE`，后两者是公开校验参数，不创建新凭据。API 验证 RS256 签名、issuer、audience、有效期、用户主体及 app 类型，WebSocket 到期关闭；仍保留 Origin/CSRF 校验。只相信通过验证的 JWT，不以 email 请求头存在作为身份依据。密码登录在此模式禁用，前端不显示第二个密码表单。VM 参数与公网路由切换需单独记录实际结果。
+
+本地独立测试仍可显式传入 `NICE_WEATHER_TERMINAL_PASSWORD`；未配置任一认证方式时接口保持关闭。默认仅监听回环地址，生产继续使用已有 HTTPS 隧道和 Access 策略；不修改已有登录账户、权限或密码。订单、回测请求和采集数据不随认证服务重启清空。
 
 交易指令在发送前写入浏览器本地存储（不含密码或 API 密钥），使用原生 Web Locks 协调同源标签页。请求超时或刷新后继续按原 ID 查询回执；仅明确 accepted/rejected 才解除待核验门禁。收到 202 只表示排队；404 不能证明交易所未接单，只允许向本项目去重队列重发同 ID、同参数。此重试机制不允许直接重发平台资金订单。保留本地待核验记录，勿通过清除浏览器数据解除门禁。停止策略和已有订单撤单仍可提交；若账户进程离线，由服务端拒绝并显示原因。
 
