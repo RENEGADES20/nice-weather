@@ -1050,6 +1050,18 @@ function App() {
                       {id} <span>{name}</span>
                     </b>
                     <p>{signal?.reason ?? "等待 KNYC 专属模型与有效输入"}</p>
+                    {signal?.p_end != null && <p>
+                      升温结束概率 {(signal.p_end * 100).toFixed(1)}%
+                    </p>}
+                    {signal?.warning && <p>
+                      距上档 {signal.warning.distance.toFixed(1)}°F · 上档概率{" "}
+                      {(signal.warning.probability * 100).toFixed(1)}%
+                      {signal.warning.near_boundary ? " · 接近跨档，等待实况确认" : ""}
+                    </p>}
+                    {signal?.legs?.map((leg: Record<string, any>) => <p key={leg.token}>
+                      {markets.find((c) => c.yes_token_id === leg.token)?.title ?? leg.token}
+                      {" · "}{leg.quantity} 份 · 限价 {price(leg.price)} · 预算 {money(leg.cost)}
+                    </p>)}
                     {signal?.execution_reason && (
                       <p className="warn">
                         组合后续下单已停止；已成交部分保留。
@@ -1075,7 +1087,7 @@ function App() {
             <div className="weather-line">
               实况 {clock(state.weather.metar?.received_at)} · CLI{" "}
               {state.weather.cli?.issued_at ?? "等待报告"} ·
-              策略每日首次触发后不重试
+              条件变化持续重评；每策略每日最多一次建仓，部分成交后停止补单
             </div>
           </section>
           <section className="positions panel">

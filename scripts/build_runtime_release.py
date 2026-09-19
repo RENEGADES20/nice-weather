@@ -35,7 +35,7 @@ def build(revision, output):
                 p.startswith("src/nice_weather/")
                 and p.endswith((".py", ".sql"))
                 or p.startswith("config/")
-                and p.endswith(".toml")
+                and (p.endswith(".toml") or p == "config/knyc-strategy-model.json")
             )
         }
         | assets

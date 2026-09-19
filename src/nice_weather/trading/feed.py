@@ -43,6 +43,12 @@ class FeedStore:
                 CREATE TABLE IF NOT EXISTS captures (
                     id INTEGER PRIMARY KEY, source TEXT NOT NULL, url TEXT NOT NULL,
                     requested REAL NOT NULL, received REAL NOT NULL, hash TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS observation_receipts (
+                    station TEXT NOT NULL, observed REAL NOT NULL, received REAL NOT NULL,
+                    PRIMARY KEY(station,observed));
+                CREATE TABLE IF NOT EXISTS observation_revisions (
+                    station TEXT NOT NULL, observed REAL NOT NULL, revision TEXT NOT NULL,
+                    received REAL NOT NULL, PRIMARY KEY(station,observed,revision));
             """)
 
     def require_space(self):
@@ -93,6 +99,30 @@ class FeedStore:
                 group = "books" if row["kind"] == "book" else row["kind"]
                 output[group][row["key"]] = body
         return output
+
+    def observation_receipts(self, rows, received):
+        """First knowledge is durable; repeated polling cannot renew a cross-bin event."""
+        with connect(self.path) as con:
+            result = []
+            for row in rows:
+                stamp = row.get("obsTime")
+                if row.get("icaoId") != "KNYC" or type(stamp) not in (int, float):
+                    continue
+                con.execute("INSERT OR IGNORE INTO observation_receipts VALUES ('KNYC',?,?)",
+                            (stamp, received))
+                first = con.execute("SELECT received FROM observation_receipts "
+                                    "WHERE station='KNYC' AND observed=?", (stamp,)).fetchone()[0]
+                revision = hashlib.sha256(encoded({"temp": row.get("temp"),
+                                                   "rawOb": row.get("rawOb")}).encode()).hexdigest()
+                con.execute("INSERT OR IGNORE INTO observation_revisions VALUES ('KNYC',?,?,?)",
+                            (stamp, revision, received))
+                revision_received = con.execute(
+                    "SELECT received FROM observation_revisions WHERE station='KNYC' "
+                    "AND observed=? AND revision=?", (stamp, revision)).fetchone()[0]
+                result.append(row | {"first_received_at": revision_received,
+                                     "observation_first_received_at": first,
+                                     "revision_id": revision})
+            return result
 
     def since(self, cursor, limit=256):
         with connect(self.path, readonly=True) as con:
@@ -199,7 +229,7 @@ async def weather_feed(store, stop):
         while not stop.is_set():
             now = datetime.now(UTC)
             urls = {
-                "metar": "https://aviationweather.gov/api/data/metar?ids=KNYC&format=json&hours=3",
+                "metar": "https://aviationweather.gov/api/data/metar?ids=KNYC&format=json&hours=24",
                 "nws_observations": "https://api.weather.gov/stations/KNYC/observations?start="
                 + (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "cli_index": "https://api.weather.gov/products/types/CLI/locations/NYC",
@@ -234,6 +264,8 @@ async def weather_feed(store, stop):
                                 stamp,
                             )
                     else:
+                        if source == "metar":
+                            payload = store.observation_receipts(payload, received)
                         store.publish(
                             "weather",
                             source,
@@ -258,6 +290,9 @@ async def weather_feed(store, stop):
                             "message": "Weather source unavailable",
                         },
                     )
+            from nice_weather.trading.knyc_model import publish_predictions
+
+            publish_predictions(store)
             try:
                 await asyncio.wait_for(stop.wait(), 30)
             except TimeoutError:

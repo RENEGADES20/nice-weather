@@ -19,6 +19,10 @@ def contract(venue):
         "quantity_step": ".01",
         "minimum_order_size": 0.01,
         "parse_status": "parsed",
+        "fee_known": True,
+        "fee_rate": 0.07,
+        "fee_exponent": 1,
+        "fee_rounding": "ceil_cent",
     }
 
 
