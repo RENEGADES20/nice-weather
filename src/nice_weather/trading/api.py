@@ -177,7 +177,12 @@ def create_app(root: Path, *, password=None, origin=None):
     def history(token: str, before: int | None = None):
         if len(token) > 256:
             raise HTTPException(400, "Invalid token")
-        return feed.history(token, before)
+        # History draws the midpoint only; preserve full depth in the capture store.
+        return [
+            {"seq": row["seq"], "time": row["time"],
+             "bids": row.get("bids", [])[:1], "asks": row.get("asks", [])[:1]}
+            for row in feed.history(token, before, limit=200)
+        ]
 
     @app.get("/api/requests")
     def receipts():

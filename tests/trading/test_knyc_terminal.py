@@ -153,6 +153,36 @@ def test_kalshi_no_bid_is_yes_ask():
         )
 
 
+def test_chart_history_is_bounded_without_losing_stored_depth(tmp_path):
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from nice_weather.trading.api import create_app
+    from nice_weather.trading.storage import connect
+
+    store = FeedStore(tmp_path / "feed.sqlite3")
+    book = {"bids": [[0.3, 5], [0.2, 10]], "asks": [[0.4, 5], [0.5, 10]]}
+    with connect(store.path) as con:
+        con.executemany(
+            "INSERT INTO feed_events VALUES (?, 'book', 'test', ?, ?)",
+            [(i, i, json.dumps(book)) for i in range(1, 206)],
+        )
+    app = create_app(tmp_path, password="test-only", origin="http://testserver")
+    with TestClient(app) as client:
+        assert client.get("/api/history?token=test").status_code == 401
+        client.post("/api/login", headers={"Origin": "http://testserver"},
+                    json={"password": "test-only"})
+        recent = client.get("/api/history?token=test").json()
+        older = client.get(
+            "/api/history", params={"token": "test", "before": recent[0]["seq"]}
+        ).json()
+        assert len(recent) == 200 and len(older) == 5
+        assert [r["seq"] for r in older + recent] == list(range(1, 206))
+        assert recent[-1] == {"seq": 205, "time": 205, "bids": [[0.3, 5]], "asks": [[0.4, 5]]}
+    assert store.history("test")[-1]["asks"] == book["asks"]
+
+
 def test_native_strategies_recover_without_second_trigger():
     from nice_weather.trading.engine import Session
     from nice_weather.trading.recovery import native_state, restore
