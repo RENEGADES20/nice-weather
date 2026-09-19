@@ -18,7 +18,7 @@ from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.backtest.models import FeeModel, FillModel
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig, StrategyConfig
 from nautilus_trader.core.data import Data
-from nautilus_trader.model.currencies import pUSD
+from nautilus_trader.model.currencies import USD, pUSD
 from nautilus_trader.model.data import (
     BookOrder,
     CustomData,
@@ -66,13 +66,17 @@ class Fees(FeeModel):
 
     def get_commission(self, order, fill_qty, fill_px, instrument):
         if str(order.client_order_id).startswith("EXPIRATION-"):
-            return Money(0, pUSD)
+            return Money(0, self.session.currency)
         row = self.session.metadata[instrument.raw_symbol.value]
         if order.liquidity_side == LiquiditySide.MAKER:
-            return Money(0, pUSD)  # No assumed maker rebates.
+            return Money(0, self.session.currency)  # No assumed maker rebates.
         p, q = fill_px.as_decimal(), fill_qty.as_decimal()
+        if row.get("venue") in {"kalshi", "poly_us"}:
+            from nice_weather.trading.signals import fee as venue_fee
+
+            return Money(venue_fee(q, p, row), self.session.currency)
         fee = q * Decimal(str(row["fee_rate"])) * (p * (1 - p)) ** Decimal(str(row["fee_exponent"]))
-        return Money(fee, pUSD)
+        return Money(fee, self.session.currency)
 
 
 class Control(Strategy):
@@ -127,6 +131,13 @@ class Session:
         if config["mode"] not in {"sandbox", "backtest"}:
             raise ValueError("Simulation cannot impersonate a live account")
         self.config = config
+        venue_name = config.get("venue", "polymarket")
+        if venue_name not in {"polymarket", "kalshi", "poly_us"}:
+            raise ValueError("Unsupported execution venue")
+        self.venue = Venue(venue_name.upper())
+        self.currency = pUSD if venue_name == "polymarket" else USD
+        self.strategy_state = {}
+        self.signals = {}
         self.projection_version = config.get("projection_version", 1)
         self.parameters = validate_strategy(
             config["strategy_id"], config.get("parameters", {}), config["mode"]
@@ -136,7 +147,7 @@ class Session:
             raise ValueError("Initial cash exceeds supported limit")
         self.metadata, self.instruments, self.quotes = {}, {}, {}
         # Nautilus copies an empty settlement mapping; a sentinel keeps this mapping shared.
-        self.settlement_prices = {InstrumentId.from_str("UNUSED.POLYMARKET"): 0.0}
+        self.settlement_prices = {InstrumentId.from_str(f"UNUSED.{self.venue}"): 0.0}
         self.outcomes, self.owner = {}, {}
         self.counts, self.rejections = {}, []
         self.equity_peak, self.maximum_drawdown = self.cash_start, 0.0
@@ -148,11 +159,11 @@ class Session:
             )
         )
         self.engine.add_venue(
-            venue=VENUE,
+            venue=self.venue,
             oms_type=OmsType.NETTING,
             account_type=AccountType.CASH,
-            base_currency=pUSD,
-            starting_balances=[Money(self.cash_start, pUSD)],
+            base_currency=self.currency,
+            starting_balances=[Money(self.cash_start, self.currency)],
             book_type=BookType.L2_MBP if config.get("execution_version") == 3 else BookType.L1_MBP,
             liquidity_consumption=True,
             fill_model=FillModel(prob_fill_on_limit=0, random_seed=7),
@@ -204,15 +215,17 @@ class Session:
                         self.quotes.pop(token, None)
                     instrument = BinaryOption(
                         instrument_id=InstrumentId.from_str(
-                            f"{row['condition_id']}-{token}.POLYMARKET"
+                            f"{row['condition_id']}-{token}.{self.venue}"
                         ),
                         raw_symbol=Symbol(token),
                         asset_class=AssetClass.ALTERNATIVE,
-                        currency=pUSD,
+                        currency=self.currency,
                         price_precision=increment.precision,
                         price_increment=increment,
-                        size_precision=6,
-                        size_increment=Quantity.from_str("0.000001"),
+                        size_precision=Quantity.from_str(
+                            row.get("quantity_step", "0.000001")
+                        ).precision,
+                        size_increment=Quantity.from_str(row.get("quantity_step", "0.000001")),
                         activation_ns=0,
                         expiration_ns=4102444800000000000,
                         ts_event=self.now,
@@ -321,6 +334,10 @@ class Session:
                     ),
                     custom=True,
                 )
+        elif kind == "weather_signal":
+            # Dispatch between native event batches so each IOC result is known
+            # before another basket leg can introduce exposure.
+            self.weather_signal(row)
         elif kind == "settlement":
             if row.get("evidence_type") != "official_final" or not row.get("source_hash"):
                 raise ValueError("Settlement requires verifiable final source evidence")
@@ -369,7 +386,8 @@ class Session:
         if (
             row["parse_status"] != "parsed"
             or json_nonempty(row["ambiguities_json"])
-            or row["station_id"] != "KLGA"
+            or row["station_id"] != self.config.get("station_id", "KLGA")
+            or row.get("venue", "polymarket") != self.config.get("venue", "polymarket")
             or row["timezone"] != "America/New_York"
         ):
             return "Ambiguous contract: no-trade"
@@ -382,17 +400,29 @@ class Session:
             row["closed"]
             or not row["active"]
             or not row["accepting_orders"]
-            or self.now >= timestamp(row["observation_end"])
+            or self.now
+            >= min(
+                timestamp(row["observation_end"]),
+                timestamp(row.get("close_time", row["observation_end"])),
+            )
             or token in self.outcomes
         ):
             return "Market closed"
         return None
 
+    def fee_reserve(self, row, quantity):
+        cap = float(quantity) * float(row["fee_rate"]) * 0.25 ** float(row["fee_exponent"])
+        if row.get("venue") in {"kalshi", "poly_us"}:
+            # Each partial execution can round up. Native US quantities have .01 increments.
+            cap += float(quantity) / 0.01 * 0.01
+        return cap
+
     def buy_reserve(self, order):
         token = self.engine.cache.instrument(order.instrument_id).raw_symbol.value
         row = self.metadata[token]
-        fee_cap = float(row["fee_rate"]) * 0.25 ** float(row["fee_exponent"])
-        return float(order.leaves_qty) * (float(order.price) + fee_cap)
+        return float(order.leaves_qty) * float(order.price) + self.fee_reserve(
+            row, order.leaves_qty
+        )
 
     def cancel_token(self, token):
         ins = self.instruments.get(token)
@@ -429,12 +459,15 @@ class Session:
             if kind == "stop":
                 self.enabled = False
                 for order in self.open_orders():
-                    if self.owner.get(str(order.client_order_id)) == "strategy":
+                    if self.owner.get(str(order.client_order_id)) in {"strategy", "S1", "S2", "S3"}:
                         self.control.cancel_order(order)
+                return
+            if kind == "weather_signal":
+                self.weather_signal(payload)
                 return
             if kind == "strategy_tick":
                 token = event["token"]
-                if not self.enabled or self.config["strategy_id"] == "noop":
+                if not self.enabled or self.config["strategy_id"] != "acceptance_roundtrip":
                     return
                 if token not in self.config.get("tokens", []):
                     return
@@ -502,6 +535,72 @@ class Session:
         except (ValueError, KeyError) as exc:
             self.rejections.append({"request_id": request_id, "ts": self.now, "reason": str(exc)})
 
+    def weather_signal(self, weather):
+        from nice_weather.trading.signals import STRATEGY_IDS, evaluate
+
+        if not self.enabled or self.config["strategy_id"] not in {*STRATEGY_IDS, "S1_S2_S3"}:
+            return
+        contracts = sorted(
+            [
+                r
+                for r in self.metadata.values()
+                if r["outcome"] == "YES" and r["local_day"] == weather.get("day")
+            ],
+            key=lambda r: float("-inf") if r["lower"] is None else r["lower"],
+        )
+        books = {}
+        for token, quote in self.quotes.items():
+            levels = getattr(self, "_depth", {}).get(token, {})
+            books[token] = {
+                "received_at": quote["ts"] / 1e9,
+                "complete": True,
+                "bids": [
+                    [float(p), float(q)] for (side, p), q in levels.items() if side == OrderSide.BUY
+                ],
+                "asks": [
+                    [float(p), float(q)]
+                    for (side, p), q in levels.items()
+                    if side == OrderSide.SELL
+                ],
+            }
+        for strategy in STRATEGY_IDS:
+            if self.config["strategy_id"] not in {strategy, "S1_S2_S3"}:
+                continue
+            key = f"{weather.get('day')}:{strategy}"
+            if key in self.strategy_state:
+                continue
+            signal = evaluate(strategy, contracts, weather, books, self.now / 1e9)
+            self.signals[strategy] = signal
+            if signal["triggered"]:
+                self.strategy_state[key] = signal
+            if signal["action"] == "buy":
+                for i, leg in enumerate(signal["legs"]):
+                    try:
+                        order = self.order(f"{strategy}-{weather['day']}-{i}", leg, strategy)
+                        self._run(
+                            CustomData(
+                                DataType(Input),
+                                Input({"kind": "clock", "ts": self.now, "data": {}}),
+                            ),
+                            custom=True,
+                        )
+                        signal.setdefault("executions", []).append(
+                            {
+                                "token": leg["token"],
+                                "filled": float(order.filled_qty),
+                                "requested": leg["quantity"],
+                                "status": order.status.name,
+                            }
+                        )
+                        if float(order.filled_qty) < leg["quantity"]:
+                            signal["execution_reason"] = "PARTIAL_OR_UNFILLED_STOPPED_BASKET"
+                            break
+                    except ValueError as exc:
+                        self.rejections.append(
+                            {"request_id": key, "ts": self.now, "reason": str(exc)}
+                        )
+                        break
+
     def position_quantity(self, token):
         return sum(
             (
@@ -559,7 +658,9 @@ class Session:
             )
         else:
             quantity = number(payload["quantity"], "quantity")
-        if quantity % Decimal("0.000001") or quantity < Decimal(str(row["minimum_order_size"])):
+        if quantity % Decimal(str(row.get("quantity_step", "0.000001"))) or quantity < Decimal(
+            str(row["minimum_order_size"])
+        ):
             raise ValueError("Illegal quantity precision or below market minimum")
         if tif == "FOK" and self.config.get("execution_version") == 3:
             book_side = OrderSide.SELL if side == "BUY" else OrderSide.BUY
@@ -606,11 +707,11 @@ class Session:
                 raise ValueError("Naked sell / shares already reserved")
         else:
             cost = float(price * quantity)
-            account = self.engine.cache.account_for_venue(VENUE)
+            account = self.engine.cache.account_for_venue(self.venue)
             # Max fee over the legal binary price interval; conservative for resting orders.
-            fee = float(quantity) * float(row["fee_rate"]) * 0.25 ** float(row["fee_exponent"])
+            fee = self.fee_reserve(row, quantity)
             reserved = sum(self.buy_reserve(o) for o in existing if o.side == OrderSide.BUY)
-            cash = float(account.balance_total(pUSD)) if account else self.cash_start
+            cash = float(account.balance_total(self.currency)) if account else self.cash_start
             if cost + fee + reserved > cash + 1e-9:
                 raise ValueError("Insufficient cash including open orders")
             bin_exposure = day_exposure = 0.0
@@ -632,7 +733,10 @@ class Session:
                     bin_exposure += exposure
                 if definition["local_day"] == row["local_day"]:
                     day_exposure += exposure
-            if bin_exposure + cost > 5 + 1e-9 or day_exposure + cost > 20 + 1e-9:
+            if (
+                bin_exposure + cost > self.config.get("max_bin_notional", 5) + 1e-9
+                or day_exposure + cost > self.config.get("max_day_notional", 20) + 1e-9
+            ):
                 raise ValueError("Combined YES/NO bin or airport-day exposure limit")
         self.owner[request_id] = owner
         order = self.control.order_factory.limit(
@@ -647,6 +751,7 @@ class Session:
             tags=[owner],
         )
         self.control.submit_order(order)
+        return order
 
     def depth_filled(self, token, book_side, price):
         trade_side = OrderSide.BUY if book_side == OrderSide.SELL else OrderSide.SELL
@@ -661,8 +766,8 @@ class Session:
         )
 
     def snapshot(self):
-        account = self.engine.cache.account_for_venue(VENUE)
-        cash = float(account.balance_total(pUSD)) if account else self.cash_start
+        account = self.engine.cache.account_for_venue(self.venue)
+        cash = float(account.balance_total(self.currency)) if account else self.cash_start
         positions, orders, fills = [], [], []
         realized = fees = market_value = 0.0
         complete = True
@@ -819,6 +924,13 @@ class Session:
             snapshot.pop("net_funding")
             for market in snapshot["markets"]:
                 market.pop("rejection")
+        if self.config.get("venue") in {"kalshi", "poly_us"}:
+            snapshot.update(
+                venue=self.config["venue"],
+                station="KNYC",
+                signals=self.signals,
+                strategy_state=self.strategy_state,
+            )
         return snapshot
 
     def dispose(self):
