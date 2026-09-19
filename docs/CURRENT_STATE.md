@@ -4,7 +4,7 @@
 
 最新运行：PR #51 七项 CI 通过，`4060512720c24ed51fd06b88890d8cfed3f8e8c3` 已原位部署，六个 KNYC 服务重启，旧 KLGA 服务保持原 PID，无新增环境副本。65 个文件清单校验与空 Paper 账户恢复通过；冷启动曾有约 44 秒旧快照，后续恢复至低于 1 秒并继续推进游标。公网已自动重连，但发现旧 502 提示未清除及 CSRF 未刷新问题，正在修复；完整恢复验收未通过。
 
-用户批准后，已为现有 VM 服务账户保存 Logs Writer 和 Monitoring Metric Writer；权限传播后的五分钟检查中，两类代理均无 PermissionDenied。SQLite 保活连接已部署，feed 和系统 journal 单次五秒写盘样本下降，Paper 写入与吞吐同时变化，不能推断整体性能达标。VM 仍有较高 I/O wait；现役主库完整性检查仍在运行，已批准旧快照仍未删除。
+用户批准后，已为现有 VM 服务账户保存 Logs Writer 和 Monitoring Metric Writer；后续十五分钟检查中，两类代理均无 PermissionDenied。SQLite 保活连接已部署，feed 和系统 journal 单次五秒写盘样本下降，Paper 写入与吞吐同时变化，不能推断整体性能达标。全库只读检查长时间阻止主库 WAL 回收；WAL 接近 1 GB、剩余约 2 GB 后，已停止该检查以保护运行空间。主库完整性未验证，已批准的旧数据库快照仍未删除，需受控校验方案后再执行。
 
 产品目标：KNYC 单站、Kalshi 优先与 Poly US 其次、S1/S2/S3、统一桌面终端及用户控制实盘启用。Poly Intl 本轮排除。完整验收见 KNYC_TERMINAL_DELIVERY.md。
 
