@@ -49,6 +49,14 @@ def test_optimizer_matches_exhaustive_grid():
         assert optimize(rows, budget) == list(expected)
 
 
+def test_unverified_rules_do_not_mislabel_model_or_allow_execution():
+    now, contracts, weather, books = scenario()
+    contracts[0]["parse_status"] = "ambiguous"
+    signal = evaluate("S3", contracts, weather, books, now, limits(contracts))
+    assert signal["reason"] == "CONTRACT_RULES_UNVERIFIED"
+    assert signal["action"] == "no-trade" and signal["legs"] == []
+
+
 def test_v2_quantity_risk_and_warning():
     now, contracts, weather, books = scenario()
     signal = evaluate("S1", contracts, weather, books, now, limits(contracts))

@@ -131,6 +131,8 @@ def evaluate(strategy, contracts, weather, books, asof, risk):
     try:
         if weather.get("status") == "unavailable":
             raise ValueError(weather.get("reason", "WEATHER_INPUT_UNAVAILABLE"))
+        if any(c.get("parse_status") != "parsed" for c in contracts):
+            raise ValueError("CONTRACT_RULES_UNVERIFIED")
         indexes = select(strategy, contracts, weather, asof)
         if strategy == "S2":
             floor = weather["floor"]
