@@ -18,6 +18,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+us-live = [
+  "cryptography>=44,<51",
+]
 weather-feed = [
   "eccodes>=2.40,<3",
 ]

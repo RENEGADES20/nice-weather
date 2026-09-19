@@ -2,6 +2,8 @@
 
 状态：可本地启动的迁移实现，尚未通过完整产品验收。实盘适配和 KNYC 模型未完成；真实采集合约的规则门禁关闭。旧 Streamlit 入口继续保留。
 
+主分支已合并首批实现 PR #45（`e00ac3ce`）。后续 US 签名传输模块使用额外依赖 `.[us-live]`，仅供适配开发；安装该依赖不会读取密钥、启动实盘账户或解除终端门禁。它的验收边界见 US_ADAPTER_ACCEPTANCE.md。
+
 ## 本地运行
 
 Python 3.12 独立环境，安装 `pip install -e ".[trading,terminal,weather-feed]"`。旧 collector 的 PyArrow 版本范围与 Nautilus 环境分开。进入 `frontend/terminal` 执行 `npm ci && npm run build`。
