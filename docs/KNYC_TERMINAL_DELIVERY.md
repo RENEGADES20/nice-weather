@@ -43,4 +43,4 @@ OpenAI [Rethinking skills and prompts](https://developers.openai.com/blog/rethin
 
 尚未交付：经验证的 KNYC 模型及前瞻信号生产、真实历史研究复现与可执行收益对照、平台原生行情订阅、Kalshi/Poly US 真实账户认证验收与 Nautilus Live 适配、用户账户/风险/白名单配置、US 最终结算事件接入、全市场日观察、线上性能与完整故障恢复。签名传输和稳定请求日志已随 PR #46 合并；这些模块不能代替原生账户/成交对账。以上继续保留为待办，不用默认关闭的接口冒充已实现。
 
-VM 旧版本 fc83189 已核验；新版本 59e0b3e 于 2026-09-19 16:42:11 UTC 独立安装并启动六个服务，发布包及文件清单哈希通过，回环健康检查与空 Paper 账户重启恢复通过。SSH 来源访问授权已明确并恢复，不再列为阻塞。公网候选路由、现有认证复用、线上性能及完整市场日验收仍待完成，详见 acceptance/knyc-vm-2026-09-19.md。缺失真实账户凭据阻止认证、对账与平台恢复的集成验收。KNYC 历史 HRRR 格点已离线提取，真实历史 received_at 仍缺失，生产模型未训练、Kalshi 标签源还需独立核验，不复制 KLGA 权重或把 CLI 自动视为 Weather Company 标签。
+VM 旧版本 fc83189 已核验；KNYC 于 2026-09-19 16:42:11 UTC 首次安装并启动六个服务，之后沿用同一环境原位更新，最新实际版本见 acceptance/knyc-vm-2026-09-19.md。文件清单、回环健康检查与空 Paper 账户重启恢复通过。SSH 访问/重连和限定的日志/指标写入权限已获授权；公网 `/terminal` 及现有 Cloudflare Access 复用已完成。线上 p95、完整故障恢复及完整市场日仍未通过。缺失真实账户凭据阻止认证、对账与平台恢复的集成验收。KNYC 历史 HRRR 格点已离线提取，真实历史 received_at 仍缺失，生产模型未训练、Kalshi 标签源还需独立核验，不复制 KLGA 权重或把 CLI 自动视为 Weather Company 标签。

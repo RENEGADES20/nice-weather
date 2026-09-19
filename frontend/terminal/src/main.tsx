@@ -75,6 +75,13 @@ const money = (n?: number | null) =>
 const price = (n?: number) => (n == null ? "—" : `${(n * 100).toFixed(1)}¢`);
 const clock = (n?: number) =>
   n ? new Date(n * 1000).toLocaleTimeString() : "—";
+const recordPerformance = new URLSearchParams(location.search).get("measure") === "1";
+function measureDisplay(name: string, start: number) {
+  performance.clearMeasures(name);
+  const measured = performance.measure(name, { start, end: performance.now() });
+  if (recordPerformance)
+    console.debug("terminal-performance " + JSON.stringify({ name, ms: measured.duration }));
+}
 
 async function api(path: string, body?: unknown, csrf = "") {
   const response = await fetch("/api/" + path, {
@@ -246,6 +253,7 @@ function Chart({ token, book }: { token: string; book?: Book }) {
   const lineRef = useRef<ReturnType<
     ReturnType<typeof createChart>["addSeries"]
   > | null>(null);
+  const lastChartTime = useRef<number | null>(null);
   const cache = useRef(new Map<string, Map<number, number>>());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -296,12 +304,11 @@ function Chart({ token, book }: { token: string; book?: Book }) {
       chart.remove();
     };
   }, []);
-  const draw = (points: Map<number, number>) =>
-    lineRef.current?.setData(
-      [...points]
-        .sort((a, b) => a[0] - b[0])
-        .map(([time, value]) => ({ time: time as Time, value })),
-    );
+  const draw = (points: Map<number, number>) => {
+    const ordered = [...points].sort((a, b) => a[0] - b[0]);
+    lineRef.current?.setData(ordered.map(([time, value]) => ({ time: time as Time, value })));
+    lastChartTime.current = ordered.at(-1)?.[0] ?? null;
+  };
   useLayoutEffect(() => {
     setError("");
     const saved = cache.current.get(token);
@@ -310,6 +317,7 @@ function Chart({ token, book }: { token: string; book?: Book }) {
       setLoading(false);
     } else {
       lineRef.current?.setData([]);
+      lastChartTime.current = null;
       setLoading(Boolean(token));
     }
     if (!token) return;
@@ -348,10 +356,16 @@ function Chart({ token, book }: { token: string; book?: Book }) {
     points.set(t, (book.bids[0][0] + book.asks[0][0]) / 2);
     if (points.size > 12000) points.delete(points.keys().next().value!);
     cache.current.set(token, points);
-    lineRef.current?.update({
-      time: t as Time,
-      value: (book.bids[0][0] + book.asks[0][0]) / 2,
-    });
+    // Reconnect snapshots can precede the cached series tail. The chart rejects
+    // appending older timestamps; keep normal updates incremental.
+    if (lastChartTime.current !== null && t < lastChartTime.current) draw(points);
+    else {
+      lineRef.current?.update({
+        time: t as Time,
+        value: (book.bids[0][0] + book.asks[0][0]) / 2,
+      });
+      lastChartTime.current = t;
+    }
   }, [token, book]);
   async function older() {
     const before = earliest.current.get(token);
@@ -508,7 +522,8 @@ function App() {
     [selected, setSelected] = useState("");
   const [connected, setConnected] = useState(false),
     [now, setNow] = useState(Date.now() / 1000),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [connectionError, setConnectionError] = useState("");
   const [mode, setMode] = useState("sandbox"),
     [tab, setTab] = useState("交易"),
     [side, setSide] = useState("BUY"),
@@ -521,17 +536,32 @@ function App() {
   const [replayDay, setReplayDay] = useState(""),
     [replayStrategy, setReplayStrategy] = useState("S1_S2_S3");
   const [receipts, setReceipts] = useState<Record<string, any>[]>([]);
+  const readyMeasured = useRef(false);
+  useLayoutEffect(() => {
+    if (!recordPerformance || !connected || !state.contracts.length || readyMeasured.current) return;
+    const frame = requestAnimationFrame(() => {
+      measureDisplay("terminal-ready", 0);
+      readyMeasured.current = true;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [connected, state.contracts.length]);
+  useLayoutEffect(() => {
+    const started = performance.getEntriesByName("bin-select").at(-1)?.startTime;
+    if (started == null) return;
+    const frame = requestAnimationFrame(() => {
+      measureDisplay("bin-select-display", started);
+      performance.clearMarks("bin-select");
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [selected]);
   useLayoutEffect(() => {
     const started = performance
       .getEntriesByName("market-event-received")
       .at(-1)?.startTime;
     if (started == null) return;
     const frame = requestAnimationFrame(() => {
-      performance.clearMeasures("market-event-display");
-      performance.measure("market-event-display", {
-        start: started,
-        end: performance.now(),
-      });
+      measureDisplay("market-event-display", started);
+      performance.clearMarks("market-event-received");
     });
     return () => cancelAnimationFrame(frame);
   }, [state.cursor]);
@@ -553,17 +583,26 @@ function App() {
     let timer: ReturnType<typeof setTimeout>;
     const connect = async () => {
       try {
-        const initial = await api("snapshot");
+        // A server restart rotates CSRF even when Cloudflare identity remains valid.
+        const [initial, currentSession] = await Promise.all([
+          api("snapshot"), api("session"),
+        ]);
         if (stopped) return;
+        setCsrf(currentSession.csrf);
         setState(initial);
         socket = new WebSocket(
           `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?cursor=${initial.cursor}`,
         );
-        socket.onopen = () => setConnected(true);
+        socket.onopen = () => {
+          setConnectionError("");
+          setConnected(true);
+        };
         socket.onmessage = (e) => {
-          performance.clearMarks("market-event-received");
-          performance.mark("market-event-received");
           const message = JSON.parse(e.data);
+          if (message.events?.some((event: { kind: string }) => event.kind === "book")) {
+            performance.clearMarks("market-event-received");
+            performance.mark("market-event-received");
+          }
           setState((old) => {
             const next = {
               ...old,
@@ -593,7 +632,9 @@ function App() {
           if (!stopped) timer = setTimeout(connect, 1500);
         };
       } catch (e) {
-        setNotice(String(e));
+        if (stopped) return;
+        setConnected(false);
+        setConnectionError(String(e));
         if (!stopped) timer = setTimeout(connect, 3000);
       }
     };
@@ -816,6 +857,7 @@ function App() {
                   aria-pressed={token === c.yes_token_id}
                   className={token === c.yes_token_id ? "selected" : ""}
                   onClick={() => {
+                    performance.clearMarks("bin-select");
                     performance.mark("bin-select");
                     setSelected(c.yes_token_id);
                   }}
@@ -967,7 +1009,7 @@ function App() {
               </button>
             </form>
             <p className="notice" role="status">
-              {notice ||
+              {connectionError || notice ||
                 (!canTrade
                   ? "等待有效行情、账户与规则校验"
                   : "成交以订单回执为准")}

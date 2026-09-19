@@ -30,13 +30,22 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
     ]),
   );
   let commands = 0,
-    historyRequests = 0;
+    historyRequests = 0,
+    failSnapshot = false,
+    csrfValue = "fixture-csrf",
+    snapshotRequests = 0,
+    socketConnections = 0;
   await page.route("**/api/auth", (r) => r.fulfill({ json: { mode: "cloudflare" } }));
   await page.route("**/api/session", (r) =>
-    r.fulfill({ json: { csrf: "fixture-csrf" } }),
+    r.fulfill({ json: { csrf: csrfValue } }),
   );
-  await page.route("**/api/snapshot", (r) =>
-    r.fulfill({
+  await page.route("**/api/snapshot", (r) => {
+    snapshotRequests++;
+    if (failSnapshot) {
+      failSnapshot = false;
+      return r.fulfill({ status: 502, json: { detail: "Restarting (502)" }, headers: { "Cache-Control": "no-store" } });
+    }
+    return r.fulfill({
       json: {
         cursor: 1,
         contracts,
@@ -54,7 +63,7 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
             account: "sandbox-kalshi-knyc",
             mode: "sandbox",
             status: "running",
-            updated: now,
+            updated: Date.now() / 1000,
             snapshot: {
               cash: 100,
               equity: 100,
@@ -68,8 +77,8 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
         ],
         live: { enabled: false, reason: "Live acceptance pending" },
       },
-    }),
-  );
+    });
+  });
   await page.route("**/api/history?*", (r) => {
     historyRequests++;
     return r.fulfill({
@@ -92,6 +101,7 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
     }),
   );
   await page.route("**/api/commands", (r) => {
+    expect(r.request().headers()["x-csrf-token"]).toBe(csrfValue);
     commands++;
     return r.fulfill({
       status: 202,
@@ -103,12 +113,22 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
   });
   let wsMock: WebSocketRoute;
   await page.routeWebSocket("**/api/events*", (ws) => {
+    socketConnections++;
     wsMock = ws;
   });
   const errors: string[] = [];
+  const measuredNames = new Set<string>();
+  page.on("console", (m) => {
+    if (m.text().includes("error occurred in")) errors.push(m.text());
+    if (m.text().startsWith("terminal-performance ")) {
+      const value = JSON.parse(m.text().slice("terminal-performance ".length));
+      expect(Number.isFinite(value.ms)).toBe(true);
+      measuredNames.add(value.name);
+    }
+  });
   page.on("pageerror", (e) => errors.push(e.message));
   const started = Date.now();
-  await page.goto("/");
+  await page.goto("/?measure=1");
   await expect(
     page.getByRole("heading", { name: "KNYC 每日最高温" }),
   ).toBeVisible();
@@ -209,6 +229,29 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
     );
   }
   expect(commands).toBe(24);
+  // Keep the page open through a server restart; identity survives but CSRF rotates.
+  csrfValue = "after-restart-csrf";
+  for (const book of Object.values(books)) book.received_at = now - 60;
+  failSnapshot = true;
+  await wsMock!.close({ code: 1012, reason: "Service restart" });
+  await expect(page.getByRole("status")).toContainText("502");
+  await expect.poll(async () => ({
+    connection: await page.locator(".connection").innerText(), errors,
+    snapshotRequests, socketConnections,
+  }), { timeout: 10000 }).toEqual({
+    connection: expect.stringContaining("终端已连接"), errors: [],
+    snapshotRequests: 3, socketConnections: 2,
+  });
+  await expect(page.getByRole("status")).not.toContainText("502");
+  await expect(page.locator(".ticket button.primary")).toBeDisabled();
+  wsMock!.send(JSON.stringify({ events: [{
+    seq: 26, kind: "book", key: "kalshi:test-5",
+    data: { bids: [[0.6, 10]], asks: [[0.65, 10]],
+      received_at: Date.now() / 1000, complete: true },
+  }] }));
+  await expect(page.locator(".ticket button.primary")).toBeEnabled();
+  await page.locator(".ticket button.primary").click();
+  await expect.poll(() => commands).toBe(25);
   await page.getByRole("button", { name: "实盘", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "买入 YES", exact: true }),
@@ -229,6 +272,9 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
     fullPage: true,
   });
   expect(errors).toEqual([]);
+  expect(measuredNames).toEqual(new Set([
+    "terminal-ready", "bin-select-display", "market-event-display",
+  ]));
   const percentile = (a: number[]) =>
     a.toSorted((a, b) => a - b)[Math.ceil(a.length * 0.95) - 1];
   const p95 = percentile(timings),
