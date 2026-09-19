@@ -4,16 +4,20 @@
 
 产品目标：KNYC 单站、Kalshi 优先与 Poly US 其次、S1/S2/S3、统一桌面终端及用户控制实盘启用。Poly Intl 本轮排除。完整验收见 KNYC_TERMINAL_DELIVERY.md。
 
-迁移起点为远端 main fc83189ae168ffcdc386ee714a8fe89cb846930d；根目录 main 较旧且有未提交研究记录，已保留。PR #45、#46 均已通过七项 CI 并合并，当前已合并版本为 6c29161feed5683866397bc8fb177c392050acd1。VM 已通过 SSH 核验，运行清单仍为 fc83189，全部文件哈希匹配；新版本尚未部署。Nautilus 模拟/回测已接入，S1/S2/S3 共享选择函数参与模拟/重放，尚缺实际 KNYC 模型输入和原生实盘适配。Live 与真实合约规则门禁继续关闭；运行说明见 TERMINAL_OPERATIONS.md。下方记录为历史事实，不作为当前授权限制。
+迁移起点为远端 main fc83189ae168ffcdc386ee714a8fe89cb846930d；根目录 main 较旧且有未提交研究记录，已保留。PR #45、#46、#47 均已通过七项 CI 并合并；2026-09-19 16:42:11 UTC，版本 59e0b3e32f3cdb5ea29801ddf346a32de88481c9 已独立部署 VM，六个新服务运行。旧 KLGA 入口和数据继续保留。Nautilus 模拟/回测已接入，S1/S2/S3 共享选择函数参与模拟/重放，尚缺实际 KNYC 模型输入和原生实盘适配。Live 与真实合约规则门禁继续关闭；运行说明见 TERMINAL_OPERATIONS.md，部署事实见 [VM 记录](acceptance/knyc-vm-2026-09-19.md)。下方记录为历史事实，不作为当前授权限制。
 
 
-当前实施证据：[本地验收](acceptance/knyc-terminal-2026-09-19.md)。PR #45 最终提交 `39924ee6` 的七项 CI 全部通过，已合并至 main `e00ac3cecb0cc262b86dafa6416d91785632f5b8`；尚未部署 VM。
+当前实施证据：[本地验收](acceptance/knyc-terminal-2026-09-19.md)。PR #45 最终提交 `39924ee6` 的七项 CI 全部通过，已合并至 main `e00ac3cecb0cc262b86dafa6416d91785632f5b8`；其实现已包含在上述 VM 版本。
 
 PR #46 增加 Kalshi RSA-PSS / Poly US Ed25519 认证传输、稳定请求日志、下单/撤单请求及有界账户读取，CI run 35427693363 全部通过。16 项 mock 测试通过，真实账户认证未验收。此模块尚未接入 Nautilus Live 或终端实盘启用；净持仓、成交归属和历史缺口对账仍待实现，API 继续关闭 Live。具体协议与缺口见 [US_ADAPTER_ACCEPTANCE.md](US_ADAPTER_ACCEPTANCE.md)。
 
 本机公开前瞻采集从 2026-09-19 06:14 UTC 开始，最后记录到 09:01:34 UTC 后因电脑重启中断，已单独保存中断证据；15:18 UTC 恢复，在原库追加，新的有界采集截止时间为 2026-09-20 15:18 UTC。覆盖双平台盘口、METAR/NWS/CLI、KNYC HRRR，实际缺口不回填。状态文件 `var/knyc/forward-capture.json`，日志同目录。该采集不涉及账户、付费 X 或真实下单，不能替代完整市场日终端运行验收。原文与采集库未提交 Git。
 
-当前 `codex/knyc-command-recovery` 修复终端网络超时后的请求身份：发送前保存 ID 与完整指令，收到最终执行回执前阻止新增风险，原 ID 重试前查询确切回执。浏览器原生存储与 Web Locks 保留重启记录并协调多个标签页；撤单和停止策略不依赖行情新鲜度。后端按 ID 查询覆盖最近 30 条列表之外的请求。此变更尚待本轮 PR 与部署记录，不代表实盘验收。
+PR #47 修复终端网络超时后的请求身份：发送前保存 ID 与完整指令，收到最终执行回执前阻止新增风险，原 ID 重试前查询确切回执。浏览器原生存储与 Web Locks 保留重启记录并协调多个标签页；撤单和停止策略不依赖行情新鲜度。后端按 ID 查询覆盖最近 30 条列表之外的请求。CI run 35453137500 七项通过，已随 59e0b3e 部署，不代表实盘验收。
+
+用户已明确授权 `ssh.cloud.google.com` 中本项目已登录会话的访问及普通重连，已恢复连接；具体目标与边界写入 AGENTS.md 和 VM_DEPLOYMENT.md。新终端回环健康接口正常、未认证快照返回 401；公网候选路由尚未配置。用户否决新增终端密码步骤，尚未创建或修改凭据；先核验复用现有 Cloudflare Access 的接入方式。VM 安装后剩余约 2.3 GB（92% 已用），完整市场日验收前需继续评估容量。
+
+已从现有本地 HRRR 空间块提取 KNYC 独立格点的 26,772 个预报周期（2,446 个 UTC 起报日期），另保留 126 个缺失/失败记录。产物为 `var/knyc/hrrr-archive-20260919/`，历史 received_at 为 null、executable 为 false；零新增下载，仅支持回顾性天气研究，尚未训练生产模型或解决 Kalshi 结算标签核验。
 
 ## 补充研究及部署记录
 
