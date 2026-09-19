@@ -15,12 +15,17 @@ def build(revision, output):
     paths = (
         subprocess.check_output(["git", "ls-tree", "-rz", "--name-only", sha]).decode().split("\0")
     )
-    index = "src/nice_weather/trading_chart_dist/index.html"
+    indexes = ["src/nice_weather/trading_chart_dist/index.html"]
+    terminal = "src/nice_weather/terminal_dist/index.html"
+    if terminal in paths:
+        indexes.append(terminal)
     def read(path):
         return subprocess.check_output(["git", "show", f"{sha}:{path}"])
     assets = {
-        "src/nice_weather/trading_chart_dist/" + p
-        for p in re.findall(r'(?:src|href)="\./([^\"]+)"', read(index).decode())
+        str(Path(index).parent).replace("\\", "/") + "/" + p.removeprefix("./").lstrip("/")
+        for index in indexes
+        for p in re.findall(r'(?:src|href)="([^\"]+)"', read(index).decode())
+        if p.startswith(("./", "/assets/"))
     }
     selected = (
         {
@@ -34,8 +39,10 @@ def build(revision, output):
             )
         }
         | assets
+        | set(indexes)
+        | {p for p in paths if p.startswith("deploy/systemd/nice-weather-knyc-")}
+        | ({"deploy/systemd/nice-weather-terminal.service"} if terminal in paths else set())
         | {
-            index,
             "pyproject.toml",
             "deploy/journald-trading.conf",
             "deploy/systemd/nice-weather-sandbox.service",

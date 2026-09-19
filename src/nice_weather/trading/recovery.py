@@ -27,6 +27,8 @@ def native_state(session):
         "counts": session.counts,
         "enabled": session.enabled,
         "parameters": session.parameters,
+        "strategy_state": session.strategy_state,
+        "signals": session.signals,
         "rejections": session.rejections,
         "peak": session.equity_peak,
         "maximum_drawdown": session.maximum_drawdown,
@@ -46,7 +48,7 @@ def restore(state):
     from nautilus_trader.model.orders import OrderUnpacker
     from nautilus_trader.model.position import Position
 
-    from nice_weather.trading.engine import VENUE, Session
+    from nice_weather.trading.engine import Session
 
     session = Session(state["config"])
     # Register instruments without running the simulator until orders are loaded.
@@ -101,12 +103,14 @@ def restore(state):
     for token, value in session.outcomes.items():
         session.settlement_prices[session.instruments[token].id] = float(value)
     session.counts, session.parameters = state["counts"], state["parameters"]
+    session.strategy_state = state.get("strategy_state", {})
+    session.signals = state.get("signals", {})
     session.rejections = state["rejections"]
     session.equity_peak, session.maximum_drawdown = state["peak"], state["maximum_drawdown"]
     # Only closed orders are loaded; native startup has no order to re-submit.
     session.apply({"kind": "clock", "ts": state["now"], "data": {}})
     if state["account"]:
-        account = cache.account_for_venue(VENUE)
+        account = cache.account_for_venue(session.venue)
         for row in state["account"]["events"]:
             account.apply(AccountState.from_dict(row))
         if resting:
@@ -132,7 +136,7 @@ def restore(state):
     session.apply({"kind": "clock", "ts": state["now"] + 1, "data": {}})
     if state["account"]:
         expected = AccountState.from_dict(state["account"]["events"][-1])
-        account = cache.account_for_venue(VENUE)
+        account = cache.account_for_venue(session.venue)
         for balance in expected.balances:
             if account.balance_total(balance.currency) != balance.total:
                 session.dispose()
@@ -229,6 +233,8 @@ class PaperRunner:
                     "config",
                     "enabled",
                     "metadata",
+                    "strategy_state",
+                    "signals",
                 )
             }
         )
@@ -300,7 +306,7 @@ class PaperRunner:
         from nautilus_trader.core.uuid import UUID4
         from nautilus_trader.model.events import AccountState
 
-        from nice_weather.trading.engine import VENUE, Session
+        from nice_weather.trading.engine import Session
 
         payload = event["data"]
         archive = None
@@ -343,7 +349,7 @@ class PaperRunner:
                 return result
             if float(value) < before["reserved"]:
                 raise ValueError("Cancel open buy orders before reducing cash below reserved funds")
-            account = self.session.engine.cache.account_for_venue(VENUE)
+            account = self.session.engine.cache.account_for_venue(self.session.venue)
             last = CashAccount.to_dict(account)["events"][-1]
             delta = float(value) - before["cash"]
             balances = [

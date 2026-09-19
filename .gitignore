@@ -35,3 +35,8 @@ assets/
 *.pptx
 *.pptx.inspect.ndjson
 ~$*
+
+# Standalone terminal assets and local acceptance output.
+!src/nice_weather/terminal_dist/assets/
+!src/nice_weather/terminal_dist/assets/**
+tmp/

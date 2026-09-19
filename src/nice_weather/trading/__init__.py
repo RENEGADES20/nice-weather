@@ -18,6 +18,15 @@ STRATEGIES = {
     },
 }
 
+for _name in ("S1", "S2", "S3", "S1_S2_S3"):
+    STRATEGIES[_name] = {
+        "version": "knyc-executable-v1",
+        "modes": ["sandbox", "backtest"],
+        "parameters": {},
+        "requires": ["weather_signal", "depth", "contract"],
+        "description": "Frozen KNYC weather strategy; validated station model required",
+    }
+
 
 def validate_strategy(strategy_id: str, parameters: dict, mode: str) -> dict:
     import math

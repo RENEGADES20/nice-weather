@@ -1,0 +1,24 @@
+[Unit]
+Description=Nice Weather private terminal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nice-weather
+Group=nice-weather
+WorkingDirectory=/opt/nice-weather/knyc-current
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/nice-weather/terminal.env
+StateDirectory=nice-weather-knyc
+ExecStart=/opt/nice-weather/knyc-current/.venv/bin/python -m nice_weather.trading.api --root /var/lib/nice-weather-knyc
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nice-weather-knyc
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,280 @@
+"""Append-only public KNYC capture and bounded terminal projections."""
+
+from __future__ import annotations
+
+import asyncio
+import gzip
+import hashlib
+import json
+import re
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import httpx
+
+from nice_weather.trading.storage import connect, encoded
+from nice_weather.trading.us_markets import (
+    CLIMATE_ZONE,
+    KALSHI,
+    VENUES,
+    book_url,
+    event_url,
+    normalize,
+    normalize_book,
+)
+
+
+class FeedStore:
+    def __init__(self, path: Path):
+        self.path = path
+        with connect(path) as con:
+            con.executescript("""
+                CREATE TABLE IF NOT EXISTS capture_bodies (
+                    hash TEXT PRIMARY KEY, body BLOB NOT NULL);
+                CREATE TABLE IF NOT EXISTS feed_events (
+                    seq INTEGER PRIMARY KEY, kind TEXT NOT NULL, key TEXT NOT NULL,
+                    received REAL NOT NULL, body TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS feed_history ON feed_events(kind,key,seq);
+                CREATE TABLE IF NOT EXISTS feed_latest (
+                    kind TEXT NOT NULL, key TEXT NOT NULL, seq INTEGER NOT NULL,
+                    received REAL NOT NULL, body TEXT NOT NULL, PRIMARY KEY(kind,key));
+                CREATE TABLE IF NOT EXISTS captures (
+                    id INTEGER PRIMARY KEY, source TEXT NOT NULL, url TEXT NOT NULL,
+                    requested REAL NOT NULL, received REAL NOT NULL, hash TEXT NOT NULL);
+            """)
+
+    def capture(self, source, url, requested, received, body):
+        key = hashlib.sha256(body).hexdigest()
+        with connect(self.path) as con:
+            con.execute(
+                "INSERT OR IGNORE INTO capture_bodies VALUES (?,?)", (key, gzip.compress(body))
+            )
+            cursor = con.execute(
+                "INSERT INTO captures VALUES (NULL,?,?,?,?,?)",
+                (source, url, requested, received, key),
+            )
+            return cursor.lastrowid
+
+    def publish(self, kind, key, body, received=None):
+        received = time.time() if received is None else received
+        text = encoded(body)
+        with connect(self.path) as con:
+            cursor = con.execute(
+                "INSERT INTO feed_events VALUES (NULL,?,?,?,?)", (kind, key, received, text)
+            )
+            con.execute(
+                "INSERT OR REPLACE INTO feed_latest VALUES (?,?,?,?,?)",
+                (kind, key, cursor.lastrowid, received, text),
+            )
+            return cursor.lastrowid
+
+    def snapshot(self):
+        with connect(self.path, readonly=True) as con:
+            con.execute("BEGIN")  # Latest rows and cursor must belong to the same WAL snapshot.
+            rows = con.execute("SELECT * FROM feed_latest").fetchall()
+            cursor = con.execute("SELECT COALESCE(MAX(seq),0) FROM feed_events").fetchone()[0]
+        output = {"cursor": cursor, "contracts": [], "books": {}, "weather": {}, "health": {}}
+        for row in rows:
+            body = json.loads(row["body"])
+            if row["kind"] == "contracts":
+                output["contracts"].extend(body)
+            elif row["kind"] in {"book", "weather", "health"}:
+                group = "books" if row["kind"] == "book" else row["kind"]
+                output[group][row["key"]] = body
+        return output
+
+    def since(self, cursor, limit=256):
+        with connect(self.path, readonly=True) as con:
+            return [
+                {
+                    "seq": r["seq"],
+                    "kind": r["kind"],
+                    "key": r["key"],
+                    "received": r["received"],
+                    "data": json.loads(r["body"]),
+                }
+                for r in con.execute(
+                    "SELECT * FROM feed_events WHERE seq>? ORDER BY seq LIMIT ?", (cursor, limit)
+                )
+            ]
+
+    def history(self, token, before=None, limit=1500):
+        with connect(self.path, readonly=True) as con:
+            rows = con.execute(
+                "SELECT seq,received,body FROM feed_events WHERE kind='book' AND key=? "
+                "AND seq<? ORDER BY seq DESC LIMIT ?",
+                (token, before or 2**63 - 1, limit),
+            ).fetchall()
+        return [
+            {"seq": r["seq"], "time": r["received"], **json.loads(r["body"])}
+            for r in reversed(rows)
+        ]
+
+
+async def capture_json(client, store, source, url):
+    started = time.time()
+    response = await client.get(url)
+    received = time.time()
+    capture_id = store.capture(source, url, started, received, response.content)
+    response.raise_for_status()
+    return response.json(), received, capture_id
+
+
+async def market_feed(store, venue, stop, interval=2):
+    contracts, day, next_metadata = [], None, 0
+    async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "nice-weather/0.1"}) as client:
+        while not stop.is_set():
+            started = time.monotonic()
+            try:
+                current = datetime.now(CLIMATE_ZONE).date().isoformat()
+                if current != day or time.time() >= next_metadata:
+                    series = None
+                    if venue == "kalshi":
+                        series, _, _ = await capture_json(
+                            client, store, venue, f"{KALSHI}/series/KXHIGHNY"
+                        )
+                        series = series["series"]
+                    payload, received, _ = await capture_json(
+                        client, store, venue, event_url(venue, current)
+                    )
+                    contracts = normalize(venue, current, payload, received, series)
+                    store.publish("contracts", venue, contracts, received)
+                    day, next_metadata = current, time.time() + 300
+
+                async def fetch_book(contract):
+                    payload, received, _ = await capture_json(
+                        client, store, venue, book_url(contract)
+                    )
+                    book = normalize_book(venue, payload, received)
+                    store.publish("book", contract["yes_token_id"], book, received)
+
+                results = await asyncio.gather(
+                    *(fetch_book(c) for c in contracts), return_exceptions=True
+                )
+                failed = sum(isinstance(r, Exception) for r in results)
+                store.publish(
+                    "health",
+                    venue,
+                    {
+                        "status": "degraded" if failed else "connected",
+                        "transport": "REST",
+                        "interval_seconds": interval,
+                        "message": f"{failed} book failures" if failed else "Public snapshots",
+                        "received_at": time.time(),
+                    },
+                )
+            except (httpx.HTTPError, KeyError, ValueError, TypeError):
+                store.publish(
+                    "health",
+                    venue,
+                    {
+                        "status": "disconnected",
+                        "transport": "REST",
+                        "message": "Public feed unavailable or schema changed",
+                        "received_at": time.time(),
+                    },
+                )
+            try:
+                await asyncio.wait_for(
+                    stop.wait(), max(0.05, interval - (time.monotonic() - started))
+                )
+            except TimeoutError:
+                pass
+
+
+async def weather_feed(store, stop):
+    """Persist each source version with real receipt. CLI is evidence, never a live label."""
+    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "nice-weather/0.1"}) as client:
+        while not stop.is_set():
+            now = datetime.now(UTC)
+            urls = {
+                "metar": "https://aviationweather.gov/api/data/metar?ids=KNYC&format=json&hours=3",
+                "nws_observations": "https://api.weather.gov/stations/KNYC/observations?start="
+                + (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "cli_index": "https://api.weather.gov/products/types/CLI/locations/NYC",
+            }
+            for source, url in urls.items():
+                try:
+                    payload, received, capture_id = await capture_json(client, store, source, url)
+                    if source == "cli_index":
+                        for product in reversed(payload.get("@graph", [])[:2]):
+                            product_id = product.get("id", "")
+                            if not isinstance(product_id, str) or not re.fullmatch(
+                                r"[a-fA-F0-9-]{36}", product_id
+                            ):
+                                continue
+                            text, stamp, capture = await capture_json(
+                                client,
+                                store,
+                                "cli",
+                                "https://api.weather.gov/products/" + product_id,
+                            )
+                            store.publish(
+                                "weather",
+                                "cli",
+                                {
+                                    "station": "KNYC",
+                                    "received_at": stamp,
+                                    "capture_id": capture,
+                                    "issued_at": text.get("issuanceTime"),
+                                    "text": text.get("productText"),
+                                    "finality": "unverified",
+                                },
+                                stamp,
+                            )
+                    else:
+                        store.publish(
+                            "weather",
+                            source,
+                            {
+                                "station": "KNYC",
+                                "received_at": received,
+                                "capture_id": capture_id,
+                                "data": payload,
+                            },
+                            received,
+                        )
+                    store.publish(
+                        "health", source, {"status": "connected", "received_at": time.time()}
+                    )
+                except (httpx.HTTPError, KeyError, ValueError, TypeError):
+                    store.publish(
+                        "health",
+                        source,
+                        {
+                            "status": "disconnected",
+                            "received_at": time.time(),
+                            "message": "Weather source unavailable",
+                        },
+                    )
+            try:
+                await asyncio.wait_for(stop.wait(), 30)
+            except TimeoutError:
+                pass
+
+
+async def run(root, once=False):
+    store, stop = FeedStore(root / "feed.sqlite3"), asyncio.Event()
+    tasks = [asyncio.create_task(market_feed(store, v, stop)) for v in VENUES]
+    tasks.append(asyncio.create_task(weather_feed(store, stop)))
+    try:
+        if once:
+            await asyncio.sleep(20)
+            stop.set()
+        await asyncio.gather(*tasks)
+    finally:
+        stop.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--once", action="store_true")
+    args = parser.parse_args()
+    asyncio.run(run(args.root, args.once))

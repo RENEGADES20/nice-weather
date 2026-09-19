@@ -1,3 +1,5 @@
+> 2026-09-19：项目已扩展为 KNYC / Kalshi → Poly US 统一终端，Poly Intl 本轮排除。当前迁移实现及未完成项见 [交付清单](docs/KNYC_TERMINAL_DELIVERY.md)，本地运行见 [终端运行说明](docs/TERMINAL_OPERATIONS.md)。实盘和完整策略前瞻验收尚未完成；下文 KLGA MVP 为历史实现说明。
+
 # Nice Weather
 
 Polymarket 纽约 KLGA 每日最高温市场的可审计研究、Live Shadow、Paper Trading 与交易员只读看板。
