@@ -75,17 +75,26 @@ def paper(root, venue, once=False):
             results.create(account, account, "sandbox", config)
             run = results.run(account=account)
         runner = PaperRunner(results, run)
+        last_heartbeat = float("-inf")
         try:
             while True:
                 cursor = runner.session.config.get("feed_cursor", 0)
                 events = feed.since(cursor)
                 for event in events:
-                    for native in feed_event(runner.session, event):
+                    native_events = feed_event(runner.session, event)
+                    for native in native_events:
                         runner.session.apply(native)
                     runner.session.config["feed_cursor"] = event["seq"]
-                    runner.commit(f"feed-{event['seq']}" if event["kind"] == "prediction" else None)
-                now = max(time.time_ns(), runner.session.now + 1)
-                runner.apply("clock", {"kind": "clock", "ts": now, "data": {}})
+                    if native_events:
+                        # Own-venue state and fills remain immediately durable. Foreign
+                        # events only advance the cursor, saved by the next heartbeat.
+                        runner.commit(
+                            f"feed-{event['seq']}" if event["kind"] == "prediction" else None
+                        )
+                if time.monotonic() - last_heartbeat >= 1:
+                    now = max(time.time_ns(), runner.session.now + 1)
+                    runner.apply("clock", {"kind": "clock", "ts": now, "data": {}})
+                    last_heartbeat = time.monotonic()
                 for request in requests.pending(account, "sandbox"):
                     if request["expires"] < time.time():
                         requests.finish(request["request_id"], "rejected", "Request expired")

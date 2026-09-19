@@ -16,12 +16,13 @@ from pathlib import Path, PurePosixPath
 
 def affected_services(changed):
     services = ["nice-weather-terminal.service"]
+    if "src/nice_weather/trading/feed.py" in changed:
+        services += ["nice-weather-knyc-feed.service", "nice-weather-knyc-hrrr.service"]
     if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/us_runtime.py"}
            for name in changed):
-        # Both modules are imported by these existing KNYC workers. Keep legacy
-        # KLGA collectors, dashboard and account processes running throughout.
-        services += ["nice-weather-knyc-feed.service", "nice-weather-knyc-hrrr.service",
-                     "nice-weather-knyc-backtest.service", "nice-weather-knyc-paper@kalshi.service",
+        # us_runtime is used only by Paper and replay. Terminal restarts to expose
+        # the current release identity; collectors continue for Paper-only changes.
+        services += ["nice-weather-knyc-backtest.service", "nice-weather-knyc-paper@kalshi.service",
                      "nice-weather-knyc-paper@poly_us.service"]
     return services
 
