@@ -76,6 +76,49 @@ def test_us_paper_keeps_wal_and_recovers_committed_cursor(tmp_path, monkeypatch)
     assert json.loads(run["snapshot"])["cash"] == 100
 
 
+def test_us_paper_skips_foreign_writes_and_bounds_idle_heartbeat(tmp_path, monkeypatch):
+    import json
+
+    from nice_weather.trading.recovery import PaperRunner
+    from nice_weather.trading.storage import Results
+    from nice_weather.trading.us_runtime import paper
+
+    store = FeedStore(tmp_path / "feed.sqlite3")
+    for _ in range(8):
+        store.publish("health", "kalshi", {"status": "connected"})
+        store.publish("book", "foreign-poly-token", {"complete": True})
+    now, contracts, weather, _ = scenario()
+    store.publish("contracts", "kalshi", contracts, now - 10)
+    store.publish("prediction", "kalshi", weather, now)
+    store.publish("health", "kalshi", {"status": "connected"})
+    clock = [100.0]
+    commits = []
+    original = PaperRunner.commit
+
+    def record(runner, *args, **kwargs):
+        snapshot = original(runner, *args, **kwargs)
+        commits.append((clock[0], runner.session.config.get("feed_cursor", 0)))
+        return snapshot
+
+    def idle(_seconds):
+        clock[0] += 0.25
+        if clock[0] >= 101.5:
+            raise InterruptedError("End heartbeat probe")
+
+    monkeypatch.setattr(PaperRunner, "commit", record)
+    monkeypatch.setattr("nice_weather.trading.us_runtime.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("nice_weather.trading.us_runtime.time.sleep", idle)
+    with pytest.raises(InterruptedError, match="End heartbeat probe"):
+        paper(tmp_path, "kalshi")
+    # Own contracts and prediction persist before the first heartbeat. Foreign
+    # data and empty polls do not write; the final cursor reaches the heartbeat.
+    assert commits == [(100.0, 0), (100.0, 17), (100.0, 18), (100.0, 19), (101.0, 19)]
+    paper(tmp_path, "kalshi", once=True)
+    run = Results(tmp_path / "results.sqlite3").run(account="sandbox-kalshi-knyc")
+    assert json.loads(run["config"])["feed_cursor"] == 19
+    assert json.loads(run["snapshot"])["cash"] == 100
+
+
 def scenario():
     now = datetime(2026, 9, 19, 19, tzinfo=UTC).timestamp()
     contracts = []

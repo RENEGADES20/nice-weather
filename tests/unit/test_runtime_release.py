@@ -23,6 +23,11 @@ def test_service_impact_preserves_legacy_processes():
     assert "nice-weather-knyc-paper@kalshi.service" in services
     assert "nice-weather-collector.service" not in services
     assert "nice-weather-sandbox.service" not in services
+    paper_services = UPDATER.affected_services(["src/nice_weather/trading/us_runtime.py"])
+    assert len(paper_services) == 4
+    assert "nice-weather-knyc-feed.service" not in paper_services
+    assert "nice-weather-knyc-hrrr.service" not in paper_services
+    assert "nice-weather-knyc-paper@kalshi.service" in paper_services
 
 
 def release(tmp_path, *, name="src/nice_weather/trading/api.py", duplicate=False):
