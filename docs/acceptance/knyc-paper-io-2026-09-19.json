@@ -1,0 +1,44 @@
+{
+  "deployed": {
+    "commit": "6e7098113b0a713e1ab9f368c651efaeb537966a",
+    "pr": 54,
+    "ci_run": 35465559133,
+    "archive_bytes": 415981,
+    "archive_sha256": "662fd0f1168b986b31b28029408cf3f97ccee37c0336517dc9bb5b17e8f6a20c",
+    "updater_sha256": "a818b927862be76396aebec7644acb5a29fa2db354b8c4df0dd2ff87ffd90010",
+    "manifest_files_verified": 65,
+    "health_release_verified": true,
+    "service_pids": {"terminal":1506150,"knyc_backtest":1506151,"paper_kalshi":1506152,"paper_poly_us":1506153},
+    "unchanged_service_pids": {"feed":1502348,"hrrr":1502349,"collector":1092517,"dashboard":1188046,"sandbox":1160080,"backtest":1160081},
+    "feed_cursor": 72133,
+    "paper_accounts": [
+      {"account":"sandbox-kalshi-knyc","cash":100,"fills":0,"strategy_enabled":false,"feed_cursor":72133,"snapshot_age_seconds":0.23},
+      {"account":"sandbox-poly_us-knyc","cash":100,"fills":0,"strategy_enabled":false,"feed_cursor":72133,"snapshot_age_seconds":0.12}
+    ]
+  },
+  "method": "Three consecutive five-second /proc/PID/io write_bytes deltas for each Paper process. Shared-feed max(seq) deltas describe traffic volume, not exact native event counts. Same VM; no synthetic traffic. These short samples do not establish long-run disk or browser p95.",
+  "before": {
+    "release":"eec79f2bf4d58effc70f49ec077a2550d563f2cf",
+    "samples":[
+      {"seconds":5.001,"feed_events":35,"kalshi_bytes":3047424,"poly_us_bytes":2617344},
+      {"seconds":5.001,"feed_events":42,"kalshi_bytes":3436544,"poly_us_bytes":2899968},
+      {"seconds":5.001,"feed_events":28,"kalshi_bytes":2584576,"poly_us_bytes":2260992}
+    ],
+    "total_bytes":16846848,"feed_events":105,"bytes_per_shared_event":160446.17
+  },
+  "after": {
+    "release":"6e7098113b0a713e1ab9f368c651efaeb537966a",
+    "samples":[
+      {"seconds":5.001,"feed_events":42,"kalshi_bytes":2342912,"poly_us_bytes":2035712},
+      {"seconds":5.001,"feed_events":35,"kalshi_bytes":1998848,"poly_us_bytes":1806336},
+      {"seconds":5.001,"feed_events":42,"kalshi_bytes":2256896,"poly_us_bytes":2072576}
+    ],
+    "total_bytes":12513280,"feed_events":119,"bytes_per_shared_event":105153.61
+  },
+  "public_first_ready_supplement": [
+    {"release":"eec79f2bf4d58effc70f49ec077a2550d563f2cf","at":"2026-09-19T19:39:32.113Z","ms":7030.5},
+    {"release":"6e7098113b0a713e1ab9f368c651efaeb537966a","at":"2026-09-19T20:01:02.025Z","ms":7025.1}
+  ],
+  "browser_p95_status":"not_accepted; earlier public samples retained separately; foreground desktop confirmation and scheduling diagnosis pending",
+  "full_product_status":"not_accepted"
+}
