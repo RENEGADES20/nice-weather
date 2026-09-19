@@ -42,6 +42,14 @@ def create_app(root: Path, *, password=None, origin=None):
         password if password is not None else os.environ.get("NICE_WEATHER_TERMINAL_PASSWORD")
     )
     origin = origin or os.environ.get("NICE_WEATHER_TERMINAL_ORIGIN", "http://127.0.0.1:8767")
+    issuer = os.environ.get("NICE_WEATHER_ACCESS_ISSUER", "")
+    audience = os.environ.get("NICE_WEATHER_ACCESS_AUDIENCE", "")
+    access = None
+    if issuer or audience:
+        from nice_weather.trading.access import AccessIdentity
+
+        access = AccessIdentity(issuer, audience)
+    auth_mode = "cloudflare" if access else ("password" if password else "unconfigured")
     signing_key = secrets.token_bytes(32)  # Restart invalidates browser sessions.
     csrf = secrets.token_urlsafe(32)
     attempts = {}
@@ -59,10 +67,21 @@ def create_app(root: Path, *, password=None, origin=None):
         except (ValueError, TypeError):
             return False
 
+    async def identity_expiry(connection):
+        if access:
+            return await asyncio.to_thread(
+                access.expires, connection.headers.get("cf-access-jwt-assertion", "")
+            )
+        if authenticated(connection.cookies):
+            return float(connection.cookies["nw_session"].split(".")[0])
+        return 0
+
     @app.middleware("http")
     async def protect(request: Request, call_next):
-        if request.url.path.startswith("/api/") and request.url.path != "/api/login":
-            if not authenticated(request.cookies):
+        if request.url.path.startswith("/api/") and request.url.path not in {
+            "/api/login", "/api/auth",
+        }:
+            if await identity_expiry(request) <= time.time():
                 return Response(status_code=401)
             if request.method != "GET" and (
                 request.headers.get("origin") != origin
@@ -83,8 +102,14 @@ def create_app(root: Path, *, password=None, origin=None):
     def health():
         return {"status": "ok", "release": os.environ.get("NICE_WEATHER_CODE_SHA", "development")}
 
+    @app.get("/api/auth")
+    def authentication_mode():
+        return {"mode": auth_mode}
+
     @app.post("/api/login")
     def login(body: Login, request: Request, response: Response):
+        if access:
+            raise HTTPException(403, "Use the existing Cloudflare Access login")
         if request.headers.get("origin") != origin:
             raise HTTPException(403, "Origin rejected")
         now = time.monotonic()
@@ -218,7 +243,8 @@ def create_app(root: Path, *, password=None, origin=None):
 
     @app.websocket("/api/events")
     async def events(ws: WebSocket):
-        if ws.headers.get("origin") != origin or not authenticated(ws.cookies):
+        expiry = await identity_expiry(ws)
+        if ws.headers.get("origin") != origin or expiry <= time.time():
             await ws.close(code=1008)
             return
         await ws.accept()
@@ -226,6 +252,9 @@ def create_app(root: Path, *, password=None, origin=None):
             cursor = int(ws.query_params.get("cursor", "0"))
             last_account = 0.0
             while True:
+                if time.time() >= expiry:
+                    await ws.close(code=1008)
+                    return
                 batch = await asyncio.to_thread(feed.since, cursor)
                 if batch:
                     cursor = batch[-1]["seq"]

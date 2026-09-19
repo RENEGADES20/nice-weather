@@ -31,6 +31,7 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
   );
   let commands = 0,
     historyRequests = 0;
+  await page.route("**/api/auth", (r) => r.fulfill({ json: { mode: "cloudflare" } }));
   await page.route("**/api/session", (r) =>
     r.fulfill({ json: { csrf: "fixture-csrf" } }),
   );
@@ -259,6 +260,7 @@ test("unknown command survives reload and retries only the original payload and 
   context,
 }) => {
   const now = Date.now() / 1000;
+  await context.route("**/api/auth", (r) => r.fulfill({ json: { mode: "cloudflare" } }));
   await context.route("**/api/session", (r) =>
     r.fulfill({ json: { csrf: "fixture" } }),
   );
