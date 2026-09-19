@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import json
 import re
+import shutil
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -44,7 +45,14 @@ class FeedStore:
                     requested REAL NOT NULL, received REAL NOT NULL, hash TEXT NOT NULL);
             """)
 
+    def require_space(self):
+        # Preserve headroom for order journals and the existing KLGA services.
+        # Stop new bulk captures; never delete observations or financial records.
+        if shutil.disk_usage(self.path.parent).free < 1024**3:
+            raise OSError("KNYC capture paused: less than 1 GiB disk headroom")
+
     def capture(self, source, url, requested, received, body):
+        self.require_space()
         key = hashlib.sha256(body).hexdigest()
         with connect(self.path) as con:
             con.execute(
@@ -57,6 +65,8 @@ class FeedStore:
             return cursor.lastrowid
 
     def publish(self, kind, key, body, received=None):
+        if kind != "health":
+            self.require_space()
         received = time.time() if received is None else received
         text = encoded(body)
         with connect(self.path) as con:
