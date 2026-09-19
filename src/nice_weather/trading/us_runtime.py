@@ -9,7 +9,7 @@ from pathlib import Path
 
 from nice_weather.trading.feed import FeedStore
 from nice_weather.trading.recovery import PaperRunner
-from nice_weather.trading.storage import Requests, Results, digest, single_writer
+from nice_weather.trading.storage import Requests, Results, connect, digest, single_writer
 from nice_weather.trading.us_markets import VENUES
 from nice_weather.trading.worker import run_config
 
@@ -58,7 +58,8 @@ def paper(root, venue, once=False):
     results = Results(root / "results.sqlite3")
     requests = Requests(root / "requests" / "requests.sqlite3")
     feed = FeedStore(root / "feed.sqlite3")
-    with single_writer(root / (account + ".lock")):
+    # No transaction is held; avoid a checkpoint on every short-lived writer close.
+    with single_writer(root / (account + ".lock")), connect(results.path):
         run = results.run(account=account)
         if not run:
             config = run_config(account, "sandbox", "S1_S2_S3") | {
@@ -106,7 +107,6 @@ def paper(root, venue, once=False):
                         "rejected" if rejected else "accepted",
                         snapshot["rejections"][-1]["reason"] if rejected else None,
                     )
-                runner.commit()
                 if once:
                     return
                 time.sleep(0.05 if events else 0.2)

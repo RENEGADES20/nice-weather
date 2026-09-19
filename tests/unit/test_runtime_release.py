@@ -14,6 +14,17 @@ UPDATER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(UPDATER)
 
 
+def test_service_impact_preserves_legacy_processes():
+    assert UPDATER.affected_services(["src/nice_weather/trading/api.py"]) == [
+        "nice-weather-terminal.service"
+    ]
+    services = UPDATER.affected_services(["src/nice_weather/trading/feed.py"])
+    assert len(services) == 6
+    assert "nice-weather-knyc-paper@kalshi.service" in services
+    assert "nice-weather-collector.service" not in services
+    assert "nice-weather-sandbox.service" not in services
+
+
 def release(tmp_path, *, name="src/nice_weather/trading/api.py", duplicate=False):
     body = b"print('fixture')\n"
     manifest = {"commit": "a" * 40, "files": {name: {

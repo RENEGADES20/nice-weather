@@ -14,6 +14,18 @@ import tarfile
 from pathlib import Path, PurePosixPath
 
 
+def affected_services(changed):
+    services = ["nice-weather-terminal.service"]
+    if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/us_runtime.py"}
+           for name in changed):
+        # Both modules are imported by these existing KNYC workers. Keep legacy
+        # KLGA collectors, dashboard and account processes running throughout.
+        services += ["nice-weather-knyc-feed.service", "nice-weather-knyc-hrrr.service",
+                     "nice-weather-knyc-backtest.service", "nice-weather-knyc-paper@kalshi.service",
+                     "nice-weather-knyc-paper@poly_us.service"]
+    return services
+
+
 def read_release(archive_path, expected_hash):
     if hashlib.sha256(archive_path.read_bytes()).hexdigest() != expected_hash:
         raise ValueError("Archive hash mismatch")
@@ -50,16 +62,19 @@ def main():
     old = json.loads((runtime / "runtime-manifest.json").read_text())
     changed = [name for name in manifest["files"] if
                old["files"].get(name) != manifest["files"][name]]
-    # This bounded updater only restarts terminal. Other runtime changes need a
-    # separately reviewed service-impact plan, not a blanket restart.
+    # Only the terminal and reviewed capture/Paper modules are allowed here.
+    # Other changes need a separately reviewed service-impact plan.
     allowed = {"pyproject.toml", "README.md", "src/nice_weather/trading/api.py",
-               "src/nice_weather/trading/access.py"}
+               "src/nice_weather/trading/access.py", "src/nice_weather/trading/feed.py",
+               "src/nice_weather/trading/us_runtime.py"}
     if any(name not in allowed and not name.startswith("src/nice_weather/terminal_dist/")
            for name in changed):
         raise ValueError("Release changes services outside the terminal update scope")
     obsolete = sorted(set(old["files"]) - set(manifest["files"]))
+    services = affected_services(changed)
     print(json.dumps({"previous": old["commit"], "commit": manifest["commit"],
-                      "changed": changed, "obsolete_pending_review": obsolete}))
+                      "changed": changed, "restart": services,
+                      "obsolete_pending_review": obsolete}))
     if not args.apply:
         return
     if os.geteuid() != 0:
@@ -74,7 +89,7 @@ def main():
     py = str(runtime / ".venv/bin/python")
     subprocess.run([py, "-m", "pip", "install", "--no-cache-dir", "--disable-pip-version-check",
                     "PyJWT[crypto]>=2.10,<3"], check=True)
-    subprocess.run(["systemctl", "stop", "nice-weather-terminal.service"], check=True)
+    subprocess.run(["systemctl", "stop", *services], check=True)
     for name in changed + ["runtime-manifest.json"]:
         target = runtime / name
         if not target.resolve().is_relative_to(runtime):
@@ -89,11 +104,15 @@ def main():
             os.fsync(stream.fileno())
         os.chmod(temporary, 0o644)
         os.replace(temporary, target)
-    dropin = Path("/etc/systemd/system/nice-weather-terminal.service.d/release.conf")
-    dropin.write_text("[Service]\nEnvironment=NICE_WEATHER_CODE_SHA=" + manifest["commit"] + "\n")
+    for service in services:
+        dropin = Path("/etc/systemd/system") / (service + ".d/release.conf")
+        dropin.parent.mkdir(parents=True, exist_ok=True)
+        dropin.write_text(
+            "[Service]\nEnvironment=NICE_WEATHER_CODE_SHA=" + manifest["commit"] + "\n"
+        )
     subprocess.run(["systemctl", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "start", "nice-weather-terminal.service"], check=True)
-    subprocess.run(["systemctl", "is-active", "nice-weather-terminal.service"], check=True)
+    subprocess.run(["systemctl", "start", *services], check=True)
+    subprocess.run(["systemctl", "is-active", *services], check=True)
 
 
 if __name__ == "__main__":
