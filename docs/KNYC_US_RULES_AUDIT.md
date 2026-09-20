@@ -16,6 +16,8 @@
 
 ## 费用实现依据
 
+2026-09-20 接线补充：[Poly US Orders & Trading](https://docs.polymarket.us/concepts/orders) 明确 API 价格以 YES 为基准，NO 报价需转换补数；[Create Order](https://docs.polymarket.us/api-reference/orders/create-order) 说明 minimumTradeQty 小于 1 的市场支持小数数量，已记录为比通用整份帮助页更具体的证据，尚未解除其余天气合约门禁。[官方 Python SDK](https://github.com/Polymarket/polymarket-us-python) 核验提交 `83128f4db0245641e88427a4fa504760ed76e038`，独立 ORDER_SNAPSHOT 订阅以 eof 结束；实际只读验证收到空快照。官方私有 WS 文档要求优先小数净持仓字段，旧整数值经过舍入。
+
 - [Poly US 费用](https://docs.polymarket.us/fees)：每笔主动成交先半偶数舍入，累计收费不得超过累计精确费用的半偶数结果；只能调低该笔收费。模拟累加器持久化，实盘以交易所 commission 为事实，不推算成交。策略使用主动 IOC，未将 maker rebate 计入预期收益。
 - [Kalshi 舍入](https://docs.kalshi.com/getting_started/fee_rounding)：模型费向上取六位美元；余额按会员类型对齐到 0.0001 或 0.01 美元；订单累计多收部分按余额精度退回，单笔净费用不小于零。辅助算法已验证官方数例；账户精度及原生记账精度未确认前不启用该规则。
 - [Poly US 天气规则](https://docs.polymarket.us/faqs/weather-faqs) 提供结算时间与站点来源。

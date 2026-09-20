@@ -1,5 +1,11 @@
 # 决策记录
 
+## D-KNYC-20260920-US-REPORTS：US 实盘净持仓及 YES 价格口径
+
+US 原生账户报告按每个市场一个 YES 合约映射，净负仓位为 NO 敞口；Paper 既有双 token 历史保持原状。Poly US 官方 Orders & Trading 明确所有订单价格使用 YES 侧，传输层将用户的 NO 价格转换为其补数。原生报告保留交易所成交费、数量与来源时间，不能以估算费用或 activities 缺失的订单关联补造成交。Poly US 小数净持仓采用 netPositionDecimal，旧整数值的舍入不能覆盖它。
+
+报告转换函数尚不构成 LiveExecutionClient 或账户对账验收。Kalshi 原始订单缺少 TIF 时要求持久化原始请求；Poly REST 缺少状态变更时间时原生 ts_last=0（未知），实际收到时间单独为 ts_init。未知字段、精度损失、账户或市场不匹配时拒绝映射。Nautilus USD 分币默认精度与 Kalshi 亚分币账户的持久化/重建兼容性仍需单独验收。
+
 ## D-KNYC-20260919-SIGNALS-V2：按策略生产信号与持续重评
 
 用户批准执行版 S1 相邻两档覆盖约束下最大化期望净收益、S2 提前预警但确认跨档后交易、S3 单档一份；无成交且订单明确终结时允许重评，任意部分成交消耗当日机会，S1 残腿停止补单。自动开关只控制交易，信号持续可见。v1 研究冻结规则保留，v2 采用独立版本，旧触发记录不清除。完整边界见 KNYC_STRATEGY_DELIVERY.md。

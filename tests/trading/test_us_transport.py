@@ -111,6 +111,7 @@ def test_yes_no_order_mapping():
             assert k["reduce_only"] == (side == "SELL")
             p = order_body("poly_us", "stable", contract("poly_us"), order)
             assert p["outcomeSide"] == "OUTCOME_SIDE_" + outcome
+            assert p["price"]["value"] == ("0.35" if outcome == "YES" else "0.65")
             assert p["action"] == "ORDER_ACTION_" + side
             assert p["manualOrderIndicator"] == "MANUAL_ORDER_INDICATOR_AUTOMATIC"
 
