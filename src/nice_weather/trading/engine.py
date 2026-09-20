@@ -351,32 +351,31 @@ class Session:
             token, value = row["token_id"], row["value"]
             raw = row.get("source_payload", {})
             definition = self.metadata[token]
-            expected = {definition["yes_token_id"], definition["no_token_id"]}
-            outcomes = {str(t.get("token_id")): t.get("winner") for t in raw.get("tokens", [])}
-            if (
-                digest(raw) != row["source_hash"]
-                or raw.get("closed") is not True
-                or raw.get("condition_id") != definition["condition_id"]
-                or set(outcomes) != expected
-                or sum(v is True for v in outcomes.values()) != 1
-                or value != int(outcomes[token] is True)
-            ):
-                raise ValueError("Final outcome evidence does not match contract / content hash")
-            if type(value) is not int or value not in (0, 1) or token in self.outcomes:
-                raise ValueError("Invalid or duplicate settlement")
-            ins = self.instruments[token]
-            self.outcomes[token] = value
-            self.settlements = getattr(self, "settlements", []) + [row | {"ts": self.now}]
-            self.settlement_prices[ins.id] = float(value)
-            self._run(
-                InstrumentClose(
-                    ins.id,
-                    ins.make_price(value),
-                    InstrumentCloseType.CONTRACT_EXPIRED,
-                    self.now,
-                    self.now,
-                )
-            )
+            if definition.get("venue") in {"kalshi", "poly_us"}:
+                from nice_weather.trading.us_markets import final_value
+
+                if "market" not in raw:
+                    raise ValueError("US settlement requires original venue payload")
+                payout = final_value(definition, raw, row["received_at"])
+                expected_value = payout if token == definition["yes_token_id"] else 1 - payout
+                if (digest(raw) != row["source_hash"] or Decimal(str(value)) != expected_value
+                        or row["received_at"] * 1e9 > self.now):
+                    raise ValueError("US settlement evidence mismatch")
+            else:
+                expected = {definition["yes_token_id"], definition["no_token_id"]}
+                outcomes = {str(t.get("token_id")): t.get("winner") for t in raw.get("tokens", [])}
+                if (
+                    digest(raw) != row["source_hash"]
+                    or raw.get("closed") is not True
+                    or raw.get("condition_id") != definition["condition_id"]
+                    or set(outcomes) != expected
+                    or sum(v is True for v in outcomes.values()) != 1
+                    or value != int(outcomes[token] is True)
+                ):
+                    raise ValueError("Final outcome evidence mismatch")
+                if type(value) is not int or value not in (0, 1):
+                    raise ValueError("Invalid settlement")
+            self.settle_token(token, value, row)
         else:
             self._run(CustomData(DataType(Input), Input(event)), custom=True)
         if (
@@ -395,6 +394,19 @@ class Session:
 
     def open_orders(self):
         return self.engine.cache.orders_open()
+
+    def settle_token(self, token, value, evidence):
+        if token in self.outcomes:
+            raise ValueError("Duplicate settlement")
+        ins = self.instruments[token]
+        precision = min(ins.price_precision, self.currency.precision)
+        if Decimal(str(value)) % (Decimal(10) ** -precision):
+            raise ValueError("Final payout exceeds native precision; reconciliation required")
+        self.outcomes[token] = value
+        self.settlements = getattr(self, "settlements", []) + [evidence | {"ts": self.now}]
+        self.settlement_prices[ins.id] = float(value)
+        self._run(InstrumentClose(ins.id, ins.make_price(value),
+                                  InstrumentCloseType.CONTRACT_EXPIRED, self.now, self.now))
 
     def market_rejection(self, token):
         row = self.metadata[token]

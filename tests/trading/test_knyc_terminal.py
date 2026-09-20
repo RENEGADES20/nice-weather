@@ -48,8 +48,9 @@ def test_capture_keeps_wal_between_independent_durable_writes(tmp_path, monkeypa
 
     monkeypatch.setattr("nice_weather.trading.feed.market_feed", source)
     monkeypatch.setattr("nice_weather.trading.feed.weather_feed", source)
+    monkeypatch.setattr("nice_weather.trading.feed.settlement_feed", source)
     asyncio.run(run(tmp_path))
-    assert len(FeedStore(tmp_path / "feed.sqlite3").since(0)) == 3
+    assert len(FeedStore(tmp_path / "feed.sqlite3").since(0)) == 4
 
 
 def test_us_paper_keeps_wal_and_recovers_committed_cursor(tmp_path, monkeypatch):

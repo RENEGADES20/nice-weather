@@ -50,6 +50,25 @@ def feed_event(session, event):
         return events
     if event["kind"] == "prediction" and event["key"] == session.config["venue"]:
         return [{"kind": "weather_signal", "ts": ts, "data": event["data"]}]
+    if event["kind"] == "settlement" and event["key"] in session.metadata:
+        from nice_weather.trading.us_markets import final_value
+
+        contract = session.metadata[event["key"]]
+        evidence = event["data"]["source_payload"]
+        payout = final_value(contract, evidence, event["received"])
+        result = []
+        for token, value in ((contract["yes_token_id"], payout),
+                             (contract["no_token_id"], 1 - payout)):
+            if token in session.outcomes:
+                if session.outcomes[token] != float(value):
+                    raise ValueError("Final settlement changed; account reconciliation required")
+                continue
+            result.append({"kind": "settlement", "ts": ts + len(result), "data": {
+                "token_id": token, "value": float(value), "evidence_type": "official_final",
+                "source_hash": digest(evidence), "source_payload": evidence,
+                "received_at": event["received"], "capture_ids": event["data"]["capture_ids"],
+            }})
+        return result
     return []
 
 

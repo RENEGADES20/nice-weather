@@ -49,6 +49,10 @@ class FeedStore:
                 CREATE TABLE IF NOT EXISTS observation_revisions (
                     station TEXT NOT NULL, observed REAL NOT NULL, revision TEXT NOT NULL,
                     received REAL NOT NULL, PRIMARY KEY(station,observed,revision));
+                CREATE TABLE IF NOT EXISTS settlement_watch (
+                    venue TEXT NOT NULL, day TEXT NOT NULL, contracts TEXT NOT NULL,
+                    checked REAL NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(venue,day));
             """)
 
     def require_space(self):
@@ -83,12 +87,27 @@ class FeedStore:
                 "INSERT OR REPLACE INTO feed_latest VALUES (?,?,?,?,?)",
                 (kind, key, cursor.lastrowid, received, text),
             )
+            if kind == "contracts" and body and body[0].get("local_day"):
+                con.execute(
+                    "INSERT INTO settlement_watch(venue,day,contracts) VALUES (?,?,?) "
+                    "ON CONFLICT(venue,day) DO UPDATE SET contracts=excluded.contracts",
+                    (key, body[0]["local_day"], text),
+                )
             return cursor.lastrowid
 
     def snapshot(self):
         with connect(self.path, readonly=True) as con:
             con.execute("BEGIN")  # Latest rows and cursor must belong to the same WAL snapshot.
-            rows = con.execute("SELECT * FROM feed_latest").fetchall()
+            rows = con.execute(
+                "SELECT * FROM feed_latest WHERE kind IN ('contracts','weather','health')"
+            ).fetchall()
+            tokens = [contract["yes_token_id"] for row in rows if row["kind"] == "contracts"
+                      for contract in json.loads(row["body"])]
+            if tokens:
+                placeholders = ",".join("?" for _ in tokens)
+                rows += con.execute(
+                    "SELECT * FROM feed_latest WHERE kind='book' AND key IN ("
+                    + placeholders + ")", tokens).fetchall()
             cursor = con.execute("SELECT COALESCE(MAX(seq),0) FROM feed_events").fetchone()[0]
         output = {"cursor": cursor, "contracts": [], "books": {}, "weather": {}, "health": {}}
         for row in rows:
@@ -159,6 +178,74 @@ async def capture_json(client, store, source, url):
     capture_id = store.capture(source, url, started, received, response.content)
     response.raise_for_status()
     return response.json(), received, capture_id
+
+
+async def settlement_feed(store, stop):
+    from nice_weather.trading.us_markets import POLY_US, final_value
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        while not stop.is_set():
+            now = time.time()
+            with connect(store.path) as con:
+                pending = con.execute(
+                    "SELECT * FROM settlement_watch WHERE done=0 AND checked<? "
+                    "ORDER BY checked LIMIT 2", (now - 300,)).fetchall()
+            for watch in pending:
+                venue, day = watch["venue"], watch["day"]
+                with connect(store.path) as con:
+                    con.execute("UPDATE settlement_watch SET checked=? WHERE venue=? AND day=?",
+                                (now, venue, day))
+                try:
+                    payload, received, capture_id = await capture_json(
+                        client, store, venue + "-settlement", event_url(venue, day))
+                    rows = payload["markets"] if venue == "kalshi" else payload["event"]["markets"]
+                    field = "ticker" if venue == "kalshi" else "slug"
+                    markets = {raw[field]: raw for raw in rows}
+                    complete = True
+                    for contract in json.loads(watch["contracts"]):
+                        with connect(store.path, readonly=True) as con:
+                            prior = con.execute(
+                                "SELECT 1 FROM feed_latest WHERE kind='settlement' AND key=?",
+                                (contract["yes_token_id"],)).fetchone()
+                        if prior:
+                            continue
+                        raw = markets[contract["condition_id"]]
+                        final_status = ("finalized" if venue == "kalshi"
+                                        else "MARKET_STATUS_RESOLVED")
+                        if raw.get("status") != final_status:
+                            complete = False
+                            continue
+                        evidence, captures = {"market": raw}, [capture_id]
+                        if venue == "poly_us":
+                            # Settlement confirmation is separate from displayed outcome prices.
+                            confirmation, received, confirm_id = await capture_json(
+                                client, store, "poly_us-settlement",
+                                f'{POLY_US}/markets/{contract["condition_id"]}/settlement')
+                            evidence["confirmation"] = confirmation
+                            captures.append(confirm_id)
+                        payout = final_value(contract, evidence, received)
+                        store.publish("settlement", contract["yes_token_id"],
+                                      {"venue": venue, "source_payload": evidence,
+                                       "value": float(payout), "capture_ids": captures}, received)
+                        if venue == "poly_us":
+                            # Space confirmations; a 429 aborts this poll and retries after 5 min.
+                            await asyncio.sleep(1)
+                    if complete:
+                        with connect(store.path) as con:
+                            con.execute(
+                                "UPDATE settlement_watch SET done=1 WHERE venue=? AND day=?",
+                                (venue, day))
+                    store.publish("health", venue + "-settlement",
+                                  {"status": "connected", "received_at": time.time(),
+                                   "day": day, "final": complete})
+                except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
+                    store.publish("health", venue + "-settlement",
+                                  {"status": "disconnected", "received_at": time.time(),
+                                   "day": day, "reason": type(exc).__name__})
+            try:
+                await asyncio.wait_for(stop.wait(), 30)
+            except TimeoutError:
+                pass
 
 
 async def market_feed(store, venue, stop, interval=2):
@@ -306,6 +393,7 @@ async def run(root, once=False):
     with connect(store.path):
         tasks = [asyncio.create_task(market_feed(store, v, stop)) for v in VENUES]
         tasks.append(asyncio.create_task(weather_feed(store, stop)))
+        tasks.append(asyncio.create_task(settlement_feed(store, stop)))
         try:
             if once:
                 await asyncio.sleep(20)
