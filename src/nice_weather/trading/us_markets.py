@@ -166,6 +166,40 @@ def book_url(contract):
     return f"{POLY_US}/markets/{key}/book"
 
 
+def final_value(contract, evidence, received):
+    """Validate actual venue finality and return YES payout; closed alone is insufficient."""
+    raw = evidence["market"]
+    key, venue = contract["condition_id"], contract["venue"]
+    if not math.isfinite(received):
+        raise ValueError("Invalid settlement receipt")
+    if venue == "kalshi":
+        if (raw.get("ticker") != key or raw.get("status") != "finalized"
+                or raw.get("is_provisional") is True):
+            raise ValueError("Kalshi settlement not final or wrong market")
+        stamp = datetime.fromisoformat(raw["settlement_ts"].replace("Z", "+00:00"))
+        if stamp.tzinfo is None or stamp.timestamp() > received:
+            raise ValueError("Future or unzoned settlement")
+        value = Decimal(str(raw["settlement_value_dollars"]))
+        if raw.get("result") in {"yes", "no"} and value != int(raw["result"] == "yes"):
+            raise ValueError("Inconsistent Kalshi final outcome")
+    elif venue == "poly_us":
+        confirmation = evidence["confirmation"]
+        if (raw.get("slug") != key or raw.get("status") != "MARKET_STATUS_RESOLVED"
+                or raw.get("ep3Status") != "EXPIRED" or raw.get("closed") is not True
+                or confirmation.get("slug") != key):
+            raise ValueError("Poly US settlement not final or wrong market")
+        value = Decimal(str(confirmation["settlement"]))
+        labels, prices = json.loads(raw["outcomes"]), json.loads(raw["outcomePrices"])
+        if (labels != ["Yes", "No"] or len(prices) != 2
+                or Decimal(prices[0]) != value or Decimal(prices[1]) != 1 - value):
+            raise ValueError("Inconsistent Poly US final outcome")
+    else:
+        raise ValueError("Unsupported settlement venue")
+    if not value.is_finite() or not 0 <= value <= 1:
+        raise ValueError("Invalid final payout")
+    return value
+
+
 def normalize_book(venue, payload, received_at):
     def levels(rows):
         output = []

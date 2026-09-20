@@ -1,0 +1,55 @@
+{
+  "observed_at": 1789862829.7887125,
+  "source": "actual public API receipts",
+  "not_execution_validation": "No recorded trade-time model or fills in this interval",
+  "kalshi": {
+    "cash": 100.0,
+    "settled": {
+      "kalshi:KXHIGHNY-26SEP18-B80.5": 1.0,
+      "kalshi:KXHIGHNY-26SEP18-B80.5:NO": 0.0,
+      "kalshi:KXHIGHNY-26SEP18-B82.5": 0.0,
+      "kalshi:KXHIGHNY-26SEP18-B82.5:NO": 1.0,
+      "kalshi:KXHIGHNY-26SEP18-B84.5": 0.0,
+      "kalshi:KXHIGHNY-26SEP18-B84.5:NO": 1.0,
+      "kalshi:KXHIGHNY-26SEP18-B86.5": 0.0,
+      "kalshi:KXHIGHNY-26SEP18-B86.5:NO": 1.0,
+      "kalshi:KXHIGHNY-26SEP18-T80": 0.0,
+      "kalshi:KXHIGHNY-26SEP18-T80:NO": 1.0,
+      "kalshi:KXHIGHNY-26SEP18-T87": 0.0,
+      "kalshi:KXHIGHNY-26SEP18-T87:NO": 1.0
+    },
+    "fills": [],
+    "rejections": []
+  },
+  "poly_us": {
+    "cash": 100.0,
+    "settled": {
+      "poly_us:tc-temp-nychigh-2026-09-18-gte78lt79f": 0.0,
+      "poly_us:tc-temp-nychigh-2026-09-18-gte78lt79f:NO": 1.0,
+      "poly_us:tc-temp-nychigh-2026-09-18-gte80lt81f": 1.0,
+      "poly_us:tc-temp-nychigh-2026-09-18-gte80lt81f:NO": 0.0,
+      "poly_us:tc-temp-nychigh-2026-09-18-gte82lt83f": 0.0,
+      "poly_us:tc-temp-nychigh-2026-09-18-gte82lt83f:NO": 1.0,
+      "poly_us:tc-temp-nychigh-2026-09-18-gte84lt85f": 0.0,
+      "poly_us:tc-temp-nychigh-2026-09-18-gte84lt85f:NO": 1.0,
+      "poly_us:tc-temp-nychigh-2026-09-18-lt78f": 0.0,
+      "poly_us:tc-temp-nychigh-2026-09-18-lt78f:NO": 1.0
+    },
+    "fills": [],
+    "rejections": []
+  },
+  "watch": [
+    {
+      "venue": "kalshi",
+      "day": "2026-09-18",
+      "checked": 1789862810.0412552,
+      "done": 1
+    },
+    {
+      "venue": "poly_us",
+      "day": "2026-09-18",
+      "checked": 1789862810.0412552,
+      "done": 0
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 # KNYC US 合约核验：2026-09-19
 
+2026-09-20 结算接口核验：[Kalshi Get Market](https://docs.kalshi.com/api-reference/market/get-market) 的 finalized 状态、settlement_ts 与 settlement_value_dollars 共同作为证据；[Poly US Get Market Settlement](https://docs.polymarket.us/api-reference/markets/get-market-settlement) 与市场的 resolved/expired 状态及 outcomePrices 交叉核对。实际 9 月 18 日合约已读取；Poly US 一档限流时保留未完成状态。市场 closed 标志或 CLI 页面出现数字均不直接触发资金结算。
+
 状态：两平台仍有未解决项，禁止把本记录视为交易放行。实际市场原文与采集时间保存在本地 `var/knyc/rules-audit-20260919`，不得以测试夹具代替。
 
 | 项目 | Kalshi | Poly US |
