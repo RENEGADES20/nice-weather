@@ -20,3 +20,5 @@
 - [Poly US 整份规则](https://docs.polymarket.us/learn/trading/basics/fractional-shares) 与实际 API 数量字段不一致。
 
 仍需核验两平台的观察窗口、结算整数形成与修订截止，及 Kalshi 账户精度、Poly US 数量冲突。当前模型的 NWS CLI 回顾标签不自动取得 Weather Company 口径资格。
+
+后续官方来源补充：[NWS 观测与气候产品 FAQ](https://www.weather.gov/lot/weather_observations_faq) 明确 CLI 的日界使用当地标准时，夏令时期间对应 01:00 至次日 01:00；METAR 发布值有摄氏转换及采样缺口，不能用其最高值替代 CLI。该依据支持 NWS 口径的固定 EST 窗口，尚不能独自证明 Weather Company 的修订规则。[Poly US 2026-09-14 规则书](https://polymarketexchange.com/files/legal/latest/rulebook) 将各合约细则单独定义，并未在正文提供天气温度的完整细则；继续保留实际合约证据与未解决项。
