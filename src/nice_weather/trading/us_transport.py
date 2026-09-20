@@ -90,7 +90,8 @@ def order_body(venue, request_id, contract, order):
     return {
         "marketSlug": market,
         "type": "ORDER_TYPE_LIMIT",
-        "price": {"value": str(p), "currency": "USD"},
+        # US has one YES instrument; even NO intents carry the YES-side limit price.
+        "price": {"value": str(p if outcome == "YES" else 1 - p), "currency": "USD"},
         "quantity": wire_quantity,
         "outcomeSide": "OUTCOME_SIDE_" + outcome,
         "action": "ORDER_ACTION_" + side,

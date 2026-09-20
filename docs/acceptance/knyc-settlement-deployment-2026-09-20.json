@@ -1,0 +1,19 @@
+{
+  "evidence_method": "Observed authorized SSH browser output; manually transcribed summary",
+  "observed_utc": "2026-09-20T00:25:36Z",
+  "pr": "https://github.com/RENEGADES20/nice-weather/pull/58",
+  "commit": "23b540bc781b51905f623f67497a9a092274481c",
+  "previous_commit": "3bcbc341cf7d0df5dccd20117fb76635afc7e31b",
+  "archive_sha256": "ec589d3739537187500dd0600a559e4ec4e77ae340edc0620334438ba5238dcd",
+  "archive_bytes": 642235,
+  "manifest_files_checked": 71,
+  "manifest_mismatches": [],
+  "health": {"status": "ok", "release": "23b540bc781b51905f623f67497a9a092274481c"},
+  "affected_services_active": ["nice-weather-terminal", "nice-weather-knyc-feed", "nice-weather-knyc-hrrr", "nice-weather-knyc-backtest", "nice-weather-knyc-paper@kalshi", "nice-weather-knyc-paper@poly_us"],
+  "paper_accounts": [{"venue": "kalshi", "status": "running", "cash": 100, "fills": 0, "enabled": false}, {"venue": "poly_us", "status": "running", "cash": 100, "fills": 0, "enabled": false}],
+  "settlement_watch": {"kalshi": {"day": "2026-09-19", "done": false}, "poly_us": {"day": "2026-09-19", "done": false}},
+  "baseline_observation": {"samples_so_far": 13, "errors": 0, "latest_sample_sha": "3bcbc341cf7d0df5dccd20117fb76635afc7e31b", "oldest_pending_age_seconds": 0, "free_bytes": 1708806144, "crosses_deployment": true},
+  "vm_configuration_changed": false,
+  "real_orders_submitted_by_agent": 0,
+  "acceptance": {"deployment": "passed", "performance": "pending", "live_reconciliation": "pending", "full_market_day": "pending", "user_real_trade": "pending"}
+}
