@@ -25,7 +25,7 @@ def affected_services(changed):
     if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/us_runtime.py",
                     "src/nice_weather/trading/us_fees.py", "src/nice_weather/trading/us_markets.py",
                     "src/nice_weather/trading/engine.py", "src/nice_weather/trading/signals_v2.py",
-                    "src/nice_weather/trading/recovery.py"}
+                    "src/nice_weather/trading/recovery.py", "src/nice_weather/trading/storage.py"}
            for name in changed):
         # us_runtime is used only by Paper and replay. Terminal restarts to expose
         # the current release identity; collectors continue for Paper-only changes.
@@ -80,7 +80,9 @@ def main():
                "src/nice_weather/trading/us_transport.py", "src/nice_weather/trading/knyc_model.py",
                "config/knyc-strategy-model.json"}
     allowed.update({"src/nice_weather/trading/us_fees.py",
-                    "src/nice_weather/trading/us_markets.py"})
+                    "src/nice_weather/trading/us_markets.py",
+                    "src/nice_weather/trading/us_reports.py",
+                    "src/nice_weather/trading/storage.py"})
     if any(name not in allowed and not name.startswith("src/nice_weather/terminal_dist/")
            for name in changed):
         raise ValueError("Release changes services outside the terminal update scope")

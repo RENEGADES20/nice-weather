@@ -1,0 +1,45 @@
+{
+  "method": "31 one-minute read-only VM samples; summary observed in authorized SSH output and transcribed",
+  "raw_vm_path": "/home/hdharrison1206/knyc-baseline-20260920-0013.jsonl",
+  "raw_sha256": "b2e6ac9a1600d45d91654c648a2dfdd010f2fc85fc3b14b1c1813f3cfcc82767",
+  "summary_vm_path": "/home/hdharrison1206/knyc-baseline-20260920-summary.json",
+  "sampling_errors": 0,
+  "segments": [
+    {
+      "sha": "3bcbc341cf7d0df5dccd20117fb76635afc7e31b",
+      "samples": 13, "seconds": 720,
+      "min_free_bytes": 1708806144, "max_feed_wal_bytes": 4157112,
+      "max_pending_age_seconds": 1.0085411071777344,
+      "units": {
+        "terminal": {"cpu_cores": 0.0228, "write_bytes_per_sec": 575, "max_memory_bytes": 58077184},
+        "knyc-feed": {"cpu_cores": 0.0432, "write_bytes_per_sec": 304650, "max_memory_bytes": 41029632},
+        "knyc-hrrr": {"cpu_cores": 0, "write_bytes_per_sec": 0, "max_memory_bytes": 201515008},
+        "knyc-paper@kalshi": {"cpu_cores": 0.061, "write_bytes_per_sec": 414673, "max_memory_bytes": 280248320},
+        "knyc-paper@poly_us": {"cpu_cores": 0.0428, "write_bytes_per_sec": 391013, "max_memory_bytes": 283754496},
+        "knyc-backtest": {"cpu_cores": 0.0021, "write_bytes_per_sec": 65012, "max_memory_bytes": 20500480}
+      }
+    },
+    {
+      "sha": "23b540bc781b51905f623f67497a9a092274481c",
+      "samples": 18, "seconds": 1020,
+      "min_free_bytes": 1678753792, "max_feed_wal_bytes": 4169472,
+      "max_pending_age_seconds": 0.6214020252227783,
+      "units": {
+        "terminal": {"cpu_cores": 0.0239, "write_bytes_per_sec": 1333, "max_memory_bytes": 56803328},
+        "knyc-feed": {"cpu_cores": 0.0481, "write_bytes_per_sec": 302284, "max_memory_bytes": 43593728},
+        "knyc-hrrr": {"cpu_cores": 0, "write_bytes_per_sec": 0, "max_memory_bytes": 129822720},
+        "knyc-paper@kalshi": {"cpu_cores": 0.0639, "write_bytes_per_sec": 438664, "max_memory_bytes": 203165696},
+        "knyc-paper@poly_us": {"cpu_cores": 0.0427, "write_bytes_per_sec": 402852, "max_memory_bytes": 199413760},
+        "knyc-backtest": {"cpu_cores": 0.0022, "write_bytes_per_sec": 64680, "max_memory_bytes": 20529152}
+      }
+    }
+  ],
+  "all_sampled_units_active": true,
+  "limitations": [
+    "Baseline crosses a deployment; counter deltas only use adjacent samples with the same SHA and PID.",
+    "Short segments and different workload/warmup cannot establish an improvement or full-day stability.",
+    "Queue observations are one-minute samples, not a complete per-event latency distribution.",
+    "Physical write counters show continued write amplification; frontend p95 requirements are separately pending."
+  ],
+  "full_market_day_acceptance": "pending"
+}
