@@ -20,19 +20,21 @@ type Props = {
   market: PaperMarket | null;
   accountRevision: string;
   simulation: Simulation;
-  // Resolve only after a persisted request receipt; reject on rejected/unknown submission.
+  blocked?: boolean;
+  // Resolve confirmed accepted/rejected receipts; throw only while the outcome is unknown.
   send: (command: PaperCommand) => Promise<string>;
   preview: (command: PaperCommand, signal: AbortSignal) => Promise<Preview>;
   onAccountUpdate: () => void;
 };
 
 export function PaperTicket({ market, accountRevision, simulation, send, preview,
-  onAccountUpdate }: Props) {
+  onAccountUpdate, blocked = false }: Props) {
   const [side, setSide] = useState("BUY"), [outcome, setOutcome] = useState("YES");
   const [quantity, setQuantity] = useState("1"), [limit, setLimit] = useState("");
   const [tif, setTif] = useState("IOC"), [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(""), [check, setCheck] = useState<Preview | null>(null);
   const [options, setOptions] = useState(simulation);
+  const [unresolved, setUnresolved] = useState<PaperCommand | null>(null);
   const generation = useRef(0), submitting = useRef(false);
   const identity = market ? `${market.venue}/${market.local_day}/${market.yes_token_id}` : "";
   const activeIdentity = useRef(identity);
@@ -66,12 +68,16 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
     }, 150);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [selection, preview, poll]);
-  async function execute(kind: string, payload: Record<string, unknown>) {
+  async function execute(kind: string, payload: Record<string, unknown>, retry?: PaperCommand) {
     if (submitting.current || !market) return;
+    if (!retry && (blocked || unresolved)) return;
     submitting.current = true; setBusy(true); setNotice("");
     const current = identity;
+    const request = retry ?? command(kind, payload);
+    setUnresolved(request);
     try {
-      const receipt = await send(command(kind, payload));
+      const receipt = await send(request);
+      setUnresolved(null);
       if (current === activeIdentity.current) setNotice(receipt);
       onAccountUpdate();
     } catch (error) {
@@ -108,7 +114,7 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
         {check.selected_price.price_source} · 报价距今 {Math.floor(check.selected_price.age_seconds)} 秒；
         预计费用 ${check.estimated_fee?.toFixed(2)}{check.fee_estimated ? "（估算）" : "（平台规则）"}；
         预计状态 {check.expected_status}</p>}
-      <button type="submit" disabled={!market || busy || dirty || !check?.available ||
+      <button type="submit" disabled={!market || busy || blocked || !!unresolved || dirty || !check?.available ||
         checkedSelection !== selection}>{busy ? "提交中…" : side === "BUY" ? "模拟买入" : "模拟卖出"}</button>
     </form>
     <details><summary>模拟费用与滑点</summary>
@@ -119,9 +125,12 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
       <label>滑点（百分点）<input aria-label="滑点" type="number" min="0" max="100" step=".01"
         value={options.slippage_pp} onChange={e => setOptions({ ...options,
           slippage_pp: Number(e.target.value) })} /></label>
-      <button disabled={!market || busy || !dirty} onClick={() => void execute("simulation_settings", options)}>
+      <button disabled={!market || busy || blocked || !!unresolved || !dirty}
+        onClick={() => void execute("simulation_settings", options)}>
         保存模拟设置</button>
     </details>
+    {unresolved && !busy && <button onClick={() =>
+      void execute(unresolved.kind, unresolved.payload, unresolved)}>查询或重试原请求</button>}
     <p role="status">{[notice, check?.reason || (!limit ? "请输入限价" : !check ? "正在读取下单条件…" :
       "成交与资金以服务端订单回执为准")].filter(Boolean).join("；")}</p>
   </section>;

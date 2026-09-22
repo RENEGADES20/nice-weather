@@ -32,7 +32,7 @@ function Harness() {
     await post("/api/commands", command);
     for (let attempt = 0; attempt < 100; attempt++) {
       const receipt = await fetch(`/api/requests/${command.request_id}`).then(r => r.json());
-      if (receipt.status === "rejected") throw new Error(receipt.error);
+      if (receipt.status === "rejected") return `拒绝：${receipt.error}`;
       if (receipt.status === "accepted") return `已处理 ${command.kind}`;
       await new Promise(resolve => setTimeout(resolve, 100));
     }

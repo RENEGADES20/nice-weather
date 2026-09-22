@@ -35,13 +35,13 @@
 
 权益点包含 ts（纳秒）、cash、reserved、available、market_value、equity、fees、realized_pnl、unrealized_pnl、total_pnl、settlement_status。按分钟、成交、结算和估值有效性变化采样，回测另存终点；未保存的旧历史不回填。
 
-独立组件 `frontend/terminal/src/PaperTicket.tsx` 接收 market、accountRevision、simulation、preview、send、onAccountUpdate。主入口应复用现有认证/CSRF和持久化发送器；send 必须等待明确回执，未知结果沿用原 request_id 查询/恢复。组件防止重复点击、切市场后清空限价、忽略旧预检响应；每两秒更新预检。本 PR 不修改 main.tsx，测试页不作为生产入口。
+独立组件 `frontend/terminal/src/PaperTicket.tsx` 接收 market、accountRevision、simulation、preview、send、onAccountUpdate 和 blocked。主入口应复用现有认证/CSRF和持久化发送器；将发送器的未知请求/恢复阻塞状态传入 blocked。send 对明确成功或拒绝回执 resolve 可读结果，结果未知才抛错。组件遇到未知结果禁用新提交，只允许使用原 request_id 查询/重试；页面重载由现有持久化发送器恢复。组件防止重复点击、切市场后清空限价、忽略旧预检响应；每两秒更新预检。本 PR 不修改 main.tsx，测试页不作为生产入口。
 
 ## 验证事实（2026-09-22）
 
 - 较早一轮全量交易测试：190 通过，2 项既有 Redis 实盘恢复测试因 Windows 本机缺 redis-server 失败；没有安装新服务，CI 已配置 Redis。
 - 最终相关回归 30 项通过：近似执行、真实 API/队列/权益、旧账户升级、结算、来源时间研究、原生恢复、KNYC 回放及检查点。Ruff、TypeScript 和本地生产构建通过，构建输出仅在 tmp。
-- Playwright 新组件回归通过：延迟旧平台预检不能覆盖新平台，缺价格时显示具体拒绝并禁用提交。样例测试单独标注。
+- Playwright 新组件回归通过：延迟旧平台预检不能覆盖新平台，缺价格时明确拒绝；发送失败时禁用新单，重试使用相同 request_id。样例测试单独标注。
 - Chrome 亲自操作真实本地 API + 两个 Paper worker + Nautilus，开发样例行情明确标注。Kalshi 买入 30、卖出 10、卖出 20：现金 100→87.88→90.85→96.79，费用 0.21，最终无持仓、3 次成交；刷新无重复。Poly US 切换后初始现金仍为 100，买入/卖出各 30 后现金 96.79、费用 0.21、无持仓、2 次成交。未 mock 成交 HTTP 响应。
 - 本地真实 2026-09-20 行情：Kalshi 9 条、Poly US 11 条，Ask 分别 0.88/0.89，原 seq/body/接收时间保持。两边原合约记录规则歧义，候选明确拒绝、零成交；切片缺预测事件，回放 no-data。见 `acceptance/task3-real-prices-2026-09-22.json`，包含原文哈希。未修改历史规则来制造成交。
 
