@@ -1,0 +1,35 @@
+{
+  "method": "31 one-minute VM samples; summary observed in authorized SSH output and transcribed; adjacent counter deltas require identical SHA and PID",
+  "raw_vm_path": "/home/hdharrison1206/knyc-post-readonly-20260922-0347.jsonl",
+  "raw_sha256": "f96aa69e8bc390c81f189fb4ff2cd347f0f4405ece5755d0946b03a154a1d664",
+  "summary_vm_path": "/home/hdharrison1206/knyc-post-readonly-20260922-summary.json",
+  "samples": 31,
+  "sampling_errors": 0,
+  "min_free_bytes": 2347909120,
+  "max_pending_age_seconds": 1.0022766590118408,
+  "current_version_segment": {
+    "sha": "a9f5c53ade8f81369e12a851268341b907e238f5",
+    "samples": 14,
+    "seconds": 780.002,
+    "all_sampled_units_active": true,
+    "physical_write_bytes_per_second": {
+      "terminal": 36.8,
+      "knyc-feed": 300225.4,
+      "knyc-hrrr": 761.4,
+      "knyc-paper@kalshi": 963434.2,
+      "knyc-paper@poly_us": 722721.3,
+      "knyc-backtest": 57700.9
+    }
+  },
+  "subsequent_checkpoint_inspection": {
+    "kalshi_state_bytes": 168973,
+    "poly_us_state_bytes": 108715
+  },
+  "limitations": [
+    "The observation crosses deployment; the full two-version summary remains on the VM.",
+    "Physical write amplification remains; read-only polling has not resolved it.",
+    "Checkpoint metadata and settlement evidence are retained; no historical data removed.",
+    "This is not the frontend benchmark or a complete market day."
+  ],
+  "full_market_day_acceptance": "pending"
+}

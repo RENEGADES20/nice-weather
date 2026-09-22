@@ -261,7 +261,8 @@ class PaperRunner:
                 )
             if sample:
                 con.execute(
-                    "INSERT OR REPLACE INTO paper_state VALUES (?,?,?)",
+                    "INSERT INTO paper_state VALUES (?,?,?) ON CONFLICT(run_id) DO UPDATE "
+                    "SET body=excluded.body,checksum=excluded.checksum",
                     (self.run_id, encoded(state), digest(state)),
                 )
             if input_id:

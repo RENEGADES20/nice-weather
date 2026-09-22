@@ -1,5 +1,15 @@
 # 美国平台实盘适配：协议与验收边界
 
+## 2026-09-22 当前接线状态
+
+签名传输和双平台原生 OrderStatusReport / FillReport / PositionStatusReport 转换已部署；真实只读账户认证、分页历史读取及 Poly US 空订单 WebSocket 快照已完成，仍未完成 LiveExecutionClient、余额/抵押映射与完整原生对账。下文 9 月 19 日的“未读取密钥”等表述仅记录当时状态。
+
+新增独立 Live 进程使用的 USD 初始化模块 `us_currency.py`，同时注册 Nautilus Python/Rust 币种表，要求显式提供核验后的两位或四位精度；同一进程不允许切换平台或精度。导入模块不修改注册表。8 项测试通过，包括独立子进程中的亚分币 Money 往返、AccountState 序列化恢复及父进程 Paper USD2 隔离。首次测试一个子进程启动超时，保持 60 秒限制重新运行后 8 项通过；没有跳过或放宽断言。该模块尚未接入独立 Live worker，不能视作实盘精度验收完成。
+
+余额口径继续分开核验：[Kalshi balance_dollars](https://docs.kalshi.com/api-reference/portfolio/get-balance) 表示可用余额，不能将 portfolio_value 当作现金；[Poly US balances](https://docs.polymarket.us/api-reference/account/get-account-balances) 分列 currentBalance、buyingPower、marginRequirement 和 balanceReservation。不能以字段相似或空持仓直接认定完整现金/抵押映射。凭据仅沿用已有文件，禁止创建或轮换密钥；真实订单由用户提交。
+
+## 2026-09-19 历史实施记录
+
 2026-09-19。当前为开发组件，尚未交付可启用的实盘账户。`us_transport.py` 不在终端命令链中；API 的 Live 门禁保持关闭，未读取真实密钥或发送真实订单。
 
 ## 已实现并在本地验证
