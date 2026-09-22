@@ -26,7 +26,8 @@ def affected_services(changed):
         services += ["nice-weather-knyc-feed.service"]
     if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/us_runtime.py",
                     "src/nice_weather/trading/us_fees.py", "src/nice_weather/trading/us_markets.py",
-                    "src/nice_weather/trading/engine.py", "src/nice_weather/trading/signals_v2.py",
+                    "src/nice_weather/trading/engine.py", "src/nice_weather/trading/signals.py",
+                    "src/nice_weather/trading/signals_v2.py",
                     "src/nice_weather/trading/recovery.py", "src/nice_weather/trading/storage.py",
                     "src/nice_weather/trading/paper_execution.py"}
            for name in changed):
@@ -100,7 +101,7 @@ def main():
                     "src/nice_weather/trading/storage.py",
                     "src/nice_weather/store.py"})
     allowed.update({f"src/nice_weather/trading/{module}.py" for module in (
-        "market_discovery", "market_weather", "signal_research", "paper_execution",
+        "market_discovery", "market_weather", "signals", "signal_research", "paper_execution",
         "backtest_view", "us_live", "us_live_state", "us_reconcile")})
     allowed.add("deploy/systemd/nice-weather-knyc-live@.service")
     if any(name not in allowed and not name.startswith("src/nice_weather/terminal_dist/")
