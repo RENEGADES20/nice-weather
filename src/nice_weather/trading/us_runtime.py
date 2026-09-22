@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from collections import Counter
 from pathlib import Path
 
 from nice_weather.trading.feed import FeedStore
@@ -167,7 +168,7 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
     results = Results(root / "results.sqlite3")
     existing = results.run(run_id=identifier)
     if existing:
-        if existing["status"] == "starting":
+        if existing["status"] in {"starting", "running"}:
             results.status(identifier, "failed", "Interrupted replay; create a new request")
             return results.run(run_id=identifier)
         return existing
@@ -196,17 +197,48 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
             ).fetchall()
             ceiling = con.execute("SELECT COALESCE(MAX(seq),0) FROM feed_events").fetchone()[0]
 
-        def apply(row):
+        audit = {"requested_start": start, "requested_end": end, "feed_ceiling": ceiling,
+                 "scan_complete": False,
+                 "cursor": 0, "inputs": {}, "decisions": {}, "decision_changes": 0}
+        previous_signals, pending_decisions = {}, []
+
+        def apply(row, *, seed=False):
             event = dict(row) | {"data": json.loads(row["body"])}
-            for native in feed_event(session, event):
+            native_events = feed_event(session, event)
+            if native_events and not seed:
+                group = audit["inputs"].setdefault(row["kind"], {
+                    "count": 0, "first_received": row["received"],
+                    "last_received": row["received"], "max_gap_seconds": 0,
+                })
+                group["count"] += 1
+                group["max_gap_seconds"] = max(
+                    group["max_gap_seconds"], row["received"] - group["last_received"])
+                group["first_received"] = min(group["first_received"], row["received"])
+                group["last_received"] = max(group["last_received"], row["received"])
+                if row["kind"] == "prediction":
+                    reasons = group.setdefault("input_reasons", {})
+                    reason = event["data"].get("reason") or "not_reported"
+                    reasons[reason] = reasons.get(reason, 0) + 1
+            for index, native in enumerate(native_events):
                 session.apply(native)
+                for strategy_id, signal in session.signals.items():
+                    signature = digest(signal)
+                    if previous_signals.get(strategy_id) == signature:
+                        continue
+                    previous_signals[strategy_id] = signature
+                    pending_decisions.append({"feed_seq": row["seq"], "native_index": index,
+                                              "received_at": row["received"],
+                                              "signal": json.loads(json.dumps(signal))})
+                    reasons = audit["decisions"].setdefault(strategy_id, Counter())
+                    reasons[signal.get("reason") or signal["action"]] += 1
+                    audit["decision_changes"] += 1
 
         for row in seed:
-            apply(row)
+            apply(row, seed=True)
         session.apply(
             {"kind": "start", "ts": max(int(start * 1e9), session.now + 1), "data": {}}
         )
-        predictions, cursor = 0, 0
+        predictions, cursor, last_progress = 0, 0, float("-inf")
         # Immutable receipt events and a fixed ceiling allow short read transactions.
         # Release each WAL snapshot before running the potentially slow native replay.
         while cursor < ceiling:
@@ -222,8 +254,22 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
                 predictions += row["kind"] == "prediction" and row["key"] == venue
                 apply(row)
             cursor = rows[-1]["seq"]
+            audit["cursor"] = cursor
+            if pending_decisions:
+                results.append(identifier, f"replay-decisions-{cursor}", {
+                    "kind": "replay-decisions", "decisions": pending_decisions})
+                pending_decisions.clear()
+            if time.monotonic() - last_progress >= 5:
+                # Compact progress only; no full native snapshot or per-event DB write.
+                with connect(results.path) as con:
+                    con.execute("UPDATE runs SET status='running',snapshot=?,updated=? "
+                                "WHERE run_id=?", (json.dumps({"replay_audit": audit}),
+                                                   time.time(), identifier))
+                last_progress = time.monotonic()
         snapshot = session.snapshot()
         snapshot["prediction_events"] = predictions
+        audit["scan_complete"] = True
+        snapshot["replay_audit"] = audit
         if not predictions:
             snapshot["coverage"] = "No station model events; not an executable strategy backtest"
         seq = results.append(identifier, "replay-final", {"kind": "replay", "config": config})

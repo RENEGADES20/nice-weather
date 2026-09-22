@@ -203,6 +203,77 @@ def test_frozen_targets_and_fail_closed():
         assert not result["triggered"] and not result["legs"]
 
 
+def test_us_replay_preserves_partial_coverage_and_decision_evidence(tmp_path):
+    import json
+    from collections import Counter
+
+    from nice_weather.trading.storage import Results
+    from nice_weather.trading.us_runtime import replay
+
+    now, contracts, weather, _ = scenario()
+    feed = FeedStore(tmp_path / "feed.sqlite3")
+    feed.publish("contracts", "kalshi", contracts, now - 20)
+    feed.publish("prediction", "poly_us", weather, now)
+    first = feed.publish("prediction", "kalshi", weather | {
+        "status": "unavailable", "reason": "TEST_MISSING_MODEL"}, now + 10)
+    last = feed.publish("prediction", "kalshi", weather | {
+        "status": "unavailable", "reason": "TEST_STALE_MODEL"}, now + 30)
+    run = replay(tmp_path, "kalshi", now - 10, now + 60, request_id="coverage-test")
+    snapshot = json.loads(run["snapshot"])
+    audit = snapshot["replay_audit"]
+    assert run["status"] == "completed" and snapshot["prediction_events"] == 2
+    assert snapshot["fills"] == []
+    assert audit["scan_complete"] and audit["cursor"] == last
+    assert set(audit["inputs"]) == {"prediction"}  # Seed and foreign events are not coverage.
+    assert audit["inputs"]["prediction"] == {
+        "count": 2, "first_received": now + 10, "last_received": now + 30,
+        "max_gap_seconds": 20,
+        "input_reasons": {"TEST_MISSING_MODEL": 1, "TEST_STALE_MODEL": 1},
+    }
+    records = Results(tmp_path / "results.sqlite3").inputs("coverage-test")
+    decisions = [d for row in records if json.loads(row["body"])["kind"] == "replay-decisions"
+                 for d in json.loads(row["body"])["decisions"]]
+    assert {d["feed_seq"] for d in decisions} == {first, last}
+    assert len(decisions) == audit["decision_changes"] == 6
+    for strategy in ("S1", "S2", "S3"):
+        actual = Counter(d["signal"]["reason"] for d in decisions
+                         if d["signal"]["strategy"] == strategy)
+        assert actual == audit["decisions"][strategy]
+    assert replay(tmp_path, "kalshi", now - 10, now + 60,
+                  request_id="coverage-test") == run
+
+
+def test_us_replay_interruption_retains_progress_and_fails_closed(tmp_path, monkeypatch):
+    import json
+
+    from nice_weather.trading.storage import Results
+    from nice_weather.trading.us_runtime import replay
+
+    now, contracts, weather, _ = scenario()
+    feed = FeedStore(tmp_path / "feed.sqlite3")
+    feed.publish("contracts", "kalshi", contracts, now - 20)
+    for i in range(257):
+        feed.publish("prediction", "kalshi", weather | {
+            "status": "unavailable", "reason": "TEST_MISSING_MODEL"}, now + i)
+    from nice_weather.trading import us_runtime
+    original = us_runtime.feed_event
+
+    def interrupted(session, event):
+        if event["received"] == now + 256:
+            raise KeyboardInterrupt("worker interrupted")
+        return original(session, event)
+
+    monkeypatch.setattr(us_runtime, "feed_event", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        replay(tmp_path, "kalshi", now - 10, now + 300, request_id="interrupted-test")
+    run = Results(tmp_path / "results.sqlite3").run("interrupted-test")
+    assert run["status"] == "running"
+    audit = json.loads(run["snapshot"])["replay_audit"]
+    assert not audit["scan_complete"] and audit["inputs"]["prediction"]["count"] == 256
+    recovered = replay(tmp_path, "kalshi", now - 10, now + 300, request_id="interrupted-test")
+    assert recovered["status"] == "failed" and "Interrupted" in recovered["error"]
+
+
 def test_costs_depth_and_first_trigger():
     now, contracts, weather, books = scenario()
     assert evaluate("S2", contracts, weather | {"is_high": False}, books, now)["triggered"] is False

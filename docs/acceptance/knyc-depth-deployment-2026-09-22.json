@@ -1,0 +1,19 @@
+{
+  "sha": "59b8eabc61033a50ab6e69136cb5f75a5db1ed06",
+  "pr": 69,
+  "ci_run": 35699749798,
+  "checks_passed": 7,
+  "verified_at": "2026-09-22T07:40:13.996927+00:00",
+  "files_verified": 74,
+  "hash_mismatches": [],
+  "health_sha_matches": true,
+  "active_services": 6,
+  "restarted_services": ["nice-weather-terminal", "nice-weather-knyc-backtest", "nice-weather-knyc-paper@kalshi", "nice-weather-knyc-paper@poly_us"],
+  "package_sha256": "efe86695c6485c04b552223c8dcb9634d616ec2fa83a8693017f9a06adc695a4",
+  "remote_evidence": "/home/hdharrison1206/knyc-depth-deploy-20260922.json",
+  "free_bytes": 2100981760,
+  "paper": {"kalshi": {"enabled": true, "cash": 100, "fills": 0}, "poly_us": {"enabled": true, "cash": 100, "fills": 0}},
+  "infrastructure_changed": false,
+  "performance_accepted": false,
+  "full_market_day_accepted": false
+}

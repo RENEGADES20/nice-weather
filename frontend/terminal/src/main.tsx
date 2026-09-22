@@ -45,6 +45,14 @@ type Snapshot = {
   positions?: Record<string, any>[];
   fills?: Record<string, any>[];
   signals?: Record<string, any>;
+  replay_audit?: {
+    requested_start: number;
+    requested_end: number;
+    scan_complete: boolean;
+    inputs: Record<string, { count: number; first_received: number; last_received: number;
+      max_gap_seconds: number; input_reasons?: Record<string, number> }>;
+    decisions: Record<string, Record<string, number>>;
+  };
 };
 type State = {
   cursor: number;
@@ -1254,7 +1262,20 @@ function App() {
               <article key={a.run_id}>
                 <b>{a.run_id.slice(0, 12)}</b> · {a.status} · 权益{" "}
                 {money(a.snapshot.equity)} · 成交{" "}
-                {a.snapshot.fills?.length ?? 0}
+                {a.snapshot.fills?.length ?? "—"}
+                {a.snapshot.replay_audit ? <div>
+                  <p>{a.snapshot.replay_audit.scan_complete ? "扫描完成" : "扫描中"}；
+                    实际覆盖按接收事件统计，不能视为完整市场日验收。</p>
+                  <p>请求区间：{new Date(a.snapshot.replay_audit.requested_start * 1000).toISOString()}
+                    {" → "}{new Date(a.snapshot.replay_audit.requested_end * 1000).toISOString()}</p>
+                  {Object.entries(a.snapshot.replay_audit.inputs).map(([kind, coverage]) =>
+                    <p key={kind}>{kind}：{coverage.count} 条 · {new Date(coverage.first_received * 1000).toISOString()}
+                      {" → "}{new Date(coverage.last_received * 1000).toISOString()}
+                      {" · 最大接收间隔 "}{coverage.max_gap_seconds.toFixed(1)} 秒</p>)}
+                  {Object.entries(a.snapshot.replay_audit.decisions).map(([strategy, reasons]) =>
+                    <p key={strategy}>{strategy} 决策变化：{Object.entries(reasons).map(
+                      ([reason, count]) => `${reason} × ${count}`).join("；")}</p>)}
+                </div> : <p>此记录未保存过程覆盖与决策审计。</p>}
               </article>
             ))}
           {!state.accounts.some((a) => a.mode === "backtest") && (
