@@ -1,0 +1,28 @@
+{
+  "pr": "https://github.com/RENEGADES20/nice-weather/pull/62",
+  "checked_head": "d987611b9586d1553e9bab0201c656d9e782533d",
+  "ci_run": 35687187974,
+  "required_checks": "all seven success",
+  "deployed_sha": "298f7e90114bcdd793d1764e6f16268ea9e3ea16",
+  "previous_sha": "a9f5c53ade8f81369e12a851268341b907e238f5",
+  "verified_utc": "2026-09-22T04:40:50.020868+00:00",
+  "vm_evidence": "/home/hdharrison1206/knyc-checkpoint-deploy-20260922.json",
+  "archive_sha256": "c0c7cc024fa57760db07f127e78ab97e4ec57a790f21d22dd0b640d65f06b8a5",
+  "updater_sha256": "8404f1bb8d928ef5e0aa459e525f7c6c4bf7d5ebbe3dd7a671f9256877e5575f",
+  "archive_bytes": 645915,
+  "files_verified": 73,
+  "hash_mismatches": [],
+  "health_release_matches": true,
+  "six_knyc_services_active": true,
+  "restarted": ["terminal", "knyc-backtest", "knyc-paper@kalshi", "knyc-paper@poly_us"],
+  "free_bytes": 2331049984,
+  "paper": {
+    "kalshi": {"status": "running", "cash": 100, "fills": 0, "enabled": false},
+    "poly_us": {"status": "running", "cash": 100, "fills": 0, "enabled": false}
+  },
+  "notes": [
+    "Initial unprivileged dry-run could not read the restricted runtime manifest; the existing sudo permission completed preflight and deployment.",
+    "Only recovery.py and import-inert us_currency.py changed; no database restore, history deletion, credential change, or VM infrastructure change.",
+    "Realized production write reduction remains to be measured; this is not full market-day acceptance or completed Live integration."
+  ]
+}

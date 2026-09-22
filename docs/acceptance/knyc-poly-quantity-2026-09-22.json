@@ -1,0 +1,19 @@
+{
+  "source_path": "var\\knyc\\rules-audit-20260919\\poly_us.json",
+  "source_sha256": "35f609fd8279b31de23791510eed8a012b3e088b215ee1b9ca348e382e3c5bc1",
+  "market_day": "2026-09-19",
+  "contracts": 6,
+  "minimum_order_sizes": [
+    0.01
+  ],
+  "quantity_steps": [
+    "0.01"
+  ],
+  "remaining_ambiguities": [
+    "observation window, rounding and revision rules awaiting venue audit"
+  ],
+  "all_still_no_trade": true,
+  "official_url": "https://docs.polymarket.us/api-reference/orders/create-order.md",
+  "official_sha256": "0f7ffdcb944bc4b630177c2dfeeadc58462f55c28722bd1699d7caf4ea39d32d",
+  "official_received_at": 1790052521.9482114
+}
