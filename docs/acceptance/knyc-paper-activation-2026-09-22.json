@@ -1,0 +1,22 @@
+{
+  "verified_utc": "2026-09-22T06:12:16.508772+00:00",
+  "deployed_sha": "d1365291359f616a657f2104b25b45964d4462d0",
+  "accounts": ["sandbox-kalshi-knyc", "sandbox-poly_us-knyc"],
+  "strategy": "S1_S2_S3",
+  "signal_version": "knyc-executable-v2",
+  "both_enabled": true,
+  "request_ids": ["paper-s123-enable-20260922-kalshi", "paper-s123-enable-20260922-poly_us"],
+  "both_receipts_accepted": true,
+  "cash_per_account": 100,
+  "fills_per_account": 0,
+  "signal_reason_at_verification": "HRRR_DAY_END_NOT_COVERED",
+  "effective_paper_limits": {"strategy_budget": 5, "max_bin_notional": 5, "max_day_notional": 20},
+  "live_enabled": false,
+  "vm_evidence_path": "/home/hdharrison1206/knyc-paper-start-20260922.json",
+  "vm_evidence_sha256": "d40a8e9b632c1cbee7798faa30c4c30a9af87b95740aed47049c8f6437f41230",
+  "notes": [
+    "Activation used the existing durable command queue under the service user; no direct account state edits.",
+    "This confirms activation and no-trade reporting only, not fills, settlement, full-day or performance acceptance.",
+    "Paper limits are existing simulation defaults; the separate user Live test cap remains 5 USD per venue including fees/reservations."
+  ]
+}

@@ -1,5 +1,11 @@
 # 当前状态
 
+## 2026-09-22 双平台 Paper 已启用，队列连接复用待发布
+
+06:12 UTC 核对两个持久化 start 请求均 accepted，Kalshi/Poly US Paper 的 S1/S2/S3 均已启用，各 100 模拟现金、零成交；现有模拟限制为每策略预算 5、单档 5、当日 20 美元。当前 HRRR 尚未覆盖日末，三策略继续明确 no-trade；Kalshi 规则门禁未解除。Live 保持关闭，其用户测试限额仍为每平台累计 5 美元。启用及回执证据见 acceptance/knyc-paper-activation-2026-09-22.json，不能据此宣称成交或完整市场日通过。
+
+订单意图证据 PR #66 七项 CI 全通过并合并 f52cc86b40a418f00db1664dc31b7c8759b93ced，尚待随下一版部署。当前本地优化复用 Paper/回放队列只读连接，不保留查询事务；新请求可见性、只读权限及 WAL 截断测试通过。此前 VM 30 次查询测量见 acceptance/knyc-resource-post-upsert-2026-09-22.json：短连接有 write_bytes/cancelled_write_bytes 计数，持久连接两者均零；这些是任务 I/O 计数，不能当作设备实际写入量。
+
 ## 2026-09-22 Poly US 天气规则已部署；订单意图证据待发布
 
 规则 PR #65 七项 CI 全部通过，06:07 UTC 验证部署 d1365291359f616a657f2104b25b45964d4462d0：74 个文件哈希及健康版本一致，六个服务 active，实时采集的六档 Poly US 合约全部 parsed。只重启受影响应用，HRRR 持续运行；磁盘剩余约 2.22 GB，长期容量与性能尚未验收。详见 acceptance/knyc-weather-rules-deployment-2026-09-22.json。两个 Paper 账户仍关闭策略、各 100 模拟现金；当前数据拒绝原因为 HRRR_DAY_END_NOT_COVERED。
