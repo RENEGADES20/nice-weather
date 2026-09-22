@@ -1,0 +1,30 @@
+{
+  "evidence_method": "Observed authorized SSH browser output; manually transcribed summary",
+  "observed_utc": "2026-09-22T04:04:27Z",
+  "pr": "https://github.com/RENEGADES20/nice-weather/pull/61",
+  "ci_run": 35684903262,
+  "ci_checks_passed": 7,
+  "commit": "a9f5c53ade8f81369e12a851268341b907e238f5",
+  "previous_commit": "1e8a76df9a42e1e9c6d4eece5ecc2e94dbfaf604",
+  "archive_sha256": "42670d88b3b31eca76d380d31e758a249f6837c110c3c0b791085d9f8c04ac8c",
+  "archive_bytes": 645306,
+  "updater_sha256": "1deb5e8a647391e849de35719f7f72136ca6a463d3fb05624fa0cd95fd98753c",
+  "manifest_files_checked": 72,
+  "manifest_mismatches": [],
+  "health": {"status": "ok", "release": "a9f5c53ade8f81369e12a851268341b907e238f5"},
+  "knyc_services_active": 6,
+  "connection_retention_bytes": {"legacy_weather_store": 16777216, "knyc_storage": 16777216},
+  "paper_accounts": [{"venue": "kalshi", "cash": 100, "fills": 0, "enabled": false}, {"venue": "poly_us", "cash": 100, "fills": 0, "enabled": false}],
+  "legacy_update": {
+    "scope": "single reviewed WeatherStore file; other checkout code unchanged",
+    "path": "/opt/nice-weather/repo/src/nice_weather/store.py",
+    "previous_sha256": "d7e1bf869add30b67d527ce157c5811c81852c850b67ed786991717fe063ae6c",
+    "sha256": "5a4d0059bf98462a1e79749c895f89f736f9727da9d8e4d97f9741b95f7c09b3",
+    "manifest": "/opt/nice-weather/deployment/wal-retention-20260922.json",
+    "restarted_active": ["nice-weather-collector", "nice-weather-market-stream", "nice-weather-runner"]
+  },
+  "free_bytes": 2362331136,
+  "vm_configuration_changed": false,
+  "real_orders_submitted_by_agent": 0,
+  "acceptance": {"deployment": "passed", "capacity_sustained": "pending", "performance": "pending", "live_reconciliation": "pending", "full_market_day": "pending", "user_real_trade": "pending"}
+}
