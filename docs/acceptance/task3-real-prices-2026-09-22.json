@@ -1,0 +1,116 @@
+{
+  "source": "..\\knyc-terminal\\var\\knyc\\feed.sqlite3",
+  "source_access": "read_only",
+  "venues": {
+    "kalshi": {
+      "token": "kalshi:KXHIGHNY-26SEP20-T71",
+      "day": "2026-09-20",
+      "contract_seq": 636737,
+      "book_count": 9,
+      "price": {
+        "source_time": null,
+        "received_at": 1789917501.7506726,
+        "known_at": 1789917501.7506726,
+        "time_basis": "received_at",
+        "venue": "kalshi",
+        "market_day": "2026-09-20",
+        "source": "kalshi",
+        "price": 0.88,
+        "raw_price": 0.88,
+        "price_source": "ask",
+        "age_seconds": 0.0,
+        "approximate": true,
+        "execution_model": "market-price-v1"
+      },
+      "fills": 0,
+      "rejections": [
+        {
+          "request_id": "real-sample",
+          "ts": 1789917501750672642,
+          "reason": "Ambiguous contract: no-trade"
+        }
+      ],
+      "rows_sha256": "9333931cead12d952c67d4cdd707d8aefcf74bb5c5259d32e137c7b816716e16",
+      "equity_points": 2,
+      "replay_status": "no-data",
+      "replay_audit": {
+        "cursor": 636857,
+        "decision_changes": 0,
+        "decisions": {},
+        "feed_ceiling": 636857,
+        "inputs": {
+          "book": {
+            "count": 9,
+            "first_received": 1789917486.0471272,
+            "last_received": 1789917501.7506726,
+            "max_gap_seconds": 2.222541093826294
+          },
+          "contracts": {
+            "count": 1,
+            "first_received": 1789917485.7799625,
+            "last_received": 1789917485.7799625,
+            "max_gap_seconds": 0
+          }
+        },
+        "requested_end": 1789917501.7516725,
+        "requested_start": 1789917485.7789626,
+        "scan_complete": true
+      }
+    },
+    "poly_us": {
+      "token": "poly_us:tc-temp-nychigh-2026-09-20-lt71f",
+      "day": "2026-09-20",
+      "contract_seq": 636715,
+      "book_count": 11,
+      "price": {
+        "source_time": "2026-09-20T15:14:20.562082553Z",
+        "received_at": 1789917502.808854,
+        "known_at": 1789917502.808854,
+        "time_basis": "received_at",
+        "venue": "poly_us",
+        "market_day": "2026-09-20",
+        "source": "poly_us",
+        "price": 0.89,
+        "raw_price": 0.89,
+        "price_source": "ask",
+        "age_seconds": 0.0,
+        "approximate": true,
+        "execution_model": "market-price-v1"
+      },
+      "fills": 0,
+      "rejections": [
+        {
+          "request_id": "real-sample",
+          "ts": 1789917502808854018,
+          "reason": "Ambiguous contract: no-trade"
+        }
+      ],
+      "rows_sha256": "e4674ba0f31e1c0885009e33fbc576ccda491482148b397cd0456424d8f17936",
+      "equity_points": 2,
+      "replay_status": "no-data",
+      "replay_audit": {
+        "cursor": 636864,
+        "decision_changes": 0,
+        "decisions": {},
+        "feed_ceiling": 636864,
+        "inputs": {
+          "book": {
+            "count": 11,
+            "first_received": 1789917482.962391,
+            "last_received": 1789917502.808854,
+            "max_gap_seconds": 2.4298288822174072
+          },
+          "contracts": {
+            "count": 1,
+            "first_received": 1789917482.6601222,
+            "last_received": 1789917482.6601222,
+            "max_gap_seconds": 0
+          }
+        },
+        "requested_end": 1789917502.809854,
+        "requested_start": 1789917482.6591222,
+        "scan_complete": true
+      }
+    }
+  }
+}

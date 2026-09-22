@@ -18,6 +18,7 @@ from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.backtest.models import FeeModel, FillModel
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig, StrategyConfig
 from nautilus_trader.core.data import Data
+from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.currencies import USD, pUSD
 from nautilus_trader.model.data import (
     BookOrder,
@@ -47,6 +48,16 @@ from nautilus_trader.trading.strategy import Strategy
 VENUE = Venue("POLYMARKET")
 
 
+class MarketPriceFillModel(FillModel):
+    """Native limit fills receive price improvement, including previously resting orders."""
+
+    def get_orderbook_for_fill_simulation(self, instrument, order, best_bid, best_ask):
+        book = OrderBook(instrument.id, BookType.L2_MBP)
+        book.add(BookOrder(OrderSide.BUY, best_bid, order.leaves_qty, 1), 0, 0)
+        book.add(BookOrder(OrderSide.SELL, best_ask, order.leaves_qty, 2), 0, 0)
+        return book
+
+
 class Input(Data):
     def __init__(self, event):
         self.event = event
@@ -68,6 +79,13 @@ class Fees(FeeModel):
         if str(order.client_order_id).startswith("EXPIRATION-"):
             return Money(0, self.session.currency)
         row = self.session.metadata[instrument.raw_symbol.value]
+        if self.session.approximate:
+            from nice_weather.trading.paper_execution import fee
+
+            state = self.session.fee_accumulators.setdefault(str(order.client_order_id), {})
+            return Money(fee(fill_qty.as_decimal(), fill_px.as_decimal(), row,
+                             self.session.config.get("simulation"), order.side.name, state),
+                         self.session.currency)
         if order.liquidity_side == LiquiditySide.MAKER:
             return Money(0, self.session.currency)  # No assumed maker rebates.
         p, q = fill_px.as_decimal(), fill_qty.as_decimal()
@@ -136,6 +154,12 @@ class Session:
         if config["mode"] not in {"sandbox", "backtest"}:
             raise ValueError("Simulation cannot impersonate a live account")
         self.config = config
+        from nice_weather.trading.paper_execution import VERSION, settings
+
+        self.approximate = config.get("execution_model") == VERSION
+        self.market_prices, self.execution_evidence, self.order_payloads = {}, {}, {}
+        if self.approximate:
+            config["simulation"] = settings(config.get("simulation"))
         venue_name = config.get("venue", "polymarket")
         if venue_name not in {"polymarket", "kalshi", "poly_us"}:
             raise ValueError("Unsupported execution venue")
@@ -173,7 +197,8 @@ class Session:
             starting_balances=[Money(self.cash_start, self.currency)],
             book_type=BookType.L2_MBP if config.get("execution_version") == 3 else BookType.L1_MBP,
             liquidity_consumption=True,
-            fill_model=FillModel(prob_fill_on_limit=0, random_seed=7),
+            fill_model=(MarketPriceFillModel(prob_fill_on_limit=1, random_seed=7)
+                        if self.approximate else FillModel(prob_fill_on_limit=0, random_seed=7)),
             fee_model=Fees(self),
             settlement_prices=self.settlement_prices,
         )
@@ -197,7 +222,8 @@ class Session:
         # Cancel stale resting orders before a new book can match them.
         cancel_pending = False
         for token, quote in list(self.quotes.items()):
-            if self.now - quote["ts"] > 30_000_000_000 or self.market_rejection(token):
+            if (not self.approximate and self.now - quote["ts"] > 30_000_000_000
+                    or self.market_rejection(token)):
                 cancel_pending |= self.cancel_token(token)
         if cancel_pending:
             # Native cancellation is queued; drain it before introducing a crossing quote.
@@ -246,6 +272,40 @@ class Session:
                         self.engine.add_instrument(instrument)
                     else:
                         self._run(instrument, custom=True)
+            self._run(CustomData(DataType(Input), Input(event | {"kind": "clock"})), custom=True)
+        elif self.approximate and kind in {"depth", "quote", "market_price"}:
+            from nice_weather.trading.paper_execution import ingest
+
+            token = row["token_id"]
+            if token not in self.metadata:
+                return
+            if kind == "depth":
+                row = row | {
+                    "best_bid": row["bids"][0][0] if row["bids"] else None,
+                    "best_ask": row["asks"][0][0] if row["asks"] else None,
+                    "received_at": row["received_ns"] / 1e9,
+                }
+                self._depth = getattr(self, "_depth", {}) | {token: {
+                    (side, str(p)): str(q) for side, levels in (
+                        (OrderSide.BUY, row["bids"]), (OrderSide.SELL, row["asks"]))
+                    for p, q in levels}}
+            try:
+                self.market_prices[token] = ingest(self.market_prices.get(token), row,
+                                                   self.metadata[token], self.now / 1e9)
+            except ValueError as exc:
+                self.rejections.append({"request_id": f"market-price-{token}-{self.now}",
+                                        "ts": self.now, "reason": str(exc)})
+                return self.snapshot()
+            current = self.market_prices[token].get("current", {})
+            self.quotes[token] = {
+                "ts": int(self.market_prices[token].get("known_at", self.now / 1e9) * 1e9),
+                "best_bid": current.get("best_bid", {}).get("price"),
+                "best_ask": current.get("best_ask", {}).get("price"),
+            }
+            self.approximate_book(token)
+        elif self.approximate and kind in {"order", "close", "cancel", "stop", "start",
+                                          "simulation_settings", "candidate_order"}:
+            self.command(event)
             self._run(CustomData(DataType(Input), Input(event | {"kind": "clock"})), custom=True)
         elif kind == "depth":
             token = row["token_id"]
@@ -419,10 +479,12 @@ class Session:
             or row["timezone"] != "America/New_York"
         ):
             return "Ambiguous contract: no-trade"
-        if not row.get("fee_known", False):
+        if not self.approximate and not row.get("fee_known", False):
             return "Unknown historical fee schedule: no-trade"
         quote = self.quotes.get(token)
-        if quote and (quote.get("best_bid") is None or quote.get("best_ask") is None):
+        if not self.approximate and quote and (
+            quote.get("best_bid") is None or quote.get("best_ask") is None
+        ):
             return "Paper execution requires bids and asks; this book is one-sided"
         if (
             row["closed"]
@@ -439,6 +501,11 @@ class Session:
         return None
 
     def fee_reserve(self, row, quantity):
+        if self.approximate:
+            from nice_weather.trading.paper_execution import fee
+
+            return float(max(fee(quantity, p, row, self.config.get("simulation"), "BUY")
+                             for p in (Decimal(".5"), Decimal("1"))))
         if row.get("fee_rounding") in {"poly_us_order_half_even_v1", "kalshi_order_balance_v1"}:
             from nice_weather.trading.us_fees import reserve
 
@@ -452,6 +519,14 @@ class Session:
     def buy_reserve(self, order):
         token = self.engine.cache.instrument(order.instrument_id).raw_symbol.value
         row = self.metadata[token]
+        if self.approximate:
+            from nice_weather.trading.paper_execution import fee
+
+            limit = order.price.as_decimal()
+            reserve = max(fee(order.leaves_qty.as_decimal(), p, row,
+                              self.config.get("simulation"), "BUY")
+                          for p in (limit, min(limit, Decimal("0.5"))))
+            return float(order.leaves_qty.as_decimal() * limit + reserve)
         return float(order.leaves_qty) * float(order.price) + self.fee_reserve(
             row, order.leaves_qty
         )
@@ -470,6 +545,22 @@ class Session:
         kind, payload = event["kind"], event.get("data", {})
         request_id = event.get("request_id", f"auto-{self.now}-{event.get('token', '')}")
         try:
+            if kind == "simulation_settings" and self.approximate:
+                from nice_weather.trading.paper_execution import settings
+
+                updated = settings(payload)
+                if updated != self.config["simulation"] and self.open_orders():
+                    raise ValueError("Cancel resting orders before changing simulation assumptions")
+                self.config["simulation"] = updated
+                return
+            if kind == "candidate_order" and self.approximate:
+                owner = payload.get("strategy")
+                if owner not in {"S1", "S2", "S3"}:
+                    raise ValueError("Unknown candidate strategy")
+                if not self.enabled:
+                    raise ValueError("Strategy execution stopped")
+                self.order(request_id, payload, owner)
+                return
             if kind == "projection_upgrade":
                 if payload.get("version") != 2:
                     raise ValueError("Unsupported projection version")
@@ -759,13 +850,16 @@ class Session:
                 "token": token,
                 "quantity": quantity,
                 "side": "SELL",
-                "price": payload.get("price", self.quotes[token]["best_bid"]),
+                "price": payload.get("price", self.approximate_price(token, "SELL")["price"]
+                                     if self.approximate else self.quotes[token]["best_bid"]),
                 "tif": "IOC",
             },
             owner,
         )
 
     def order(self, request_id, payload, owner):
+        if self.approximate:
+            return self.approximate_order(request_id, payload, owner)
         if self.engine.cache.order(ClientOrderId(request_id)) is not None:
             return
         token = payload["token"]
@@ -901,6 +995,72 @@ class Session:
                     filled[key] = filled.get(key, 0) + float(event.last_qty)
         return filled
 
+    def approximate_price(self, token, side, *, valuation=False):
+        from nice_weather.trading.paper_execution import select
+
+        return select(self.market_prices.get(token, {}), side, self.now / 1e9,
+                      None if valuation else self.config.get("simulation"),
+                      None if valuation else self.metadata[token]["tick_size"])
+
+    def approximate_book(self, token, quantity=0):
+        """Synthetic capacity is scoped to the simulator; real depth is never modified."""
+        ins = self.instruments[token]
+        resting = [o for o in self.open_orders() if o.instrument_id == ins.id]
+        capacity = Decimal(str(quantity)) + sum((o.leaves_qty.as_decimal() for o in resting),
+                                               Decimal(1))
+        deltas = [OrderBookDelta.clear(ins.id, 0, self.now, self.now)]
+        for side, book_side in (("BUY", OrderSide.SELL), ("SELL", OrderSide.BUY)):
+            try:
+                selected = self.approximate_price(token, side)
+            except ValueError:
+                continue
+            for order in resting:
+                if order.side.name == side:
+                    key = str(order.client_order_id)
+                    self.execution_evidence[key] = self.execution_evidence.get(key, {}) | selected
+            deltas.append(OrderBookDelta(ins.id, BookAction.ADD,
+                BookOrder(book_side, ins.make_price(selected["price"]), ins.make_qty(capacity), 0),
+                0, 0, self.now, self.now))
+        last = deltas[-1]
+        deltas[-1] = OrderBookDelta(ins.id, last.action, last.order, 128, 0, self.now, self.now)
+        self._run(OrderBookDeltas(ins.id, deltas))
+
+    def approximate_order(self, request_id, payload, owner):
+        from nice_weather.trading.paper_execution import preview
+
+        identity = {"payload": payload, "owner": owner}
+        if request_id in self.order_payloads:
+            if self.order_payloads[request_id] != identity:
+                raise ValueError("Request ID reused with a different payload")
+            return self.engine.cache.order(ClientOrderId(request_id))
+        check = preview(self.config, self.metadata, self.market_prices, self.snapshot(),
+                        payload, self.now / 1e9, owner)
+        if not check["available"]:
+            raise ValueError(check["reason"])
+        token = payload["token"]
+        ins = self.instruments[token]
+        self.approximate_book(token, payload["quantity"])
+        # The book update can execute earlier GTC orders. Recheck available funds afterward.
+        check = preview(self.config, self.metadata, self.market_prices, self.snapshot(),
+                        payload, self.now / 1e9, owner)
+        if not check["available"]:
+            raise ValueError(check["reason"])
+        self.owner[request_id] = owner
+        self.order_payloads[request_id] = identity
+        self.execution_evidence[request_id] = check["selected_price"] | {
+            "fee_estimated": check["fee_estimated"], "simulation": dict(self.config["simulation"]),
+            "signal_id": payload.get("signal_id"), "owner": owner,
+        }
+        order = self.control.order_factory.limit(
+            instrument_id=ins.id, order_side=OrderSide[payload["side"]],
+            quantity=ins.make_qty(payload["quantity"]), price=ins.make_price(payload["price"]),
+            time_in_force=TimeInForce[payload.get("tif", "GTC")],
+            client_order_id=ClientOrderId(request_id), tags=[owner])
+        self.control.submit_order(order)
+        self._run(CustomData(DataType(Input), Input({"kind": "clock", "ts": self.now})),
+                  custom=True)
+        return order
+
     def depth_filled(self, token, book_side, price, filled):
         trade_side = OrderSide.BUY if book_side == OrderSide.SELL else OrderSide.SELL
         return filled.get((self.instruments[token].id, trade_side, Decimal(price)), 0)
@@ -929,6 +1089,13 @@ class Session:
                 and self.now - quote["ts"] <= 30_000_000_000
             )
             bid = quote["best_bid"] if valid else None
+            mark = None
+            if self.approximate:
+                try:
+                    mark = self.approximate_price(token, "SELL", valuation=True)
+                    bid, valid = mark["price"], True
+                except ValueError:
+                    bid, valid = None, False
             quantity = float(p.quantity)
             if bid is None:
                 complete = False
@@ -948,6 +1115,7 @@ class Session:
                     "strategy": str(p.strategy_id),
                     "settlement": "pending",
                     "price_status": "valid" if valid else "stale / missing",
+                    **({"valuation": mark} if self.approximate else {}),
                 }
             )
         reserved = 0.0
@@ -983,6 +1151,8 @@ class Session:
                             "quantity": float(event.last_qty),
                             "price": float(event.last_px),
                             "fee": float(event.commission),
+                            **({"execution": self.execution_evidence.get(order_id)}
+                               if self.approximate else {}),
                         }
                     )
         equity = cash + market_value if complete else None
@@ -1071,6 +1241,11 @@ class Session:
                 signals=self.signals,
                 strategy_state=self.strategy_state,
             )
+        if self.approximate:
+            snapshot.update(execution_model=self.config["execution_model"], approximate=True,
+                            simulation=self.config["simulation"],
+                            market_prices=self.market_prices,
+                            settlement_status="pending" if positions else "no_open_positions")
         return snapshot
 
     def dispose(self):
