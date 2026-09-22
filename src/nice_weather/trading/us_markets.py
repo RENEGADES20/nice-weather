@@ -94,7 +94,7 @@ def normalize(venue, day, payload, received_at, series=None):
             known_tick = tick == 0.01
             close = raw["endDate"]
             active = raw.get("active") is True and raw.get("closed") is False
-            minimum = raw.get("minimumTradeQty", 0.01)
+            minimum = raw.get("minimumTradeQty")
             rounding = "poly_us_order_half_even_v1"
         else:
             raise ValueError("Unsupported venue")
@@ -102,6 +102,8 @@ def normalize(venue, day, payload, received_at, series=None):
         if (
             not math.isfinite(rate)
             or rate < 0
+            or minimum is None
+            or isinstance(minimum, bool)
             or not math.isfinite(float(minimum))
             or float(minimum) <= 0
         ):
@@ -109,8 +111,10 @@ def normalize(venue, day, payload, received_at, series=None):
         # Prose and API close times are not sufficient proof of the observation window,
         # rounding and post-final corrections. Capture and display; execution fails closed.
         ambiguities = ["observation window, rounding and revision rules awaiting venue audit"]
-        if venue == "poly_us" and float(minimum) < 1:
-            ambiguities.append("API minimum quantity conflicts with official whole-contract rule")
+        # The venue's Create Order schema explicitly supports decimals when
+        # minimumTradeQty < 1. The generic whole-share help page does not
+        # override this market-specific API rule (verified 2026-09-22).
+        quantity_step = "1" if venue == "poly_us" and float(minimum) >= 1 else "0.01"
         if not source or not known_tick:
             ambiguities.append("unknown source or tick")
         token = venue + ":" + key
@@ -141,14 +145,17 @@ def normalize(venue, day, payload, received_at, series=None):
                 "accepting_orders": active,
                 "tick_size": str(tick),
                 "minimum_order_size": minimum,
-                "quantity_step": "0.01",
+                "quantity_step": quantity_step,
                 "fee_known": fee_known,
                 "fee_rate": rate,
                 "fee_exponent": 1,
                 "fee_rounding": rounding,
                 "rules": rules,
                 "rules_version": digest({"rules": rules, "close": close, "fee_rate": rate,
-                                         "fee_rounding": rounding, "minimum": minimum}),
+                                         "fee_rounding": rounding, "minimum": minimum,
+                                         "quantity_rule": "poly-us-api-20260922"
+                                         if venue == "poly_us" else "kalshi-unverified",
+                                         "quantity_step": quantity_step}),
                 "received_at": received_at,
                 "parse_status": "ambiguous",
                 "ambiguities_json": json.dumps(ambiguities),

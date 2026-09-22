@@ -1,5 +1,13 @@
 # KNYC US 合约核验：2026-09-19
 
+## 2026-09-22 数量规则更新
+
+重新读取 [Poly US Create Order OpenAPI](https://docs.polymarket.us/api-reference/orders/create-order.md)，quantity 的定义明确允许 minimumTradeQty 小于 1 的市场使用小数数量。此合约级 API 规则取代下文 9 月 19 日记录的通用整份帮助页冲突判断。保存的 9 月 19 日六档真实合约均报告 minimumTradeQty=0.01；重新归一化后仅移除过时的数量冲突原因，其余天气门禁保持，全部仍为 no-trade。原文与收到时间、哈希见 acceptance/knyc-poly-quantity-2026-09-22.json；原始材料保留忽略目录。
+
+不再将缺失 minimumTradeQty 补为 0.01；空值、布尔值、非有限或非正值均拒绝。minimumTradeQty≥1 时使用整数份约束，小数市场继续使用现有两位份数执行精度。规则版本纳入数量解释版本和执行步长。Kalshi 最小数量与两平台天气口径仍待核验，未解除全局交易门禁。
+
+## 历史核验记录
+
 2026-09-20 结算接口核验：[Kalshi Get Market](https://docs.kalshi.com/api-reference/market/get-market) 的 finalized 状态、settlement_ts 与 settlement_value_dollars 共同作为证据；[Poly US Get Market Settlement](https://docs.polymarket.us/api-reference/markets/get-market-settlement) 与市场的 resolved/expired 状态及 outcomePrices 交叉核对。实际 9 月 18 日合约已读取；Poly US 一档限流时保留未完成状态。市场 closed 标志或 CLI 页面出现数字均不直接触发资金结算。
 
 状态：两平台仍有未解决项，禁止把本记录视为交易放行。实际市场原文与采集时间保存在本地 `var/knyc/rules-audit-20260919`，不得以测试夹具代替。
