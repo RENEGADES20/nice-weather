@@ -29,7 +29,8 @@ def summarize(signals):
         group = groups.setdefault(key, {"counts": Counter(), "reasons": Counter(), "examples": {},
                                         "days": set(), "first_asof": signal["asof"],
                                         "last_asof": signal["asof"]})
-        group["days"].add(signal["day"])
+        if signal["day"] is not None:
+            group["days"].add(signal["day"])
         group["last_asof"] = signal["asof"]
         counts = group["counts"]
         counts["evaluations"] += 1

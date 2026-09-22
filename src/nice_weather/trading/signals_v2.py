@@ -14,11 +14,12 @@ VERSION = "knyc-executable-v2"
 def opportunity_status(state, executions):
     """Task 3 supplies cumulative native order feedback; duplicates cannot restore a used day."""
     if "attempt" not in state or state.get("consumed") or any(
-        e.get("filled", 0) > 0 for e in executions
+        finite(e.get("filled")) and e["filled"] > 0 for e in executions
     ):
         state["consumed"] = True
         return "DAILY_OPPORTUNITY_CONSUMED"
-    if any(e.get("status") not in {"CANCELED", "REJECTED", "EXPIRED", "DENIED", "FILLED"}
+    if any(not finite(e.get("filled")) or e["filled"] < 0 or
+           e.get("status") not in {"CANCELED", "REJECTED", "EXPIRED", "DENIED"}
            for e in executions):
         return "ORDER_RECONCILIATION_REQUIRED"
     return None

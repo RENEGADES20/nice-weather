@@ -130,6 +130,10 @@ def test_execution_feedback_partial_unknown_and_zero_fill():
 
     state = {"attempt": 1, "orders": ["a"]}
     assert opportunity_status(state, [{"status": "UNKNOWN"}]) == "ORDER_RECONCILIATION_REQUIRED"
+    for incomplete in ({"status": "CANCELED"}, {"status": "FILLED", "filled": 0},
+                       {"status": "CANCELED", "filled": float("nan")},
+                       {"status": "CANCELED", "filled": "0"}):
+        assert opportunity_status(state, [incomplete]) == "ORDER_RECONCILIATION_REQUIRED"
     assert opportunity_status(state, [{"status": "CANCELED", "filled": 0}]) is None
     partial = [{"status": "PARTIALLY_FILLED", "filled": .1}]
     assert opportunity_status(state, partial) == "DAILY_OPPORTUNITY_CONSUMED"
