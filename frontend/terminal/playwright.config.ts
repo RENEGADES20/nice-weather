@@ -8,7 +8,7 @@ export default defineConfig({
     viewport: { width: 1440, height: 1100 },
   },
   webServer: {
-    command: "npm run dev",
+    command: "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5175",
     url: "http://127.0.0.1:5175",
     reuseExistingServer: false,
   },

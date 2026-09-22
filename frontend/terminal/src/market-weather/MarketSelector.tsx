@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useLayoutEffect, useRef } from "react";
 import { type Catalog, type Selection, todayNY } from "./data";
 
 export function MarketSelector({ catalog, value, onChange, loading = false, error = "" }: {
@@ -15,7 +15,7 @@ export function MarketSelector({ catalog, value, onChange, loading = false, erro
   const token = contracts.some(c => c.yes_token_id === value.token) ? value.token
     : contracts.find(c => c.yes_token_id === remembered.current.get(key))?.yes_token_id
       ?? contracts[0]?.yes_token_id ?? "";
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!current || loading) return;
     if (token) remembered.current.set(key, token);
     if (value.day !== day || value.token !== token) onChange({ ...value, day, token });

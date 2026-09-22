@@ -13,7 +13,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -189,6 +189,20 @@ def create_app(root: Path, *, password=None, origin=None):
     def markets(venue: str):
         try:
             return catalog(feed.path, venue)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/account-events")
+    def selected_account_events(venue: str, day: str, after: int = 0):
+        from datetime import date
+
+        from nice_weather.trading.backtest_view import account_events
+
+        try:
+            date.fromisoformat(day)
+            if venue not in VENUES or after < 0:
+                raise ValueError("Invalid account event selection")
+            return account_events(root, f"sandbox-{venue}-knyc", venue, day, after)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -416,11 +430,16 @@ def create_app(root: Path, *, password=None, origin=None):
         app.mount("/assets", StaticFiles(directory=static / "assets"), name="assets")
 
     @app.get("/")
-    @app.get("/terminal")
     def index():
         if not (static / "index.html").exists():
             raise HTTPException(503, "Build frontend/terminal before starting this service")
         return FileResponse(static / "index.html")
+
+    @app.get("/terminal")
+    @app.get("/terminal/")
+    def legacy_terminal(request: Request):
+        return RedirectResponse("/" + ("?" + request.url.query if request.url.query else ""),
+                                status_code=307)
 
     return app
 

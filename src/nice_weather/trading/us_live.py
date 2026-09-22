@@ -545,6 +545,10 @@ def collected_contracts(root, venue, precision):
             else "SELECT body FROM feed_events WHERE kind='contracts' AND key=? ORDER BY seq",
             (venue,),
         ).fetchall()
+        rows += con.execute(
+            "SELECT body FROM feed_latest WHERE kind='market_directory' AND key LIKE ? "
+            "ORDER BY seq", (venue + ":%",),
+        ).fetchall()
     contracts = {c["condition_id"]: c for r in rows for c in json.loads(r[0])}
     if venue == "kalshi":
         for contract in contracts.values():

@@ -1,5 +1,7 @@
 # 当前发布规则（2026-09-19）
 
+2026-09-22 任务 6 补充：前端在本地构建。update_knyc_runtime.py 纳入市场目录、信号、Paper、回测与 Live 模块的实际服务映射；只停止已经安装且受影响的实例。新增 nice-weather-knyc-live@kalshi/poly_us，读取 /etc/nice-weather/knyc-live-{venue}.env 中的 NICE_WEATHER_LIVE_CREDENTIALS 文件路径与 NICE_WEATHER_BALANCE_PRECISION（Kalshi 4、Poly US 2）。凭据存 /etc/nice-weather/credentials，root:nice-weather、640；环境文件只含路径/精度，不含密钥。两实例使用现有虚拟环境和 /var/lib/nice-weather-knyc，初始交易关闭。部署前核验包大小、实际展开增量及可用空间；不增加固定容量门槛，不修改采集数据。
+
 2026-09-19 存储修订：GitHub 保存代码历史，VM 只保留正在使用的运行目录和依赖环境，不按每次提交复制虚拟环境或累计回退包。代码回退从 GitHub 的精确提交重建发布包，校验后更新现役目录；只临时上传本次产物。版本由 runtime-manifest.json 和服务记录标识，旧物理目录名不能单独作为当前版本证据。部署成功后的临时包、废弃资源及旧目录列入精确清理清单，经已有明确授权或人工审核后删除；业务数据库不跟随代码回退。
 
 `scripts/update_knyc_runtime.py` 对已安装 KNYC 环境执行有限范围的更新，默认仅检查；只有显式 `--apply` 才写入。验证发布包、manifest、现役基线与路径。终端改动只重启终端；`feed.py` 改动重启引用它的六个 KNYC 服务；仅 `us_runtime.py` 改动时重启两个 Paper、回测 worker 和用于刷新版本身份的终端，公开采集/HRRR 及旧 KLGA 服务保持运行。其他模块的改动拒绝应用，需单独核验影响服务。重复执行可接续相同清单的部分写入，不将旧账目恢复覆盖现役数据库。它不创建历史目录，不复制环境，不删除业务数据。
