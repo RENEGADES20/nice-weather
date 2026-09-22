@@ -175,12 +175,13 @@ def create_app(root: Path, *, password=None, origin=None):
 
     @app.get("/api/snapshot")
     def snapshot():
+        account_rows = accounts()
         return feed.snapshot() | {
-            "accounts": accounts(),
+            "accounts": account_rows,
             "live": {
                 "enabled": False,
-                "status": "not_connected",
-                "reason": "Live adapter and account reconciliation acceptance pending",
+                "status": "account_specific",
+                "reason": "Live availability is reported separately by account and action",
             },
         }
 
@@ -319,6 +320,22 @@ def create_app(root: Path, *, password=None, origin=None):
 
     @app.post("/api/commands", status_code=202)
     def command(body: Command):
+        if body.venue in VENUES and body.mode == "live":
+            if body.kind not in {
+                "order", "cancel", "close", "start", "stop", "configure", "reconcile"
+            }:
+                raise HTTPException(400, "Unsupported Live command")
+            if body.kind in {"order", "close"} and body.payload.get("owner", "manual") != "manual":
+                raise HTTPException(400, "Browser orders must have manual ownership")
+            account = "live-" + body.venue + "-knyc"
+            active = next((r for r in accounts() if r["account"] == account), None)
+            if not active or active["status"] != "running" or time.time() - active["updated"] > 10:
+                raise HTTPException(409, "LIVE_WORKER_DISCONNECTED")
+            try:
+                requests.submit(body.request_id, account, "live", body.kind, body.payload)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            return {"request_id": body.request_id, "status": "queued"}
         if body.venue in VENUES and body.mode == "backtest" and body.kind == "backtest":
             from nice_weather.trading.backtest_view import request_parameters
 

@@ -66,6 +66,8 @@ class Requests:
             "balance",
             "reset",
             "simulation_settings",
+            "configure",
+            "reconcile",
         }:
             raise ValueError("Unsupported request")
         if not 0 < ttl <= 86400:
