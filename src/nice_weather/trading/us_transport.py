@@ -160,7 +160,7 @@ class USRest:
         )
         if response.status_code != 200:
             raise ValueError(f"Venue read rejected: HTTP {response.status_code}")
-        payload = response.json()
+        payload = response.json(parse_float=str)
         if not isinstance(payload, dict):
             raise ValueError("Invalid venue response")
         return payload
@@ -346,7 +346,7 @@ class USRest:
                 method, HOSTS[self.venue] + full, json=body, headers=self.headers(method, full)
             )
             if response.status_code in (200, 201):
-                payload = response.json()
+                payload = response.json(parse_float=str)
                 expected = "order_id" if self.venue == "kalshi" else "id"
                 if cancel_id is not None:
                     if self.venue == "kalshi":

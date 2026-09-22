@@ -2,6 +2,8 @@
 
 ## 2026-09-22 当前接线状态
 
+新增已验证的只读阶段：AccountState 可携带平台余额事实，MarginAccount 保留未知现金/可用/冻结值为 None。真实双平台认证与原生对象构造成功，44 项测试通过；不会将空 balances 解释为零，也不会据此启用交易。Kalshi 实际有 15 笔非 KNYC 历史订单和 28 笔成交；订单缺原始 TIF，而原生 TimeInForce 没有未知枚举，不补造 GTC。源码与原始响应哈希、零订单提交尝试见 acceptance/knyc-native-account-readonly-2026-09-22.json。此实现尚未部署，完整 LiveExecutionClient、缓存及账户对账仍未完成。
+
 账户口径补充：直接读取官方 Markdown OpenAPI 确认 [Kalshi Total Resting Order Value](https://docs.kalshi.com/api-reference/portfolio/get-total-resting-order-value.md) 仅供 FCM 会员使用，不能将其当作当前个人账户的通用冻结金额接口。Poly US 的 [余额定义](https://docs.polymarket.us/api-reference/account/get-account-balances.md) 将 currentBalance 定义为不含证券价值的现金，buyingPower 则还考虑证券估值和挂单；两者不能未经验证直接映射为同一现金余额。其 [抵押规则](https://docs.polymarket.us/market-structure/collateral-and-margin) 对挂单按单合约核验，跨合约挂单共享购买力；本项目全账户累计预算必须独立预留，不能依赖交易所替代。当前仍未构造不完整的原生现金事实。
 
 签名传输和双平台原生 OrderStatusReport / FillReport / PositionStatusReport 转换已部署；真实只读账户认证、分页历史读取及 Poly US 空订单 WebSocket 快照已完成，仍未完成 LiveExecutionClient、余额/抵押映射与完整原生对账。下文 9 月 19 日的“未读取密钥”等表述仅记录当时状态。

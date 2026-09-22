@@ -14,12 +14,26 @@ async def check(directory, output):
     summary = {}
     for venue, filename in (("kalshi", "KALSHI.txt"), ("poly_us", "POLY.txt")):
         client = None
+        authenticated = False
         try:
             key_id, secret = read_credentials(directory / filename, venue)
             client = USRest(
                 venue, "live-" + venue + "-knyc", key_id, secret, output / "attempts.sqlite3"
             )
             snapshot = await client.account_history()
+            authenticated = True
+            from nautilus_trader.accounting.accounts.margin import MarginAccount
+            from nautilus_trader.model.events import AccountState
+            from nautilus_trader.model.identifiers import AccountId
+
+            from nice_weather.trading.us_reports import account_state
+
+            state = account_state(
+                venue, AccountId(venue.upper() + "-knyc"), snapshot["balance"],
+                int(snapshot["received_at"] * 1_000_000_000),
+            )
+            native = MarginAccount(state, calculate_account_state=False)
+            snapshot["native_account_state"] = AccountState.to_dict(state)
             (output / (venue + ".json")).write_text(json.dumps(snapshot), encoding="utf-8")
             summary[venue] = {
                 "authenticated": True,
@@ -29,10 +43,14 @@ async def check(directory, output):
                 if isinstance(snapshot["orders"], dict)
                 else len(snapshot["orders"]),
                 "positions_count": len(snapshot["positions"]),
+                "native_account_constructed": True,
+                "native_cash_known": native.balance_total() is not None,
+                "balance_mapping_status": state.info["balance_mapping_status"],
             }
         except Exception as exc:
             # Third-party exceptions may contain request data; emit only a controlled class.
-            summary[venue] = {"authenticated": False, "error_type": type(exc).__name__}
+            summary[venue] = {"authenticated": authenticated, "reconciled": False,
+                              "error_type": type(exc).__name__}
         finally:
             if client:
                 await client.close()
