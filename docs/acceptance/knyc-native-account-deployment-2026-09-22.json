@@ -1,0 +1,24 @@
+{
+  "pr": "https://github.com/RENEGADES20/nice-weather/pull/64",
+  "checked_head": "84ec9385d86bf86c68bc68fd0886023ad6cbc028",
+  "ci_run": 35690906333,
+  "required_checks": "all seven success after account factory isolation fix",
+  "previous_sha": "55dd640216e83499d8c1c699a28a336aa4b9186a",
+  "deployed_sha": "840e922d316a7b3b27eefb36cd344517a3260429",
+  "verified_utc": "2026-09-22T05:46:57.382613+00:00",
+  "vm_evidence": "/home/hdharrison1206/knyc-native-account-deploy-20260922.json",
+  "archive_sha256": "1f3616526d8e168d47f4fcb1b80897b06d1f601468e53cf2897b1ea6c48623ca",
+  "archive_bytes": 647950,
+  "updater_sha256": "dab1d77c8e3f883cff1c0beb1e94baaf55fe5469990fac6fe5dab725008f4e5c",
+  "files_verified": 74,
+  "hash_mismatches": [],
+  "health_release_matches": true,
+  "six_knyc_services_active": true,
+  "native_module_import": true,
+  "restarted": ["terminal"],
+  "free_bytes": 2245640192,
+  "notes": [
+    "Only us_execution.py, us_reports.py and us_transport.py changed; only the terminal service restarted. No credentials were uploaded or orders sent.",
+    "Module availability and import validation do not complete the writable Live worker, native order reconciliation or user account controls."
+  ]
+}

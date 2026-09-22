@@ -1,5 +1,11 @@
 # 当前状态
 
+## 2026-09-22 Poly US 天气规则可核验匹配（本地，待发布）
+
+取得并核验官方 TC 温度产品认证，明确来源报告精度、首次正式发布及修订处理；结合 NWS 标准时气候日和实际 KNYC 合约加入严格规则匹配。今天六档真实响应均通过，旧历史接收记录保持 no-trade，不倒填审计知识。API 结束时间与观测日界独立：真实 endDate 为次日 09:00 UTC，气候窗口仍为 05:00 UTC。31 项规则/数量/策略测试及 Ruff 通过。详见 KNYC_US_RULES_AUDIT.md 与 acceptance/knyc-poly-weather-rules-2026-09-22.json；Kalshi 未解除门禁。
+
+原生只读账户 PR #64 修复进程工厂污染后七项 CI 全部通过，已合并并部署 840e922d316a7b3b27eefb36cd344517a3260429。05:46 UTC 验证 74 个文件哈希、健康版本、六个服务和原生模块导入通过；仅重启终端。完整可写接线与对账仍未完成，证据见 acceptance/knyc-native-account-deployment-2026-09-22.json。
+
 ## 2026-09-22 原生只读客户端与 VM 数量规则发布
 
 USReadOnlyExecutionClient 已通过原生消息总线、Portfolio 和 Cache 应用账户事件，真实 Kalshi/Poly US 只读验证均通过，订单提交尝试为零。首次全量 CI 揭示 Paper 改变进程级 AccountFactory；新增混用拒绝检查，并按独立进程边界验证，53 项账户/报告/传输/发布测试通过，覆盖旧快照拒绝、刷新中断后保留账户事实及只读命令拒绝。完整订单报告对账明确失败，不能以空报告当作已完成；现金映射仍未知、Live 仍关闭，尚未交付可写客户端或终端账户控制。真实只读证据见 acceptance/knyc-native-account-bus-2026-09-22.json，记录保留实际执行的源码哈希，不替换成后续隔离修正版本。

@@ -1,0 +1,124 @@
+{
+  "kind": "official product terms plus actual public market validation; not a fill or performance acceptance",
+  "sources": [
+    {
+      "url": "https://polymarketexchange.com/files/products/PMUS%20-%20TC%20-%20%282026.04.03%29.pdf",
+      "received_at": 1790055156.6389534,
+      "sha256": "e79cd6f91384d0ee2ccd25ef2405ec8f7fa2bd36ce7f79476073148d4717239f",
+      "bytes": 188570
+    },
+    {
+      "url": "https://docs.polymarket.us/faqs/weather-faqs.md",
+      "received_at": 1790055536.2363837,
+      "sha256": "e7a85e6ebb771d85b19d551a9caebb011f1e693282b5673d170336b79f04642c",
+      "bytes": 2705
+    },
+    {
+      "url": "https://www.weather.gov/lot/weather_observations_faq",
+      "received_at": 1790055536.7176864,
+      "sha256": "ae719f4b272e45ff1ae53114667e9b89b05f0dd2c7fa8de599f622132daafd88",
+      "bytes": 99056
+    }
+  ],
+  "market_received_at": 1790055899.7036865,
+  "market_response_sha256": "e4fc3e736bec728897af42922b634125326592436151e84f2b48302f355999aa",
+  "market_day": "2026-09-22",
+  "contracts": [
+    {
+      "market": "tc-temp-nychigh-2026-09-22-lt63f",
+      "bounds": [
+        null,
+        62
+      ],
+      "parse_status": "parsed",
+      "accepting_orders": true,
+      "observation_start": "2026-09-22T05:00:00+00:00",
+      "observation_end": "2026-09-23T05:00:00+00:00",
+      "close_time": "2026-09-23T09:00:00Z",
+      "rules_version": "d78d29eacb2b227e68781d7ec36381a40936d2c76c38115eabed8fddae6fcf08"
+    },
+    {
+      "market": "tc-temp-nychigh-2026-09-22-gte63lt64f",
+      "bounds": [
+        63,
+        64
+      ],
+      "parse_status": "parsed",
+      "accepting_orders": true,
+      "observation_start": "2026-09-22T05:00:00+00:00",
+      "observation_end": "2026-09-23T05:00:00+00:00",
+      "close_time": "2026-09-23T09:00:00Z",
+      "rules_version": "3dc11e917565c18a61cc090822fd18b4a1fa35054f74710d8d4aca1501f3079a"
+    },
+    {
+      "market": "tc-temp-nychigh-2026-09-22-gte65lt66f",
+      "bounds": [
+        65,
+        66
+      ],
+      "parse_status": "parsed",
+      "accepting_orders": true,
+      "observation_start": "2026-09-22T05:00:00+00:00",
+      "observation_end": "2026-09-23T05:00:00+00:00",
+      "close_time": "2026-09-23T09:00:00Z",
+      "rules_version": "33b8f5cab8abc1194f392b1b051d2197d3d3eddaf37068811c3cf1c8c6ff4caa"
+    },
+    {
+      "market": "tc-temp-nychigh-2026-09-22-gte67lt68f",
+      "bounds": [
+        67,
+        68
+      ],
+      "parse_status": "parsed",
+      "accepting_orders": true,
+      "observation_start": "2026-09-22T05:00:00+00:00",
+      "observation_end": "2026-09-23T05:00:00+00:00",
+      "close_time": "2026-09-23T09:00:00Z",
+      "rules_version": "cb92802ef79d4a6afa5a73c5cad4a1ae7e9cd6404bf8679a19abd7e83bab688f"
+    },
+    {
+      "market": "tc-temp-nychigh-2026-09-22-gte69lt70f",
+      "bounds": [
+        69,
+        70
+      ],
+      "parse_status": "parsed",
+      "accepting_orders": true,
+      "observation_start": "2026-09-22T05:00:00+00:00",
+      "observation_end": "2026-09-23T05:00:00+00:00",
+      "close_time": "2026-09-23T09:00:00Z",
+      "rules_version": "fdb64ed26dd5d4de1fad1330039a08de839e5ac042c4d49b620a62db30dc659f"
+    },
+    {
+      "market": "tc-temp-nychigh-2026-09-22-gte71f",
+      "bounds": [
+        71,
+        null
+      ],
+      "parse_status": "parsed",
+      "accepting_orders": true,
+      "observation_start": "2026-09-22T05:00:00+00:00",
+      "observation_end": "2026-09-23T05:00:00+00:00",
+      "close_time": "2026-09-23T09:00:00Z",
+      "rules_version": "5655a510c1a6cac4b935adbbedbd781617224a5b74ab19fc719ecd80c2231f67"
+    }
+  ],
+  "rules_audit": {
+    "version": "poly-us-tc-20260403-nws-cli-20260922",
+    "audited_at": 1790055536.7176864,
+    "product_sha256": "e79cd6f91384d0ee2ccd25ef2405ec8f7fa2bd36ce7f79476073148d4717239f",
+    "observation_window": "midnight_to_midnight_local_standard_time",
+    "temperature_precision": "source_reported_fahrenheit",
+    "rounding": "source_reported_no_local_rerounding",
+    "revision": "first_finalized_excluding_later_revisions_subject_to_exchange_review",
+    "finality": "exchange_settlement_required"
+  },
+  "historical_20260919_still_ambiguous": 6,
+  "implementation_sha256": "e107a875d483ca8ea9250029de9631d0bd3f8ebf7271f49df24fcfb4584b0e01",
+  "private_source_directory": "var/knyc/rules-audit-20260922",
+  "notes": [
+    "No historical receipt was invented or moved. Earlier captures remain unverified by this later audit.",
+    "Official product PDF pages 2 and 3 were rendered and visually checked. Source-report finality remains separate from exchange settlement confirmation.",
+    "No live order was submitted. Rule parsing does not override model, freshness, risk, trading window, or activation checks."
+  ]
+}
