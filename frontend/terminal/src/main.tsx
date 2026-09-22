@@ -76,11 +76,16 @@ const price = (n?: number) => (n == null ? "—" : `${(n * 100).toFixed(1)}¢`);
 const clock = (n?: number) =>
   n ? new Date(n * 1000).toLocaleTimeString() : "—";
 const recordPerformance = new URLSearchParams(location.search).get("measure") === "1";
-function measureDisplay(name: string, start: number) {
+function measureDisplay(name: string, start: number, committed?: number) {
   performance.clearMeasures(name);
   const measured = performance.measure(name, { start, end: performance.now() });
   if (recordPerformance)
-    console.debug("terminal-performance " + JSON.stringify({ name, ms: measured.duration }));
+    console.debug("terminal-performance " + JSON.stringify({
+      name, ms: measured.duration,
+      commit_ms: committed == null ? undefined : committed - start,
+      frame_wait_ms: committed == null ? undefined : performance.now() - committed,
+      visibility: document.visibilityState, focused: document.hasFocus(),
+    }));
 }
 
 async function api(path: string, body?: unknown, csrf = "") {
@@ -203,6 +208,8 @@ function useCommands(
       return;
     }
     sending.current.add(command.request_id);
+    performance.clearMarks("command-start");
+    performance.mark("command-start");
     setPending(true);
     notify("提交中…");
     try {
@@ -538,6 +545,16 @@ function App() {
   const [receipts, setReceipts] = useState<Record<string, any>[]>([]);
   const readyMeasured = useRef(false);
   useLayoutEffect(() => {
+    const started = performance.getEntriesByName("command-start").at(-1)?.startTime;
+    if (started == null) return;
+    const committed = performance.now();
+    const frame = requestAnimationFrame(() => {
+      measureDisplay("command-local-feedback", started, committed);
+      performance.clearMarks("command-start");
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [notice, pending]);
+  useLayoutEffect(() => {
     if (!recordPerformance || !connected || !state.contracts.length || readyMeasured.current) return;
     const frame = requestAnimationFrame(() => {
       measureDisplay("terminal-ready", 0);
@@ -548,8 +565,9 @@ function App() {
   useLayoutEffect(() => {
     const started = performance.getEntriesByName("bin-select").at(-1)?.startTime;
     if (started == null) return;
+    const committed = performance.now();
     const frame = requestAnimationFrame(() => {
-      measureDisplay("bin-select-display", started);
+      measureDisplay("bin-select-display", started, committed);
       performance.clearMarks("bin-select");
     });
     return () => cancelAnimationFrame(frame);
@@ -559,8 +577,9 @@ function App() {
       .getEntriesByName("market-event-received")
       .at(-1)?.startTime;
     if (started == null) return;
+    const committed = performance.now();
     const frame = requestAnimationFrame(() => {
-      measureDisplay("market-event-display", started);
+      measureDisplay("market-event-display", started, committed);
       performance.clearMarks("market-event-received");
     });
     return () => cancelAnimationFrame(frame);

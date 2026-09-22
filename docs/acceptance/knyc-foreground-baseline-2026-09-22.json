@@ -1,0 +1,24 @@
+{
+  "deployment_sha": "697be59c18d29f9a346bfe4b9a7632a9eb1f9175",
+  "asset": "index-qTymILxE.js",
+  "user_confirmed_foreground": true,
+  "confirmation_sampling_start_utc": "2026-09-22T06:34:06.368Z",
+  "first_retained_sample_utc": "2026-09-22T06:34:44.173Z",
+  "last_retained_sample_utc": "2026-09-22T06:43:39.792Z",
+  "viewport": [1905, 855],
+  "metric": "market-event-display",
+  "count": 500,
+  "p50_ms": 378.4,
+  "p95_ms": 881.2,
+  "max_ms": 993.7,
+  "quantile": "nearest-rank",
+  "threshold_p95_ms": 100,
+  "passed": false,
+  "limitations": [
+    "Console retention provided the latest 500 records, not every event since sampling start.",
+    "All retained records were included. Raw timestamp/duration pairs are preserved in the task tool output.",
+    "Existing instrumentation does not separate React commit from animation-frame wait.",
+    "User confirmed foreground; browser visibility was visible, native occlusion was not independently measured.",
+    "This baseline does not satisfy the other three performance sample requirements."
+  ]
+}

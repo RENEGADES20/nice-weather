@@ -1,0 +1,17 @@
+{
+  "sha": "697be59c18d29f9a346bfe4b9a7632a9eb1f9175",
+  "verified_at": "2026-09-22T06:28:38.735909+00:00",
+  "manifest_files": 74,
+  "hash_mismatches": [],
+  "health_sha_matches": true,
+  "active_services": 6,
+  "paper_strategies_enabled": {"kalshi": true, "poly_us": true},
+  "paper_fills": {"kalshi": 0, "poly_us": 0},
+  "live_enabled": false,
+  "free_bytes": 2194055168,
+  "package_sha256": "c2f525b62082df4d6fba4aa4ddf501bf02bbfa2ff3ae042608654eac1600539a",
+  "remote_evidence": "/home/hdharrison1206/knyc-queue-reader-deploy-20260922.json",
+  "changed_modules": ["storage.py", "us_runtime.py", "us_transport.py"],
+  "infrastructure_changed": false,
+  "full_market_day_accepted": false
+}
