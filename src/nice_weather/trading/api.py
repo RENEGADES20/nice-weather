@@ -11,14 +11,22 @@ import secrets
 import time
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from nice_weather.trading.feed import FeedStore
+from nice_weather.trading.market_weather import (
+    catalog,
+    epoch,
+    market_day,
+    scoped_history,
+    weather_history,
+)
 from nice_weather.trading.storage import Requests, connect
-from nice_weather.trading.us_markets import VENUES
+from nice_weather.trading.us_markets import VENUES, book_url, normalize_book
 
 
 class Login(BaseModel):
@@ -173,10 +181,64 @@ def create_app(root: Path, *, password=None, origin=None):
             },
         }
 
+    @app.get("/api/markets")
+    def markets(venue: str):
+        try:
+            return catalog(feed.path, venue)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/market-day")
+    def selected_market_day(venue: str, day: str):
+        try:
+            return market_day(feed.path, venue, day)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/weather-history")
+    def selected_weather(venue: str, day: str):
+        try:
+            return weather_history(feed.path, venue, day)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/market-quote")
+    async def selected_quote(venue: str, day: str, token: str):
+        try:
+            context = await asyncio.to_thread(market_day, feed.path, venue, day)
+            contract = next((c for c in context["contracts"] if c["yes_token_id"] == token), None)
+            if contract is None:
+                raise ValueError("Token does not belong to the requested venue/market day")
+            close = epoch(contract.get("close_time"))
+            if (not contract.get("active") or contract.get("closed")
+                    or (close is not None and close <= time.time())):
+                return {"venue": venue, "day": day, "token": token, "quote": None,
+                        "reason": "MARKET_CLOSED"}
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(book_url(contract))
+                received = time.time()
+                response.raise_for_status()
+                quote = normalize_book(venue, response.json(), received)
+            return {"venue": venue, "day": day, "token": token,
+                    "quote": quote | {"time": received, "source": "public_book"},
+                    "reason": None}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except (httpx.HTTPError, KeyError, TypeError) as exc:
+            raise HTTPException(502, "Public market quote unavailable") from exc
+
     @app.get("/api/history")
-    def history(token: str, before: int | None = None):
+    def history(token: str, before: int | None = None,
+                venue: str | None = None, day: str | None = None):
         if len(token) > 256:
             raise HTTPException(400, "Invalid token")
+        if venue is not None or day is not None:
+            if not venue or not day:
+                raise HTTPException(400, "venue and day must be supplied together")
+            try:
+                return scoped_history(feed, venue, day, token, before)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
         # History draws the midpoint only; preserve full depth in the capture store.
         return [
             {"seq": row["seq"], "time": row["time"],

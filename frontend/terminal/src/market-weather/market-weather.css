@@ -1,0 +1,7 @@
+.mw-selector,.mw-controls{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.mw-selector label,.mw-controls label{display:flex;align-items:center;gap:5px}
+.mw-selector select,.mw-selector input,.mw-controls select,.mw-controls button{font:inherit;padding:6px;border:1px solid #94a3b8;border-radius:4px;background:white;color:#172b3a}
+.mw-analysis{color:#172b3a;background:white;padding:16px;border:1px solid #cbd5e1;border-radius:6px;margin-top:16px}
+.mw-analysis p,.mw-hover{font-size:13px;line-height:1.6}
+.mw-chart{height:310px;min-width:0;margin:12px 0}.mw-difference{height:220px}
+.mw-hover{display:block;min-height:42px}.mw-analysis pre{white-space:pre-wrap;overflow-wrap:anywhere}
