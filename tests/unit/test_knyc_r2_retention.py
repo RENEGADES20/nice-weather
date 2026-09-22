@@ -74,3 +74,11 @@ def test_legacy_weather_export_excludes_market_rows(tmp_path):
     for payload in client.objects.values():
         assert b"private" not in gzip.decompress(payload)
         assert b"polymarket_gamma" not in gzip.decompress(payload)
+    target = tmp_path / "compact.sqlite3"
+    assert archive["compact_weather"](path, target) == {"raw_snapshots": 1}
+    with sqlite3.connect(target) as con:
+        assert con.execute("SELECT * FROM paper_orders").fetchall() == []
+        assert con.execute("SELECT * FROM raw_snapshots").fetchall() == [("nws", "weather")]
+        assert con.execute("PRAGMA auto_vacuum").fetchone()[0] == 2
+    with sqlite3.connect(path) as con:
+        assert con.execute("SELECT * FROM paper_orders").fetchall() == [("private",)]

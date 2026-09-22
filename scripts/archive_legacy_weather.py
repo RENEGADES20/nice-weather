@@ -20,6 +20,55 @@ TABLES = (
     "weather_daily_labels", "model_predictions", "raw_snapshots",
 )
 WEATHER = ("aviationweather", "nws", "weather_gov")
+MARKET_TABLES = {
+    "contract_versions", "contract_bins", "order_book_levels", "decisions", "decision_inputs",
+    "decision_outcomes", "data_health", "paper_orders", "paper_fills", "paper_accounts",
+    "decision_weather_inputs", "market_captures", "execution_quotes", "market_top_ticks",
+    "runner_locks", "runner_heartbeats",
+}
+
+
+def compact_weather(source, target):
+    """Create a compact weather-preserving copy; never replace or delete the source."""
+    if target.exists():
+        raise ValueError("Destination already exists")
+    with sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True) as src:
+        src.execute("BEGIN")
+        schema = src.execute("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL"
+                             " ORDER BY type DESC").fetchall()
+        if any(kind not in {"table", "index"} for kind, _, _ in schema):
+            raise ValueError("Unexpected database schema; source retained")
+        with sqlite3.connect(target) as dst:
+            dst.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            for kind, _, ddl in schema:
+                if kind == "table":
+                    dst.execute(ddl)
+            counts = {}
+            for kind, table, _ in schema:
+                if kind != "table" or table in MARKET_TABLES:
+                    continue
+                if not table.replace("_", "").isalnum():
+                    raise ValueError("Invalid table name")
+                where = (" WHERE source NOT IN ('polymarket_gamma','polymarket_clob')"
+                         if table == "raw_snapshots" else "")
+                cursor = src.execute(f'SELECT * FROM "{table}"{where}')
+                count = 0
+                while rows := cursor.fetchmany(100):
+                    marks = ",".join("?" for _ in rows[0])
+                    dst.executemany(f'INSERT INTO "{table}" VALUES ({marks})', rows)
+                    count += len(rows)
+                counts[table] = count
+            for kind, _, ddl in schema:
+                if kind == "index":
+                    dst.execute(ddl)
+            if dst.execute("PRAGMA foreign_key_check").fetchall():
+                raise RuntimeError("Weather copy foreign key failure; source retained")
+            if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("Weather copy integrity failure; source retained")
+            for table, count in counts.items():
+                if dst.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] != count:
+                    raise RuntimeError("Weather copy count mismatch")
+    return counts
 
 
 def json_default(value):
