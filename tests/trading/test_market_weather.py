@@ -10,6 +10,7 @@ from nice_weather.trading.api import create_app
 from nice_weather.trading.feed import FeedStore
 from nice_weather.trading.market_discovery import discover
 from nice_weather.trading.market_weather import catalog, market_day, scoped_history, weather_history
+from nice_weather.trading.storage import connect
 
 
 def contract(venue, day, token="bin"):
@@ -41,6 +42,20 @@ def test_catalog_days_isolation_and_legacy_history(tmp_path):
     # A later contract snapshot replaces that day's bins without deleting earlier days.
     feed.publish("contracts", "kalshi", [contract("kalshi", "2026-09-20", "new")], 3)
     assert len(market_day(feed.path, "kalshi", "2026-09-20")["contracts"]) == 1
+    # The maintained projection must not touch repeated historical contract blobs.
+    with connect(feed.path) as con:
+        con.execute("UPDATE feed_events SET body='invalid' WHERE kind='contracts'")
+    assert len(catalog(feed.path, "kalshi")["days"]) == 3
+
+
+def test_catalog_without_legacy_projection(tmp_path):
+    feed = FeedStore(tmp_path / "feed.sqlite3")
+    for day in ("2026-09-19", "2026-09-20"):
+        feed.publish("contracts", "kalshi", [contract("kalshi", day)])
+    with connect(feed.path) as con:
+        con.execute("DROP TABLE settlement_watch")
+    assert [d["day"] for d in catalog(feed.path, "kalshi")["days"]] == [
+        "2026-09-19", "2026-09-20"]
 
 
 @pytest.mark.parametrize("day", ["2026-03-08", "2026-11-01"])
