@@ -14,25 +14,33 @@ async def check(directory, output):
     summary = {}
     for venue, filename in (("kalshi", "KALSHI.txt"), ("poly_us", "POLY.txt")):
         client = None
+        native_client = None
         authenticated = False
         try:
             key_id, secret = read_credentials(directory / filename, venue)
             client = USRest(
                 venue, "live-" + venue + "-knyc", key_id, secret, output / "attempts.sqlite3"
             )
-            snapshot = await client.account_history()
-            authenticated = True
-            from nautilus_trader.accounting.accounts.margin import MarginAccount
+            from nautilus_trader.cache.cache import Cache
+            from nautilus_trader.common.component import LiveClock, MessageBus
             from nautilus_trader.model.events import AccountState
-            from nautilus_trader.model.identifiers import AccountId
+            from nautilus_trader.model.identifiers import TraderId
+            from nautilus_trader.portfolio.portfolio import Portfolio
 
-            from nice_weather.trading.us_reports import account_state
+            from nice_weather.trading.us_execution import USReadOnlyExecutionClient
 
-            state = account_state(
-                venue, AccountId(venue.upper() + "-knyc"), snapshot["balance"],
-                int(snapshot["received_at"] * 1_000_000_000),
+            clock, cache = LiveClock(), Cache()
+            bus = MessageBus(TraderId("READONLY-001"), clock)
+            portfolio = Portfolio(msgbus=bus, cache=cache, clock=clock)
+            native_client = USReadOnlyExecutionClient(
+                transport=client, loop=asyncio.get_running_loop(),
+                msgbus=bus, cache=cache, clock=clock,
             )
-            native = MarginAccount(state, calculate_account_state=False)
+            state = await native_client.refresh_account()
+            authenticated = True
+            snapshot = native_client.snapshot
+            native = cache.account(native_client.account_id)
+            assert portfolio.account(native_client.venue) is native
             snapshot["native_account_state"] = AccountState.to_dict(state)
             (output / (venue + ".json")).write_text(json.dumps(snapshot), encoding="utf-8")
             summary[venue] = {
@@ -44,11 +52,14 @@ async def check(directory, output):
                 else len(snapshot["orders"]),
                 "positions_count": len(snapshot["positions"]),
                 "native_account_constructed": True,
+                "native_portfolio_cache_applied": True,
                 "native_cash_known": native.balance_total() is not None,
                 "balance_mapping_status": state.info["balance_mapping_status"],
             }
         except Exception as exc:
             # Third-party exceptions may contain request data; emit only a controlled class.
+            if native_client is not None:
+                authenticated = native_client.authenticated
             summary[venue] = {"authenticated": authenticated, "reconciled": False,
                               "error_type": type(exc).__name__}
         finally:

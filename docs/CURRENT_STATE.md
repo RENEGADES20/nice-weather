@@ -1,14 +1,22 @@
 # 当前状态
 
+## 2026-09-22 原生只读客户端与 VM 数量规则发布
+
+USReadOnlyExecutionClient 已通过原生消息总线、Portfolio 和 Cache 应用账户事件，真实 Kalshi/Poly US 只读验证均通过，订单提交尝试为零。52 项账户/报告/传输/发布测试通过，覆盖旧快照拒绝、刷新中断后保留账户事实及只读命令拒绝。完整订单报告对账明确失败，不能以空报告当作已完成；现金映射仍未知、Live 仍关闭，尚未交付可写客户端或终端账户控制。证据见 acceptance/knyc-native-account-bus-2026-09-22.json。
+
+PR #63 七项 CI 通过后合并，数量规则修复 55dd640216e83499d8c1c699a28a336aa4b9186a 已于 05:19 UTC 核验部署：73 个文件哈希、健康版本一致，六个服务 active；只改 us_markets.py，HRRR 未重启。见 acceptance/knyc-quantity-deployment-2026-09-22.json。
+
+此前 298f7e9 固定版本的 31 个资源样本覆盖 30 分钟，无错误、服务 PID 稳定；Kalshi/Poly Paper 平均物理写盘 354,496/282,432 bytes/s，空闲回测仍为 57,924 bytes/s，最大采样待处理延迟 0.957 秒。比上一阶段降低，但写盘放大、长期容量与完整市场日仍待验收。原始文件及哈希见 acceptance/knyc-resource-post-upsert-2026-09-22.json。
+
 ## 2026-09-22 原生账户事实（本地只读验证，未完成实盘接线）
 
 加入 Nautilus AccountState / MarginAccount 只读构造：平台金额保留为精确字符串；尚未核验的现金/冻结映射保留未知，balance_total/free/locked 均返回 None，不填零、不放行风险。私有 HTTP 响应小数直接按原文字串解析，避免进入浮点后丢失末位。44 项账户/订单持仓报告/传输测试及 Ruff 通过。
 
 已有凭据的双平台真实只读认证和原生账户对象构造成功。Kalshi 返回 15 笔非 KNYC 历史订单及 28 笔成交，当前持仓为零，历史订单均缺原始有效期字段；Poly US 无订单和持仓。仍为 reconciled=false、balance_mapping_status=unverified，订单提交尝试为零。原文只保留忽略目录，摘要见 acceptance/knyc-native-account-readonly-2026-09-22.json。LiveExecutionClient、完整余额映射及终端控制仍待完成，不能把原生对象构造视作完整接线验收。
 
-## 2026-09-22 Poly US 数量规则（本地验证，待发布）
+## 2026-09-22 Poly US 数量规则（已发布，原本地验证记录）
 
-官方 Create Order OpenAPI 明确 minimumTradeQty<1 的市场支持小数份数，移除旧的通用整份帮助页冲突原因；缺失数量不再默认 0.01，非小数市场使用整数步长。六档已记录真实市场的重新归一化通过，天气观察窗口、舍入和修订门禁保留，仍全部 no-trade。35 项数量/策略/传输/结算测试及 Ruff 通过。规则证据和剩余项见 KNYC_US_RULES_AUDIT.md；本次修正尚未部署。
+官方 Create Order OpenAPI 明确 minimumTradeQty<1 的市场支持小数份数，移除旧的通用整份帮助页冲突原因；缺失数量不再默认 0.01，非小数市场使用整数步长。六档已记录真实市场的重新归一化通过，天气观察窗口、舍入和修订门禁保留，仍全部 no-trade。35 项数量/策略/传输/结算测试及 Ruff 通过。规则证据和剩余项见 KNYC_US_RULES_AUDIT.md；部署事实见顶部更新。
 
 ## 2026-09-22 检查点页复用（已部署，等待实测）
 

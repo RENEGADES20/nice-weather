@@ -1,0 +1,52 @@
+{
+  "kind": "real readonly US client -> message bus -> Portfolio -> Cache; incomplete reconciliation",
+  "venues": {
+    "kalshi": {
+      "authenticated": true,
+      "reconciled": false,
+      "balance_fields": [
+        "balance",
+        "balance_breakdown",
+        "balance_dollars",
+        "portfolio_value",
+        "updated_ts"
+      ],
+      "orders_count": 15,
+      "positions_count": 0,
+      "native_account_constructed": true,
+      "native_portfolio_cache_applied": true,
+      "native_cash_known": false,
+      "balance_mapping_status": "unverified",
+      "received_at": 1790054405.902773,
+      "history_received_at": 1790054406.2447238
+    },
+    "poly_us": {
+      "authenticated": true,
+      "reconciled": false,
+      "balance_fields": [
+        "balances"
+      ],
+      "orders_count": 0,
+      "positions_count": 0,
+      "native_account_constructed": true,
+      "native_portfolio_cache_applied": true,
+      "native_cash_known": false,
+      "balance_mapping_status": "unverified",
+      "received_at": 1790054406.5468836,
+      "history_received_at": 1790054406.6244814
+    }
+  },
+  "private_snapshot_directory": "var/knyc/account-native-bus-final-20260922",
+  "snapshot_hashes": {
+    "kalshi": "99c68bef9cdb0f8b186c4536d02967d802cb8a550ddb5abf22172f45502aa04e",
+    "poly_us": "aea90d714651558c8841a19d9722b2ee4002e5269a9dbf4c71eb078cfb5aeb17"
+  },
+  "implementation_hashes": {
+    "src/nice_weather/trading/us_execution.py": "f8b6e137f9741c53636649a01774b2f5424215ede12c9c85f8303a2e50c13b8e",
+    "src/nice_weather/trading/us_reports.py": "abd297277f5ccc36e2299169e0111c6b494da1a723b0b58fc1c301277d4a45f3",
+    "src/nice_weather/trading/us_transport.py": "e3f4380424dfd3e84731fbe43f7bad65294f59c147249c91e219d15a2942dbb2",
+    "scripts/check_us_accounts.py": "0a5085cf3c8494d0a806c7545bcb73ca8411816ac2e5a713ed9a786cdb6afb1a"
+  },
+  "persisted_order_attempts": 0,
+  "note": "Snapshots preserve parsed response facts and native events; these hashes are not hashes of original HTTP wire bytes."
+}

@@ -83,6 +83,7 @@ def main():
     allowed.update({"src/nice_weather/trading/us_fees.py",
                     "src/nice_weather/trading/us_markets.py",
                     "src/nice_weather/trading/us_reports.py",
+                    "src/nice_weather/trading/us_execution.py",
                     "src/nice_weather/trading/us_currency.py",
                     "src/nice_weather/trading/storage.py",
                     "src/nice_weather/store.py"})
