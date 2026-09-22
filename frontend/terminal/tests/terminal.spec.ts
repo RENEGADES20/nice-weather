@@ -58,6 +58,24 @@ test("account heartbeats do not invalidate Paper preview; reconnect keeps select
   await expect(page.getByRole("button",{name:"模拟买入",exact:true})).toBeEnabled();
 });
 
+test("a focused fill cannot crash an empty future market",async({page})=>{
+  await setup(page); const errors:string[]=[]; page.on("pageerror",e=>errors.push(e.message));
+  await page.route("**/api/account-events?*",r=>r.fulfill({json:{next:1,more:false,events:[{
+    id:"realistic-fill",time:Date.now()/1000,stage:"fill",strategy:"manual",price:.5,quantity:1,
+    venue:"poly_us",day:"2026-09-22",token:"poly_us:2026-09-22:0",
+  }]}}));
+  await page.route("**/api/history?*",r=>r.fulfill({json:{points:[],next_before:null}}));
+  await page.route("**/api/market-quote?*",r=>r.fulfill({json:{quote:null,reason:"NO_MARKET_PRICE"}}));
+  await page.goto("/?venue=poly_us&day=2026-09-22");
+  await page.getByText("所选市场日信号与交易记录",{exact:true}).click();
+  await page.getByRole("button",{name:/manual · 成交/}).click();
+  await expect(page.getByRole("img",{name:"市场赔率与策略标记"})).toHaveAttribute("data-focus","realistic-fill");
+  await page.getByLabel("已挂牌日期").selectOption("2026-09-23");
+  await expect(page.getByLabel("市场日",{exact:true})).toHaveValue("2026-09-23");
+  await expect(page.getByRole("img",{name:"市场赔率与策略标记"})).toHaveAttribute("data-focus","");
+  expect(errors).toEqual([]);
+});
+
 test("unknown Paper request retains original ID across reload and retry",async({page})=>{
   await setup(page);let visible=false;const bodies:any[]=[];
   await page.route("**/api/requests/*",r=>visible?r.fulfill({json:{account:"sandbox-kalshi-knyc",kind:"order",status:"accepted"}}):r.fulfill({status:404,json:{detail:"not found"}}));
