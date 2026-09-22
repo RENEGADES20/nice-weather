@@ -1,0 +1,183 @@
+{
+  "source": ".worktrees/knyc-terminal/var/knyc/feed.sqlite3",
+  "retained_rows": 1941,
+  "sample_windows": [
+    [
+      1789796100,
+      1789796280
+    ],
+    [
+      1789917300,
+      1789917480
+    ]
+  ],
+  "preserved": [
+    "feed_seq",
+    "received_at",
+    "body"
+  ],
+  "source_opened_readonly": true,
+  "dependencies": {
+    "market_weather": {
+      "path": ".worktrees/knyc-market-weather/src/nice_weather/trading/market_weather.py",
+      "sha256": "037788e41f013c8f9f82045d9c28d32ef7a7b7c8385decf790e76e61f322cbab"
+    },
+    "signals": {
+      "path": ".worktrees/knyc-signals/src/nice_weather/trading/signals.py",
+      "sha256": "63c5c40555aae3748b5d23c4f0eacdabfddf3bf7161586db304da1f5a9690f56"
+    },
+    "signals_v2": {
+      "path": ".worktrees/knyc-signals/src/nice_weather/trading/signals_v2.py",
+      "sha256": "47239b5e833b5c8a0fb94b2dfee8954a417863a66c374b554aeffc4ef5ca6f5c"
+    },
+    "paper_execution": {
+      "path": ".worktrees/task3-paper/src/nice_weather/trading/paper_execution.py",
+      "sha256": "f14180abb717792d9a0960706d54f798589f7ce4e11f99223e5fcdf973eaaa6d"
+    },
+    "engine": {
+      "path": ".worktrees/task3-paper/src/nice_weather/trading/engine.py",
+      "sha256": "3b306ee6200a3612e622058bb7086b970a5502830634a357892fe9382cd16f75"
+    }
+  },
+  "runs": [
+    {
+      "run_id": "real-kalshi-S1-2026-09-19-2026-09-19",
+      "status": "no-data",
+      "cash": 100,
+      "curve_points": 179,
+      "events": 0,
+      "fills": 0,
+      "audit": {
+        "cursor": 369107,
+        "decision_changes": 0,
+        "decisions": {},
+        "feed_ceiling": 636737,
+        "inputs": {
+          "book": {
+            "count": 24,
+            "first_received": 1789796101.5315893,
+            "last_received": 1789796107.693485,
+            "max_gap_seconds": 2.009596347808838
+          },
+          "contracts": {
+            "count": 175,
+            "first_received": 1789796090.2417483,
+            "last_received": 1789880228.684835,
+            "max_gap_seconds": 22653.80121779442
+          }
+        },
+        "requested_end": 1789880400.0,
+        "requested_start": 1789794000.0,
+        "scan_complete": true
+      }
+    },
+    {
+      "run_id": "real-poly_us-S2-2026-09-20-2026-09-20",
+      "status": "no-data",
+      "cash": 250,
+      "curve_points": 129,
+      "events": 0,
+      "fills": 0,
+      "audit": {
+        "cursor": 636737,
+        "decision_changes": 0,
+        "decisions": {},
+        "feed_ceiling": 636737,
+        "inputs": {
+          "book": {
+            "count": 536,
+            "first_received": 1789917300.043656,
+            "last_received": 1789917478.8200436,
+            "max_gap_seconds": 2.0366790294647217
+          },
+          "contracts": {
+            "count": 124,
+            "first_received": 1789880400.528232,
+            "last_received": 1789917482.6601222,
+            "max_gap_seconds": 304.2847671508789
+          }
+        },
+        "requested_end": 1789966800.0,
+        "requested_start": 1789880400.0,
+        "scan_complete": true
+      }
+    },
+    {
+      "run_id": "real-kalshi-S1_S2_S3-2026-09-19-2026-09-20",
+      "status": "no-data",
+      "cash": 150,
+      "curve_points": 306,
+      "events": 0,
+      "fills": 0,
+      "audit": {
+        "cursor": 636737,
+        "decision_changes": 0,
+        "decisions": {},
+        "feed_ceiling": 636737,
+        "inputs": {
+          "book": {
+            "count": 561,
+            "first_received": 1789796101.5315893,
+            "last_received": 1789917479.8897765,
+            "max_gap_seconds": 121193.39141082764
+          },
+          "contracts": {
+            "count": 299,
+            "first_received": 1789796090.2417483,
+            "last_received": 1789917485.7799625,
+            "max_gap_seconds": 22653.80121779442
+          }
+        },
+        "requested_end": 1789966800.0,
+        "requested_start": 1789794000.0,
+        "scan_complete": true
+      }
+    }
+  ],
+  "browser_run": {
+    "strategy": "S3",
+    "fills": 0,
+    "run_id": "88f9fc45-cf90-4723-9d3b-4f432a0b5874",
+    "venue": "poly_us",
+    "equity": 175,
+    "cash": 175,
+    "submitted_in_browser": true,
+    "status": "no-data",
+    "refresh_reloaded_same_run": true,
+    "day": "2026-09-19",
+    "config": {
+      "account": "backtest-poly_us",
+      "cash": 175,
+      "code_sha": "73030919c92d067940faa7a366b0cd2bf1c22d21",
+      "config_hash": "553cb2288370ea779aa65d58cbd5c1d8705be7aae45e703e572630343de18645",
+      "dataset_id": null,
+      "end": 1789880400.0,
+      "engine_version": "1.231.0",
+      "execution": "Market-price approximation; received-time replay",
+      "execution_model": "market-price-v1",
+      "execution_version": 3,
+      "mode": "backtest",
+      "parameters": {},
+      "projection_version": 2,
+      "signal_version": "knyc-executable-v2",
+      "simulation": {
+        "estimated_fee_rate": 0.01,
+        "slippage_pp": 0
+      },
+      "source_sha256": "e83de7f1b6b7dd64dae17b35fcf6845dd145b6f8b6b7cc207b9a63209eabaad4",
+      "start": 1789794000.0,
+      "station_id": "KNYC",
+      "strategy_id": "S3",
+      "strategy_version": "knyc-executable-v2",
+      "tokens": [],
+      "venue": "poly_us"
+    },
+    "account": {
+      "cash": 175.0,
+      "equity": 175.0,
+      "total_pnl": 0.0,
+      "fees": 0.0,
+      "prediction_events": 0
+    }
+  }
+}
