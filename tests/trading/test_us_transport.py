@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import json
+import sqlite3
 
 import httpx
 import pytest
@@ -46,6 +48,15 @@ def test_signatures_timeout_and_durable_no_retry(tmp_path, venue):
 
     def timeout(request):
         calls.append(request)
+        # The exact intent must be durable before the network can accept an order.
+        with sqlite3.connect(tmp_path / "attempts.sqlite3") as con:
+            saved = con.execute("SELECT evidence,created FROM transport_intents").fetchone()
+        evidence = json.loads(saved[0])
+        assert evidence["body"] == json.loads(request.content)
+        assert evidence["owner"] == "manual"
+        assert evidence["outcome"] == "NO"
+        assert saved[1] > 0
+        assert "test-key" not in saved[0]
         raise httpx.ReadTimeout("fixture timeout", request=request)
 
     async def run():
@@ -91,10 +102,23 @@ def test_signatures_timeout_and_durable_no_retry(tmp_path, venue):
             transport=httpx.MockTransport(timeout),
         )
         assert (await recovered.submit("one", contract(venue), order))["status"] == "unknown"
+        restored = recovered.attempt("one")
+        assert restored["evidence"]["body"] == order_body(venue, "one", contract(venue), order)
+        assert restored["intent_created_at"] > 0
+        with pytest.raises(ValueError, match="different"):
+            await recovered.submit("one", contract(venue), order | {"owner": "S1"})
         with pytest.raises(ValueError, match="unresolved"):
             await recovered.submit("two", contract(venue), order)
         with pytest.raises(ValueError, match="reused"):
             await recovered.submit("one", contract(venue), order | {"quantity": 2})
+        assert len(calls) == 1
+        # Pre-upgrade attempts lack intent evidence. Recovery must neither backfill
+        # a guessed TIF/owner nor resend an order to obtain that evidence.
+        with sqlite3.connect(path) as con:
+            con.execute("DELETE FROM transport_intents")
+        legacy = await recovered.submit("one", contract(venue), order)
+        assert legacy["status"] == "unknown"
+        assert legacy["evidence"] is None and legacy["intent_created_at"] is None
         assert len(calls) == 1
         await recovered.close()
 
