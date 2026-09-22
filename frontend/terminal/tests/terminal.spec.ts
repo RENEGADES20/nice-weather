@@ -86,6 +86,14 @@ test("unknown Paper request retains original ID across reload and retry",async({
   visible=true;await expect(page.getByText(/待核验 · kalshi/)).toHaveCount(0);await page.reload();expect(bodies).toHaveLength(2);
 });
 
+test("weather failure does not suppress market price history",async({page})=>{
+  await setup(page);
+  await page.route("**/api/weather-history?*",r=>r.fulfill({status:503,json:{detail:"weather unavailable"}}));
+  await page.goto("/?venue=kalshi&day=2026-09-19");
+  await expect(page.getByRole("region",{name:"天气分析"})).toContainText("读取失败 (503)");
+  await expect(page.getByRole("region",{name:"天气分析"})).toContainText("45.00%");
+});
+
 test("backtest entrypoint replaces the selected result",async({page})=>{
   await setup(page);const run=(id:string)=>({run_id:id,status:"completed",updated:1,config:{venue:"kalshi",start:Date.parse("2026-09-19T05:00:00Z")/1000,end:Date.parse("2026-09-20T05:00:00Z")/1000,strategy:"S3",cash:100},snapshot:{equity:id==="first"?101:102},curve:[],events:[],history_complete:false});
   await page.route("**/api/backtests",r=>r.fulfill({json:[run("first"),run("second")]}));

@@ -39,13 +39,15 @@ def catalog(path, venue):
                                    (venue,)):
                 by_day[row["day"]] = {c["yes_token_id"]: c for c in json.loads(row["contracts"])
                                       if c.get("station_id") == "KNYC" and c.get("venue") == venue}
-        # Old feed databases predate settlement_watch. The append-only facts suffice.
-        rows = con.execute(
+        # publish() keeps every market day in settlement_watch. Re-reading the
+        # repeated contract captures on every chart/quote request stalls the VM.
+        # Legacy databases without that projection still use their captured facts.
+        rows = [] if by_day else list(con.execute(
             "SELECT seq,received,body FROM feed_events WHERE kind='contracts' AND key=? "
-            "UNION ALL SELECT seq,received,body FROM feed_latest "
-            "WHERE kind='market_directory' AND key LIKE ? ORDER BY seq",
-            (venue, venue + ":%"),
-        )
+            "ORDER BY seq", (venue,)))
+        rows.extend(con.execute(
+            "SELECT seq,received,body FROM feed_latest "
+            "WHERE kind='market_directory' AND key LIKE ? ORDER BY seq", (venue + ":%",)))
         for row in rows:
             groups = {}
             for contract in json.loads(row["body"]):

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { type Catalog, type History, type Quote, type Selection, type WeatherHistory,
   selectionKey } from "./data";
 
-async function get<T>(path: string, signal: AbortSignal): Promise<T> {
+async function get<T>(path: string, signal: AbortSignal, timeout = 10000): Promise<T> {
   const response = await fetch(`/api/${path}`, { credentials: "same-origin",
-    signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) });
+    signal: AbortSignal.any([signal, AbortSignal.timeout(timeout)]) });
   if (!response.ok) throw new Error(`${path.split("?")[0]} 读取失败 (${response.status})`);
   return response.json();
 }
@@ -61,10 +61,12 @@ export function useMarketWeather(value: Selection, active = false, enabled = tru
     };
     async function read(refreshWeatherOnly = false) {
       if (!value.day) { update({ loading: false }); return; }
-      try {
-        const weather = await get<WeatherHistory>(`weather-history?${params}`, controller.signal);
+      const weatherRead = async () => {
+        const weather = await get<WeatherHistory>(`weather-history?${params}`, controller.signal, 60000);
         if (weather.venue !== value.venue || weather.day !== value.day) throw new Error("天气日期不匹配");
         update({ weather });
+      };
+      const historyRead = async () => {
         if (value.token && !refreshWeatherOnly) {
           let before: number | null = null;
           const points: Quote[] = [];
@@ -79,10 +81,12 @@ export function useMarketWeather(value: Selection, active = false, enabled = tru
           update({ quotes: points.sort((a, b) => a.time - b.time),
             priceReason: points.length ? null : "尚无已采集价格历史" });
         }
-        update({ loading: false, error: "" });
-      } catch (e) {
-        update({ loading: false, error: String(e) });
-      }
+      };
+      // Weather revisions can involve more history than prices. A slow or failed
+      // weather read must not hide the independently available market chart.
+      const results = await Promise.allSettled([weatherRead(), historyRead()]);
+      update({ loading: false, error: results.filter(r => r.status === "rejected")
+        .map(r => String(r.reason)).join("；") });
     }
     async function quote() {
       if (!active || !value.token || !valid()) return;
