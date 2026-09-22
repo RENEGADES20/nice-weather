@@ -1,0 +1,24 @@
+{
+  "verified_utc": "2026-09-22T06:07:35.793018+00:00",
+  "deployed_sha": "d1365291359f616a657f2104b25b45964d4462d0",
+  "pull_request": "https://github.com/RENEGADES20/nice-weather/pull/65",
+  "checks_run": 35692731181,
+  "required_checks_passed": 7,
+  "files_verified": 74,
+  "hash_mismatches": [],
+  "health_release_matches": true,
+  "six_services_active": true,
+  "changed_files": ["src/nice_weather/trading/us_markets.py"],
+  "hrrr_restarted": false,
+  "free_bytes": 2222260224,
+  "poly_contracts_received": 1790057157.5225492,
+  "poly_contract_count": 6,
+  "poly_parsed_count": 6,
+  "vm_evidence_path": "/home/hdharrison1206/knyc-weather-rules-deploy-20260922.json",
+  "vm_evidence_sha256": "5edf279d9f096759209cd6252ee74c0bcf6160963ee6664da13394dbccc31515",
+  "archive_sha256": "c7025d41e1fe259b971b39d251fe47dd4a23848ebeeff560366c595a1326b5a6",
+  "notes": [
+    "Summary transcribed from verified VM output; full per-contract audit retained in VM evidence.",
+    "No Live orders. Paper activation, full market-day and performance acceptance remain pending."
+  ]
+}

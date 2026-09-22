@@ -133,6 +133,10 @@ class USRest:
                 account TEXT NOT NULL, request_id TEXT NOT NULL, identity TEXT NOT NULL,
                 status TEXT NOT NULL, response TEXT, error TEXT, updated REAL NOT NULL,
                 PRIMARY KEY(account,request_id))""")
+            con.execute("""CREATE TABLE IF NOT EXISTS transport_intents (
+                account TEXT NOT NULL, request_id TEXT NOT NULL, evidence TEXT NOT NULL,
+                created REAL NOT NULL,
+                PRIMARY KEY(account,request_id))""")
 
     def headers(self, method, path, timestamp=None):
         stamp = str(int(time.time() * 1000) if timestamp is None else timestamp)
@@ -263,12 +267,15 @@ class USRest:
     def attempt(self, request_id):
         with connect(self.path, readonly=True) as con:
             row = con.execute(
-                "SELECT * FROM transport_attempts WHERE account=? AND request_id=?",
+                "SELECT a.*,i.evidence,i.created intent_created_at "
+                "FROM transport_attempts a LEFT JOIN transport_intents i "
+                "USING(account,request_id) WHERE a.account=? AND a.request_id=?",
                 (self.account, request_id),
             ).fetchone()
         if not row:
             return None
-        return dict(row) | {"response": json.loads(row["response"] or "null")}
+        return dict(row) | {"response": json.loads(row["response"] or "null"),
+                            "evidence": json.loads(row["evidence"] or "null")}
 
     async def submit(self, request_id, contract, order):
         if contract.get("parse_status") != "parsed":
@@ -304,10 +311,20 @@ class USRest:
             raise ValueError("Invalid request ID")
         full = self._path(path)
         identity = digest([method, full, body])
+        # Only public contract/order facts; never persist authentication headers or keys.
+        evidence = {
+            "venue": self.venue, "method": method, "path": full, "body": body,
+            "owner": order.get("owner", "manual"),
+            "outcome": order.get("outcome"), "side": order.get("side"),
+            "rules_version": contract.get("rules_version"),
+            "contract_received_at": contract.get("received_at"),
+        }
         previous = self.attempt(request_id)
         if previous:
             if previous["identity"] != identity:
                 raise ValueError("Request ID reused with different order")
+            if previous["evidence"] is not None and previous["evidence"] != evidence:
+                raise ValueError("Request ID reused with different attribution/evidence")
             # Includes an interrupted 'submitting': read/reconcile, never issue another POST.
             return previous | {
                 "status": "unknown" if previous["status"] == "submitting" else previous["status"]
@@ -335,10 +352,14 @@ class USRest:
                 from nice_weather.trading.live_budget import reserve
 
                 reserve(con, self.venue, self.account, request_id, contract, order)
+                con.execute("INSERT INTO transport_intents VALUES (?,?,?,?)",
+                            (self.account, request_id, encoded(evidence), time.time()))
         if not inserted:
             previous = self.attempt(request_id)
             if previous["identity"] != identity:
                 raise ValueError("Concurrent request identity collision")
+            if previous["evidence"] != evidence:
+                raise ValueError("Concurrent request attribution/evidence collision")
             return previous | {"status": "unknown"}
         status, error, payload = "unknown", None, None
         try:
