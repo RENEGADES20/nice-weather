@@ -44,6 +44,9 @@ class Command(BaseModel):
 
 def create_app(root: Path, *, password=None, origin=None):
     app = FastAPI(title="Nice Weather Terminal", docs_url=None, redoc_url=None, openapi_url=None)
+    from nice_weather.trading.backtest_view import router
+
+    app.include_router(router(root))
     feed = FeedStore(root / "feed.sqlite3")
     requests = Requests(root / "requests" / "requests.sqlite3")
     password = (
@@ -317,6 +320,12 @@ def create_app(root: Path, *, password=None, origin=None):
     @app.post("/api/commands", status_code=202)
     def command(body: Command):
         if body.venue in VENUES and body.mode == "backtest" and body.kind == "backtest":
+            from nice_weather.trading.backtest_view import request_parameters
+
+            try:
+                body.payload = request_parameters(root, body.venue, body.payload)
+            except (ValueError, TypeError, KeyError) as exc:
+                raise HTTPException(400, str(exc)) from exc
             start, end = body.payload.get("start"), body.payload.get("end")
             if (
                 type(start) not in (int, float)

@@ -190,6 +190,7 @@ def paper(root, venue, once=False):
 def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
            cash=100, simulation=None):
     """Replay original receipts, not final labels or reconstructed receipt times."""
+    from nice_weather.trading.backtest_view import ReplayView
     from nice_weather.trading.engine import Session
     from nice_weather.trading.storage import connect
 
@@ -204,7 +205,7 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
             results.status(identifier, "failed", "Interrupted replay; create a new request")
             return results.run(run_id=identifier)
         return existing
-    config = run_config("backtest-" + venue, "backtest", strategy) | {
+    config = run_config("backtest-" + venue, "backtest", strategy, cash=cash) | {
         "venue": venue,
         "station_id": "KNYC",
         "execution_version": 3,
@@ -222,6 +223,7 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
     config["config_hash"] = digest(config)
     results.create(identifier, "backtest-" + venue, "backtest", config)
     session = Session(config)
+    view = ReplayView()
     try:
         with connect(results.path) as con:
             ensure_equity(con)
@@ -267,6 +269,8 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
                         with connect(results.path) as con:
                             save_equity(con, identifier, snapshot)
                         last_equity = signature
+                if not seed:
+                    view.observe_session(session)
                 for strategy_id, signal in session.signals.items():
                     signature = digest(signal)
                     if previous_signals.get(strategy_id) == signature:
@@ -293,6 +297,7 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
         session.apply(
             {"kind": "start", "ts": max(int(start * 1e9), session.now + 1), "data": {}}
         )
+        view.observe(session.snapshot(), force=True)
         predictions, cursor, last_progress = 0, 0, float("-inf")
         # Immutable receipt events and a fixed ceiling allow short read transactions.
         # Release each WAL snapshot before running the potentially slow native replay.
@@ -309,6 +314,7 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
                 predictions += row["kind"] == "prediction" and row["key"] == venue
                 apply(row)
             cursor = rows[-1]["seq"]
+            view.flush(results, identifier, cursor)
             audit["cursor"] = cursor
             if pending_decisions:
                 results.append(identifier, f"replay-decisions-{cursor}", {
@@ -325,6 +331,8 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
                                   "data": {}})
         with connect(results.path) as con:
             save_equity(con, identifier, snapshot)
+        view.observe(snapshot, force=True)
+        view.flush(results, identifier, "final")
         snapshot["prediction_events"] = predictions
         audit["scan_complete"] = True
         snapshot["replay_audit"] = audit
