@@ -1,5 +1,11 @@
 # 当前状态
 
+## 2026-09-20 写盘基线与只读轮询（实施中）
+
+PR #59 七项 CI 通过，合并 `a2914b38eb28128cf6e4b9ff3cd5233fcbfc38ca`；VM 仍为 #58 的 `23b540b`，待补齐新报告模块的发布允许清单后一起原位发布。30 分钟资源基线共 31 个样本、无采样错误，各服务均 active；跨部署分段后，当前版本 18 个样本覆盖 17 分钟，最大采样待处理年龄 0.622 秒，最低可用空间 1,678,753,792 bytes。两个 Paper 进程物理写盘分别约 438,664 和 402,852 bytes/s，空闲回测 worker 约 64,680 bytes/s，尚不能视为性能达标。原始文件保留 VM，摘要见 acceptance/knyc-resource-baseline-2026-09-20.json。
+
+检查发现请求队列轮询以可写连接打开 SQLite；改为只读连接，避免空闲读取参与写库关闭/检查点。修改后还需同条件测量，不能预先宣称降幅。Nautilus 亚分币隔离进程实验确认默认 USD 反序列化将 0.0001 舍入为 0.00，同时注册 Python/Rust USD 四位精度后精确保留；此初始化将限定未来独立 Live 进程，不修改现有 Paper 进程币种注册。
+
 ## 2026-09-20 US 原生账户报告（实施中，尚未部署）
 
 开发分支增加双平台 Nautilus OrderStatusReport、FillReport、PositionStatusReport 转换；严格校验净仓方向、市场、实际费用、小数精度和来源时间，尚未连接 LiveExecutionClient。核验官方 YES 价格口径后修复 Poly US NO 指令限价转换。00:28 UTC 私有 WebSocket 真实只读认证成功，收到 eof=true 的零订单快照；25 秒窗口无成交消息，余额/持仓同步和断线恢复仍待完成。不能将该快照视为完整账户对账。原文仅留忽略目录 var/knyc/private-stream-20260920。

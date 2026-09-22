@@ -84,7 +84,7 @@ class Requests:
         return request_id
 
     def pending(self, account, mode):
-        with connect(self.path) as con:
+        with connect(self.path, readonly=True) as con:
             return [
                 dict(row)
                 for row in con.execute(
