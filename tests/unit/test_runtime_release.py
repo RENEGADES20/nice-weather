@@ -23,7 +23,8 @@ def test_service_impact_preserves_legacy_processes():
     assert "nice-weather-knyc-paper@kalshi.service" in services
     assert "nice-weather-collector.service" not in services
     assert "nice-weather-sandbox.service" not in services
-    assert UPDATER.affected_services(["src/nice_weather/trading/storage.py"]) == services
+    assert UPDATER.affected_services(["src/nice_weather/trading/storage.py"]) == services + [
+        "nice-weather-knyc-live@kalshi.service", "nice-weather-knyc-live@poly_us.service"]
     # The legacy store is packaged here but no KNYC worker imports it. Updating
     # this copy does not deploy to the separate legacy checkout or restart it.
     assert UPDATER.affected_services(["src/nice_weather/store.py"]) == [

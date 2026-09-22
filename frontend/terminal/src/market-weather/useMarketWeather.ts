@@ -12,6 +12,7 @@ export function useMarketCatalog(venue: string) {
   const [state, setState] = useState<{ data?: Catalog; loading: boolean; error: string }>({
     loading: true, error: "" });
   useEffect(() => {
+    if (!venue) return;
     const controller = new AbortController();
     setState({ loading: true, error: "" });
     const read = async () => {
@@ -32,7 +33,7 @@ export function useMarketCatalog(venue: string) {
 
 type Loaded = { key: string; weather?: WeatherHistory; quotes: Quote[]; loading: boolean;
   error: string; priceReason?: string | null };
-export function useMarketWeather(value: Selection, active = false) {
+export function useMarketWeather(value: Selection, active = false, enabled = true) {
   const key = selectionKey(value);
   const [state, setState] = useState<Loaded>({ key, quotes: [], loading: true, error: "" });
   const cache = useRef(new Map<string, Loaded>());
@@ -41,6 +42,7 @@ export function useMarketWeather(value: Selection, active = false) {
   const latest = useRef(key);
   latest.current = key;
   useEffect(() => {
+    if (!enabled || !value.day) return;
     const controller = new AbortController();
     const valid = () => !controller.signal.aborted && latest.current === key;
     setState(cache.current.get(key) ?? { key, weather: cachedWeather,
@@ -96,7 +98,7 @@ export function useMarketWeather(value: Selection, active = false) {
     const timer = setInterval(() => { void quote(); }, 15000);
     const weatherTimer = setInterval(() => { void read(true); }, 60000);
     return () => { controller.abort(); clearInterval(timer); clearInterval(weatherTimer); };
-  }, [key, active]);
+  }, [key, active, enabled]);
 
   // The integrating terminal may forward its existing WebSocket book events here.
   const acceptBook = useCallback((event: { key: string; received: number; data: Omit<Quote, "time"> }) => {

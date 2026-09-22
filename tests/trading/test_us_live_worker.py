@@ -7,8 +7,21 @@ from pathlib import Path
 import pytest
 from us_live_fixture import Exchange
 
-from nice_weather.trading.us_live import LiveWorker
+from nice_weather.trading.us_live import LiveWorker, collected_contracts
 from nice_weather.trading.us_live_state import configure, controls
+
+
+def test_live_registers_discovered_future_market_without_changing_rules(tmp_path):
+    from nice_weather.trading.feed import FeedStore
+
+    store = FeedStore(tmp_path / "feed.sqlite3")
+    contract = {"condition_id": "future", "parse_status": "ambiguous", "active": True}
+    store.publish("market_directory", "kalshi:2026-09-23", [contract])
+    store.publish("market_directory", "poly_us:2026-09-23", [{"condition_id": "other"}])
+    rows = collected_contracts(tmp_path, "kalshi", 4)
+    assert set(rows) == {"future"}
+    assert rows["future"]["parse_status"] == "ambiguous"
+    assert rows["future"]["balance_precision"] == "0.0001"
 
 
 def exercise_native_roundtrip(tmp_path, venue="poly_us", outcome="YES"):

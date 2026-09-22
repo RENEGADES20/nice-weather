@@ -20,18 +20,30 @@ def affected_services(changed):
            for name in changed):
         services += ["nice-weather-knyc-feed.service", "nice-weather-knyc-hrrr.service"]
     elif any(name in {"src/nice_weather/trading/knyc_model.py", "config/knyc-strategy-model.json",
-                     "src/nice_weather/trading/us_markets.py"}
+                     "src/nice_weather/trading/us_markets.py",
+                     "src/nice_weather/trading/market_discovery.py"}
              for name in changed):
         services += ["nice-weather-knyc-feed.service"]
     if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/us_runtime.py",
                     "src/nice_weather/trading/us_fees.py", "src/nice_weather/trading/us_markets.py",
                     "src/nice_weather/trading/engine.py", "src/nice_weather/trading/signals_v2.py",
-                    "src/nice_weather/trading/recovery.py", "src/nice_weather/trading/storage.py"}
+                    "src/nice_weather/trading/recovery.py", "src/nice_weather/trading/storage.py",
+                    "src/nice_weather/trading/paper_execution.py"}
            for name in changed):
         # us_runtime is used only by Paper and replay. Terminal restarts to expose
         # the current release identity; collectors continue for Paper-only changes.
         services += ["nice-weather-knyc-backtest.service", "nice-weather-knyc-paper@kalshi.service",
                      "nice-weather-knyc-paper@poly_us.service"]
+    if "src/nice_weather/trading/backtest_view.py" in changed:
+        services += ["nice-weather-knyc-backtest.service"]
+    if any(name in {f"src/nice_weather/trading/{module}.py" for module in (
+            "storage", "credentials", "live_budget", "us_live", "us_live_state",
+            "us_execution", "us_transport", "us_reports", "us_currency", "us_reconcile",
+            "us_markets", "us_fees")} or name ==
+            "deploy/systemd/nice-weather-knyc-live@.service" for name in changed):
+        services += ["nice-weather-knyc-live@kalshi.service",
+                     "nice-weather-knyc-live@poly_us.service"]
+    services = list(dict.fromkeys(services))
     return services
 
 
@@ -87,6 +99,10 @@ def main():
                     "src/nice_weather/trading/us_currency.py",
                     "src/nice_weather/trading/storage.py",
                     "src/nice_weather/store.py"})
+    allowed.update({f"src/nice_weather/trading/{module}.py" for module in (
+        "market_discovery", "market_weather", "signal_research", "paper_execution",
+        "backtest_view", "us_live", "us_live_state", "us_reconcile")})
+    allowed.add("deploy/systemd/nice-weather-knyc-live@.service")
     if any(name not in allowed and not name.startswith("src/nice_weather/terminal_dist/")
            for name in changed):
         raise ValueError("Release changes services outside the terminal update scope")
@@ -108,7 +124,17 @@ def main():
             raise ValueError("Deployed base differs: " + name)
     py = str(runtime / ".venv/bin/python")
     subprocess.run([py, "-c", "import jwt, cryptography, nautilus_trader"], check=True)
-    subprocess.run(["systemctl", "stop", *services], check=True)
+    live = [s for s in services if s.startswith("nice-weather-knyc-live@")]
+    for service in live:
+        venue = service.split("@", 1)[1].removesuffix(".service")
+        if not Path(f"/etc/nice-weather/knyc-live-{venue}.env").is_file():
+            raise ValueError(f"Missing Live environment file for {venue}")
+    # New Live units are installed below; stop only units already present.
+    installed = [s for s in services if subprocess.run(
+        ["systemctl", "cat", s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    ).returncode == 0]
+    if installed:
+        subprocess.run(["systemctl", "stop", *installed], check=True)
     for name in changed + ["runtime-manifest.json"]:
         target = runtime / name
         if not target.resolve().is_relative_to(runtime):
@@ -123,6 +149,9 @@ def main():
             os.fsync(stream.fileno())
         os.chmod(temporary, 0o644)
         os.replace(temporary, target)
+    unit = "deploy/systemd/nice-weather-knyc-live@.service"
+    if unit in changed:
+        Path("/etc/systemd/system/nice-weather-knyc-live@.service").write_bytes(content[unit])
     for service in services:
         dropin = Path("/etc/systemd/system") / (service + ".d/release.conf")
         dropin.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +159,8 @@ def main():
             "[Service]\nEnvironment=NICE_WEATHER_CODE_SHA=" + manifest["commit"] + "\n"
         )
     subprocess.run(["systemctl", "daemon-reload"], check=True)
+    if live:
+        subprocess.run(["systemctl", "enable", *live], check=True)
     subprocess.run(["systemctl", "start", *services], check=True)
     subprocess.run(["systemctl", "is-active", *services], check=True)
 

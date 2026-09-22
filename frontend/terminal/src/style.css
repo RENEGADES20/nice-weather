@@ -587,3 +587,40 @@ footer {
   top: 6px;
   font-size: 11px;
 }
+
+/* Shared terminal shell matches the standalone weather, replay and Live panels. */
+:root { color: #243746; background: #f3f6f7; color-scheme: light; }
+header, .toolbar, footer { background: #fff; border-color: #d8e0e5; }
+button { background: #f5f8f9; color: #263f4d; border-color: #cbd5dc; }
+button:hover { background: #e9f1ef; }
+input, select { background: #fff; color: #243746; border-color: #bccbd2; }
+.brand, .brand span, h2, h3 { color: #1b5449; }
+.panel { background: #fff; border-color: #d3dde2; }
+.section-title { color: #516876; border-color: #e0e7eb; }
+.connection, label, .toolbar, .metrics span, .notice, .strategy-grid p,
+.weather-line, .receipts, .replay p, th, footer { color: #526773; }
+.metrics { grid-template-columns: repeat(6, 1fr); gap: 16px; }
+.metrics > div:last-child strong { font-size: 22px; margin: 0; }
+.mode .active, .bins .selected { background: #e3f1eb; color: #185b47; border-color: #699b88; }
+.bins .selected span, .bins .selected strong, nav .active { color: #185b47; }
+.strategy-grid b { color: #186850; }
+.strategy-grid b span { color: #263f4d; }
+.strategy-grid article, td, th, .spread, .weather-line { border-color: #e0e7eb; }
+.level.ask span:first-child { color: #a14436; }
+.level.bid span:first-child { color: #186850; }
+.toolbar .mw-selector { flex: 1; }
+.toolbar .mw-selector label { min-width: 125px; align-items: stretch; }
+.integrated > * { min-width: 0; }
+.integrated .nw-live { margin: 0; }
+.integrated .ticket { border: 1px solid #d3dde2; background: white; border-radius: 5px; padding: 16px; }
+.integrated .ticket form { padding: 0; }
+.integrated .ticket details { margin-top: 14px; }
+.integrated .weather-panel { grid-column: 1/-1; }
+.integrated .mw-analysis { margin: 0; }
+.strategies details, .positions details { padding: 12px 16px; }
+summary { cursor: pointer; }
+.event-list { max-height: 280px; overflow: auto; display: grid; gap: 6px; padding-top: 12px; }
+.event-list button { text-align: left; }
+.bt-chart-wrap { color: #425466; background: #fff; }
+@media (max-width: 900px) { .metrics { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 680px) { .metrics { grid-template-columns: repeat(2, 1fr); } }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export type PaperMarket = {
   venue: string; local_day: string; yes_token_id: string; no_token_id: string;
@@ -39,7 +39,7 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
   const identity = market ? `${market.venue}/${market.local_day}/${market.yes_token_id}` : "";
   const activeIdentity = useRef(identity);
   activeIdentity.current = identity;
-  useEffect(() => { setLimit(""); setNotice(""); generation.current++; }, [identity, outcome]);
+  useLayoutEffect(() => { setLimit(""); setNotice(""); generation.current++; }, [identity, outcome]);
   useEffect(() => { setOptions(simulation); }, [simulation.estimated_fee_rate, simulation.slippage_pp]);
   const token = outcome === "YES" ? market?.yes_token_id : market?.no_token_id;
   const selection = `${identity}/${outcome}/${side}/${quantity}/${limit}/${tif}/${accountRevision}`;
@@ -102,7 +102,7 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
       <label>数量<input aria-label="数量" type="number" value={quantity} required
         min={market?.minimum_order_size ?? .01} step={market?.quantity_step ?? .01}
         onChange={e => setQuantity(e.target.value)} /></label>
-      <label>限价（美元）<input aria-label="限价" type="number" value={limit} required
+      <label>限价（美元）<input aria-label="限价" type="number" value={limit} required disabled={!market}
         min={market?.tick_size ?? .01} max={.999999} step={market?.tick_size ?? .01}
         onChange={e => setLimit(e.target.value)} /></label>
       <label>有效方式<select aria-label="有效方式" value={tif} onChange={e => setTif(e.target.value)}>

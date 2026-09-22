@@ -7,12 +7,33 @@ from fastapi.testclient import TestClient
 
 from nice_weather.trading.backtest_view import (
     ReplayView,
+    account_events,
     decision_events,
     request_parameters,
     router,
     run_detail,
 )
 from nice_weather.trading.storage import Requests, Results, connect
+
+
+def test_account_signal_projection_is_scoped_and_native_fills_are_not_duplicated(tmp_path):
+    results = Results(tmp_path / "results.sqlite3")
+    account = "sandbox-kalshi-knyc"
+    results.create(account, account, "sandbox", {"venue": "kalshi"})
+    event = {"event_id": "trigger", "venue": "kalshi", "day": "2026-09-21",
+             "strategy": "S1", "stage": "weather_trigger", "asof": 99,
+             "legs": [{"token": "a", "quantity": 1}, {"token": "b", "quantity": 2}]}
+    results.append(account, "signals", {"kind": "signal-events", "events": [event]})
+    results.checkpoint(account, 1, snapshot(), "running")
+    first = account_events(tmp_path, account, "kalshi", "2026-09-21")
+    assert [(e["token"], e["quantity"]) for e in first["events"] if e["stage"] == "trigger"] == [
+        ("a", 1), ("b", 2)]
+    assert len([e for e in first["events"] if e["stage"] == "fill"]) == 2
+    assert not account_events(tmp_path, account, "poly_us", "2026-09-21")["events"]
+    assert not account_events(tmp_path, account, "kalshi", "2026-09-22")["events"]
+    second = account_events(tmp_path, account, "kalshi", "2026-09-21", first["next"])
+    assert all(e["stage"] == "fill" for e in second["events"])
+    assert {e["id"] for e in second["events"]} <= {e["id"] for e in first["events"]}
 
 
 def snapshot():

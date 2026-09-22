@@ -1,11 +1,16 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  ColorType,
-  createChart,
-  LineSeries,
-  type Time,
-} from "lightweight-charts";
+import { MarketSelector } from "./market-weather/MarketSelector";
+import { WeatherAnalysis } from "./market-weather/WeatherAnalysis";
+import { useMarketCatalog, useMarketWeather } from "./market-weather/useMarketWeather";
+import { type Selection, midpoint, todayNY } from "./market-weather/data";
+import { PaperTicket, type PaperCommand, type Simulation } from "./PaperTicket";
+import { LiveAccountPanel, type LiveSnapshot } from "./LiveAccountPanel";
+import { LiveOrderTicket } from "./LiveOrderTicket";
+import { BacktestWorkspace } from "./backtest/BacktestWorkspace";
+import { BacktestChart, EventDetails } from "./backtest/BacktestChart";
+import { type StrategyEvent, type Venue } from "./backtest/types";
+import "./backtest/backtest.css";
 import "./style.css";
 
 type Contract = {
@@ -14,6 +19,10 @@ type Contract = {
   local_day: string;
   yes_token_id: string;
   title: string;
+  no_token_id: string;
+  condition_id: string;
+  active: boolean;
+  quantity_step?: string;
   settlement_source: string;
   parse_status: string;
   minimum_order_size: number;
@@ -36,6 +45,10 @@ type Account = {
   run_id: string;
 };
 type Snapshot = {
+  simulation?: Simulation;
+  market_value?: number;
+  fees?: number;
+  settlement_status?: string;
   cash?: number;
   equity?: number;
   available?: number;
@@ -82,19 +95,7 @@ const money = (n?: number | null) =>
       }).format(n);
 const price = (n?: number) => (n == null ? "—" : `${(n * 100).toFixed(1)}¢`);
 const clock = (n?: number) =>
-  n ? new Date(n * 1000).toLocaleTimeString() : "—";
-const recordPerformance = new URLSearchParams(location.search).get("measure") === "1";
-function measureDisplay(name: string, start: number, committed?: number) {
-  performance.clearMeasures(name);
-  const measured = performance.measure(name, { start, end: performance.now() });
-  if (recordPerformance)
-    console.debug("terminal-performance " + JSON.stringify({
-      name, ms: measured.duration,
-      commit_ms: committed == null ? undefined : committed - start,
-      frame_wait_ms: committed == null ? undefined : performance.now() - committed,
-      visibility: document.visibilityState, focused: document.hasFocus(),
-    }));
-}
+  n ? new Date(n * 1000).toLocaleTimeString("zh-CN", { timeZone: "America/New_York", hour12: false }) : "—";
 
 async function api(path: string, body?: unknown, csrf = "") {
   const response = await fetch("/api/" + path, {
@@ -205,15 +206,23 @@ function useCommands(
     const timer = setInterval(poll, 1000);
     return () => clearInterval(timer);
   }, [session]);
-  async function send(command: SavedCommand, retry = false) {
-    if (blocked || sending.current.has(command.request_id)) return;
+  async function confirmed(command: SavedCommand) {
+    for (let i = 0; i < 40; i++) {
+      const row = await reconcile(command);
+      if (["accepted", "rejected"].includes(row.status))
+        return `${row.status}${row.error ? ` · ${row.error}` : ""}`;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    throw new Error("执行结果尚未确认，保留原请求 ID");
+  }
+  async function send(command: SavedCommand, retry = false): Promise<string> {
+    if (blocked || sending.current.has(command.request_id)) throw new Error("请求处理中或本地记录不可用");
     if (
       !retry &&
       !["cancel", "stop"].includes(command.kind) &&
       journal.current.length
     ) {
-      notify("有未确认请求；先查询回执或用原请求 ID 重试");
-      return;
+      throw new Error("有未确认请求；先查询回执或用原请求 ID 重试");
     }
     sending.current.add(command.request_id);
     performance.clearMarks("command-start");
@@ -224,7 +233,7 @@ function useCommands(
       if (retry) {
         try {
           await reconcile(command);
-          return; // A queued/unknown/terminal receipt never authorizes another POST.
+          return await confirmed(command); // Existing receipts never authorize another POST.
         } catch (e) {
           if ((e as { status?: number }).status !== 404) throw e;
         }
@@ -237,22 +246,24 @@ function useCommands(
           return [...current, command];
         });
         if (!added) {
-          notify("有未确认请求；先查询回执或用原请求 ID 重试");
-          return;
+          throw new Error("有未确认请求；先查询回执或用原请求 ID 重试");
         }
       }
       const row = await api("commands", command, csrf);
       if (row.request_id !== command.request_id)
         throw new Error("请求回执 ID 不匹配");
       notify(`已排队 · ${command.request_id.slice(0, 8)}，等待执行确认`);
+      return await confirmed(command);
     } catch (e) {
       const status = (e as { status?: number }).status;
       // Only a first submission rejected before enqueue is conclusive. Retries retain ambiguity.
       if (!retry && status && [400, 401, 403, 409, 422].includes(status)) {
         await forget(command.request_id);
         notify(`请求被拒绝 · ${(e as Error).message}`);
+        return `请求被拒绝 · ${(e as Error).message}`;
       } else {
         notify(`请求未确认 · ${(e as Error).message}；先核验回执`);
+        throw e;
       }
     } finally {
       sending.current.delete(command.request_id);
@@ -262,336 +273,124 @@ function useCommands(
   return { saved, blocked, pending, send };
 }
 
-function Chart({ token, book }: { token: string; book?: Book }) {
-  const element = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
-  const lineRef = useRef<ReturnType<
-    ReturnType<typeof createChart>["addSeries"]
-  > | null>(null);
-  const lastChartTime = useRef<number | null>(null);
-  const cache = useRef(new Map<string, Map<number, number>>());
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-  const earliest = useRef(new Map<string, number>());
-  const activeToken = useRef(token);
-  activeToken.current = token;
-  const [olderLoading, setOlderLoading] = useState(false);
-  useEffect(() => {
-    const chart = createChart(element.current!, {
-      autoSize: true,
-      layout: {
-        background: { type: ColorType.Solid, color: "#101719" },
-        textColor: "#97a8aa",
-        attributionLogo: true,
-      },
-      grid: {
-        vertLines: { color: "#1b2629" },
-        horzLines: { color: "#1b2629" },
-      },
-      rightPriceScale: { borderColor: "#283437" },
-      localization: {
-        timeFormatter: (t: Time) => new Date(Number(t) * 1000).toLocaleString(),
-      },
-      timeScale: {
-        timeVisible: true,
-        borderColor: "#283437",
-        tickMarkFormatter: (t: Time) =>
-          new Date(Number(t) * 1000).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-      },
-      crosshair: {
-        vertLine: { color: "#6c9893" },
-        horzLine: { color: "#6c9893" },
-      },
-    });
-    chartRef.current = chart;
-    lineRef.current = chart.addSeries(LineSeries, {
-      color: "#79c5ae",
-      lineWidth: 2,
-      priceFormat: {
-        type: "custom",
-        formatter: (v: number) => `${(v * 100).toFixed(1)}¢`,
-      },
-    });
-    return () => {
-      chart.remove();
-    };
-  }, []);
-  const draw = (points: Map<number, number>) => {
-    const ordered = [...points].sort((a, b) => a[0] - b[0]);
-    lineRef.current?.setData(ordered.map(([time, value]) => ({ time: time as Time, value })));
-    lastChartTime.current = ordered.at(-1)?.[0] ?? null;
-  };
-  useLayoutEffect(() => {
-    setError("");
-    const saved = cache.current.get(token);
-    if (saved) {
-      draw(saved);
-      setLoading(false);
-    } else {
-      lineRef.current?.setData([]);
-      lastChartTime.current = null;
-      setLoading(Boolean(token));
-    }
-    if (!token) return;
-    let active = true;
-    if (!saved)
-      api(`history?token=${encodeURIComponent(token)}`)
-        .then((rows) => {
-          if (!active) return;
-          const points = cache.current.get(token) ?? new Map<number, number>();
-          if (rows.length) earliest.current.set(token, rows[0].seq);
-          for (const r of rows) {
-            if (r.bids?.length && r.asks?.length)
-              points.set(Math.floor(r.time), (r.bids[0][0] + r.asks[0][0]) / 2);
-          }
-          cache.current.set(token, points);
-          if (cache.current.size > 48)
-            cache.current.delete(cache.current.keys().next().value!);
-          draw(points);
-          chartRef.current?.timeScale().fitContent();
-          setLoading(false);
-        })
-        .catch((e) => {
-          if (active) {
-            setError(e.message);
-            setLoading(false);
-          }
-        });
-    return () => {
-      active = false;
-    };
-  }, [token]);
-  useEffect(() => {
-    if (!token || !book?.bids.length || !book.asks.length) return;
-    const points = cache.current.get(token) ?? new Map<number, number>();
-    const t = Math.floor(book.received_at);
-    points.set(t, (book.bids[0][0] + book.asks[0][0]) / 2);
-    if (points.size > 12000) points.delete(points.keys().next().value!);
-    cache.current.set(token, points);
-    // Reconnect snapshots can precede the cached series tail. The chart rejects
-    // appending older timestamps; keep normal updates incremental.
-    if (lastChartTime.current !== null && t < lastChartTime.current) draw(points);
-    else {
-      lineRef.current?.update({
-        time: t as Time,
-        value: (book.bids[0][0] + book.asks[0][0]) / 2,
-      });
-      lastChartTime.current = t;
-    }
-  }, [token, book]);
-  async function older() {
-    const before = earliest.current.get(token);
-    if (!before || olderLoading) return;
-    setOlderLoading(true);
-    setError("");
-    try {
-      const rows = await api(
-        `history?token=${encodeURIComponent(token)}&before=${before}`,
-      );
-      if (!rows.length) {
-        earliest.current.delete(token);
-        return;
-      }
-      earliest.current.set(token, rows[0].seq);
-      const points = cache.current.get(token) ?? new Map<number, number>();
-      for (const r of rows)
-        if (r.bids?.length && r.asks?.length)
-          points.set(Math.floor(r.time), (r.bids[0][0] + r.asks[0][0]) / 2);
-      // ponytail: explicit history pages capped at 12k points per selected bin.
-      const bounded = new Map(
-        [...points].sort((a, b) => a[0] - b[0]).slice(-12000),
-      );
-      cache.current.set(token, bounded);
-      if (activeToken.current === token) draw(bounded);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setOlderLoading(false);
-    }
-  }
-  return (
-    <div className="chart">
-      <button
-        className="history-more"
-        disabled={olderLoading || !earliest.current.has(token)}
-        onClick={older}
-      >
-        {olderLoading ? "加载中…" : "加载更早行情"}
-      </button>
-      <div ref={element} className="chart-canvas" />
-      {(loading || error || !token) && (
-        <div className="chart-status">
-          {error || (loading ? "历史加载中，其他操作可继续" : "等待合约数据")}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Weather({ weather, day }: { weather: State["weather"]; day: string }) {
-  const observation = Array.isArray(weather.metar?.data)
-    ? weather.metar.data
-    : [];
-  const withinDay = (t: number) =>
-    new Date((t - 5 * 3600) * 1000).toISOString().slice(0, 10) === day;
-  const observed = observation
-    .filter(
-      (p: any) =>
-        p.icaoId === "KNYC" && Number.isFinite(p.temp) && withinDay(p.obsTime),
-    )
-    .map((p: any) => [p.obsTime, p.temp * 1.8 + 32])
-    .sort((a: number[], b: number[]) => a[0] - b[0]);
-  const forecast = (weather.hrrr?.points ?? [])
-    .filter(
-      (p: any) => Number.isFinite(p.temperature_f) && withinDay(p.valid_at),
-    )
-    .map((p: any) => [p.valid_at, p.temperature_f]);
-  const all = [...observed, ...forecast];
-  const minT = Math.min(...all.map((p) => p[1])) - 1,
-    maxT = Math.max(...all.map((p) => p[1])) + 1;
-  const start = new Date(`${day}T00:00:00-05:00`).getTime() / 1000;
-  const line = (rows: number[][]) =>
-    rows
-      .map(
-        ([t, v]) =>
-          `${40 + ((t - start) / 86400) * 720},${140 - ((v - minT) / (maxT - minT)) * 120}`,
-      )
-      .join(" ");
-  return (
-    <section className="weather-panel panel">
-      <div className="section-title">
-        <h2>天气 · KNYC</h2>
-        <span>气候日 UTC−5 · °F</span>
-      </div>
-      <div className="weather-values">
-        <span>
-          最新实况{" "}
-          <b>{observed.length ? `${observed.at(-1)![1].toFixed(1)}°F` : "—"}</b>
-        </span>
-        <span>HRRR 起报 {clock(weather.hrrr?.cycle)}</span>
-        <span>绿色：METAR · 蓝色：HRRR</span>
-      </div>
-      {all.length ? (
-        <svg
-          viewBox="0 0 800 180"
-          role="img"
-          aria-label="KNYC 实况与 HRRR 温度预报"
-        >
-          <text x="0" y="25" fill="#97a8aa">
-            {maxT.toFixed(0)}°
-          </text>
-          <text x="0" y="145" fill="#97a8aa">
-            {minT.toFixed(0)}°
-          </text>
-          <polyline
-            points={line(observed)}
-            fill="none"
-            stroke="#79c5ae"
-            strokeWidth="2"
-          />
-          <polyline
-            points={line(forecast)}
-            fill="none"
-            stroke="#70b6e9"
-            strokeWidth="2"
-            strokeDasharray="5 3"
-          />
-          {[0, 6, 12, 18, 24].map((h) => (
-            <text
-              key={h}
-              x={40 + (h / 24) * 720}
-              y="172"
-              textAnchor="middle"
-              fill="#97a8aa"
-            >
-              {String(h).padStart(2, "0")}:00
-            </text>
-          ))}
-        </svg>
-      ) : (
-        <p className="empty">
-          所选气候日暂无已采集天气；小时观测与 CLI 结算值分别保存。
-        </p>
-      )}
-      <details>
-        <summary>
-          CLI 原文 · {weather.cli?.issued_at ?? "尚未取得"} · 最终性待核验
-        </summary>
-        <pre>{weather.cli?.text ?? "等待报告"}</pre>
-      </details>
-    </section>
-  );
-}
 
 function App() {
-  const [session, setSession] = useState(false),
-    [csrf, setCsrf] = useState(""),
-    [password, setPassword] = useState("");
-  const [authMode, setAuthMode] = useState("loading");
-  const [state, setState] = useState<State>(empty),
-    [venue, setVenue] = useState("kalshi"),
-    [day, setDay] = useState(""),
-    [selected, setSelected] = useState("");
-  const [connected, setConnected] = useState(false),
-    [now, setNow] = useState(Date.now() / 1000),
-    [notice, setNotice] = useState(""),
-    [connectionError, setConnectionError] = useState("");
-  const [mode, setMode] = useState("sandbox"),
-    [tab, setTab] = useState("交易"),
-    [side, setSide] = useState("BUY"),
-    [outcome, setOutcome] = useState("YES");
-  const [qty, setQty] = useState("1"),
-    [limit, setLimit] = useState("0.50"),
-    [tif, setTif] = useState("IOC");
-  const commands = useCommands(csrf, session, setNotice);
-  const pending = commands.pending;
-  const [replayDay, setReplayDay] = useState(""),
-    [replayStrategy, setReplayStrategy] = useState("S1_S2_S3");
+  const [session, setSession] = useState(false), [csrf, setCsrf] = useState(""),
+    [password, setPassword] = useState(""), [authMode, setAuthMode] = useState("loading");
+  const [state, setState] = useState<State>(empty);
+  const [selection, setSelection] = useState<Selection>(() => {
+    const q = new URLSearchParams(location.search);
+    return { venue: q.get("venue") === "poly_us" ? "poly_us" : "kalshi",
+      day: q.get("day") ?? todayNY(), token: q.get("token") ?? "" };
+  });
+  const { venue, day, token } = selection;
+  const [connected, setConnected] = useState(false), [now, setNow] = useState(Date.now() / 1000),
+    [notice, setNotice] = useState(""), [connectionError, setConnectionError] = useState("");
+  const [mode, setMode] = useState("sandbox"), [tab, setTab] = useState("交易");
   const [receipts, setReceipts] = useState<Record<string, any>[]>([]);
-  const readyMeasured = useRef(false);
+  const commands = useCommands(csrf, session, setNotice);
+  const catalog = useMarketCatalog(session ? venue : "");
+  const markets = (catalog.data?.days.find(d => d.day === day)?.contracts ?? []) as unknown as Contract[];
+  const contract = markets.find(c => c.yes_token_id === token);
+  const weather = useMarketWeather(selection, !!contract?.active, session);
+  const account = state.accounts.find(a => a.account === `${mode}-${venue}-knyc`);
+  const paperAccount = state.accounts.find(a => a.account === `sandbox-${venue}-knyc`);
+  const snapshot = paperAccount?.snapshot ?? {};
+  const liveSnapshot = mode === "live" ? account?.snapshot as unknown as LiveSnapshot : undefined;
+  const [events, setEvents] = useState<{ key: string; rows: StrategyEvent[] }>({ key: "", rows: [] });
+  const [eventError, setEventError] = useState("");
+  const [focus, setFocus] = useState<StrategyEvent | null>(null);
+  const eventKey = `${venue}/${day}`;
+  const [curve, setCurve] = useState<{ run: string; points: { time: number; value: number | null }[] }>({ run: "", points: [] });
+  const [curveError, setCurveError] = useState("");
+  const preview = useCallback(async (command: PaperCommand, signal: AbortSignal) => {
+    const response = await fetch("/api/paper/preview", { method: "POST", credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify(command), signal });
+    if (!response.ok) throw new Error((await response.json()).detail ?? `预览失败 (${response.status})`);
+    return response.json();
+  }, [csrf]);
+  const refreshAccount = useCallback(() => {
+    api("snapshot").then(result => setState(old => ({ ...old, accounts: result.accounts })))
+      .catch(e => setNotice(String(e)));
+  }, []);
+  const submit = async (kind: string, payload: Record<string, unknown> = {}, targetMode = mode) => {
+    try { await commands.send({ request_id: crypto.randomUUID(), venue, mode: targetMode, kind, payload }); }
+    catch (e) { setNotice(String(e)); }
+  };
   useLayoutEffect(() => {
-    const started = performance.getEntriesByName("command-start").at(-1)?.startTime;
-    if (started == null) return;
-    const committed = performance.now();
-    const frame = requestAnimationFrame(() => {
-      measureDisplay("command-local-feedback", started, committed);
-      performance.clearMarks("command-start");
+    const url = new URL(location.href);
+    Object.entries(selection).forEach(([key, value]) => url.searchParams.set(key, value));
+    history.replaceState(null, "", url);
+  }, [venue, day, token]);
+  useEffect(() => { setFocus(null); }, [venue, day]);
+  useEffect(() => {
+    const book = state.books[token];
+    if (book && contract) weather.acceptBook({ key: token, received: book.received_at, data: book });
+  }, [state.books[token], token]);
+  useEffect(() => {
+    if (!session || !day) return;
+    const abort = new AbortController(); let cursor = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const collected = new Map<string, StrategyEvent>();
+    setEventError("");
+    async function poll() {
+      try {
+        let more = true;
+        while (more && !abort.signal.aborted) {
+          const response = await fetch(`/api/account-events?${new URLSearchParams({venue, day, after: String(cursor)})}`, {signal: abort.signal});
+          if (!response.ok) throw new Error(`信号记录读取失败 (${response.status})`);
+          const result = await response.json();
+          if (abort.signal.aborted) return;
+          result.events.forEach((e: StrategyEvent) => collected.set(e.id, e));
+          cursor = result.next; more = result.more;
+        }
+        setEvents({key: eventKey, rows: [...collected.values()].sort((a,b) => a.time-b.time)});
+        setEventError("");
+      } catch (e) { if (!abort.signal.aborted) setEventError(String(e)); }
+      if (!abort.signal.aborted) timer = setTimeout(poll, 3000);
+    }
+    void poll(); return () => { abort.abort(); clearTimeout(timer); };
+  }, [session, venue, day]);
+  useEffect(() => {
+    const run = paperAccount?.run_id;
+    if (!session || !run) return;
+    const abort = new AbortController(); let after = -1;
+    let timer: ReturnType<typeof setTimeout>;
+    const points = new Map<number, { time: number; value: number | null }>();
+    async function poll() {
+      try {
+        let more = true;
+        while (more && !abort.signal.aborted) {
+          const response = await fetch(`/api/paper/equity?run_id=${encodeURIComponent(run!)}&after=${after}`, { signal: abort.signal });
+          if (!response.ok) throw new Error(`权益读取失败 (${response.status})`);
+          const result = await response.json();
+          if (abort.signal.aborted) return;
+          for (const p of result.points) { points.set(p.ts, {time: p.ts/1e9, value: p.equity}); after = p.ts; }
+          more = result.next != null;
+        }
+        setCurve({run: run!, points: [...points.values()]}); setCurveError("");
+      } catch(e) { if (!abort.signal.aborted) setCurveError(String(e)); }
+      if (!abort.signal.aborted) timer = setTimeout(poll, 5000);
+    }
+    void poll(); return () => {abort.abort(); clearTimeout(timer);};
+  }, [session, paperAccount?.run_id]);
+  const chartEvents = useMemo(() => events.key === eventKey ? events.rows.filter(e => e.token === token) : [], [events, eventKey, token]);
+  const chartSelection = useMemo(() => ({venue: venue as Venue, day, token}), [venue, day, token]);
+  const prices = useMemo(() => {
+    const sorted = [...new Map(weather.quotes.map(q => [q.time, q])).values()].sort((a,b) => a.time-b.time);
+    return sorted.flatMap((q,i) => {
+      const value = midpoint(q);
+      const point = { time: q.time, value: value == null ? null : value/100 };
+      return i && q.time - sorted[i-1].time > 600 ? [{time: sorted[i-1].time+600, value:null}, point] : [point];
     });
-    return () => cancelAnimationFrame(frame);
-  }, [notice, pending]);
-  useLayoutEffect(() => {
-    if (!recordPerformance || !connected || !state.contracts.length || readyMeasured.current) return;
-    const frame = requestAnimationFrame(() => {
-      measureDisplay("terminal-ready", 0);
-      readyMeasured.current = true;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [connected, state.contracts.length]);
-  useLayoutEffect(() => {
-    const started = performance.getEntriesByName("bin-select").at(-1)?.startTime;
-    if (started == null) return;
-    const committed = performance.now();
-    const frame = requestAnimationFrame(() => {
-      measureDisplay("bin-select-display", started, committed);
-      performance.clearMarks("bin-select");
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [selected]);
-  useLayoutEffect(() => {
-    const started = performance
-      .getEntriesByName("market-event-received")
-      .at(-1)?.startTime;
-    if (started == null) return;
-    const committed = performance.now();
-    const frame = requestAnimationFrame(() => {
-      measureDisplay("market-event-display", started, committed);
-      performance.clearMarks("market-event-received");
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [state.cursor]);
+  }, [weather.quotes]);
+  const book = weather.quotes.at(-1);
+  const blocked = commands.blocked || commands.pending || commands.saved.length > 0;
+  const locate = (e: StrategyEvent) => {
+    if (e.token && markets.some(c => c.yes_token_id === e.token)) setSelection({...selection, token:e.token});
+    setFocus(e); document.getElementById("market-chart")?.scrollIntoView({block:"center", behavior:"smooth"});
+  };
   useEffect(() => {
     api("auth").then((r) => setAuthMode(r.mode)).catch(() => setAuthMode("unavailable"));
     api("session")
@@ -682,55 +481,7 @@ function App() {
     const t = setInterval(poll, 2000);
     return () => clearInterval(t);
   }, [session]);
-  const days = [
-    ...new Set(
-      state.contracts.filter((c) => c.venue === venue).map((c) => c.local_day),
-    ),
-  ].sort();
-  const chosenDay = days.includes(day) ? day : (days[days.length - 1] ?? "");
-  const markets = state.contracts.filter(
-    (c) => c.venue === venue && c.local_day === chosenDay,
-  );
-  const contract =
-    markets.find((c) => c.yes_token_id === selected) ?? markets[0];
-  const token = contract?.yes_token_id ?? "";
-  const book = state.books[token];
-  const ticketBook =
-    book && outcome === "NO"
-      ? {
-          ...book,
-          bids: book.asks.map(([p, q]) => [1 - p, q]),
-          asks: book.bids.map(([p, q]) => [1 - p, q]),
-        }
-      : book;
-  const account = state.accounts.find(
-    (a) => a.account === `sandbox-${venue}-knyc`,
-  );
-  const snapshot: Snapshot =
-    mode === "sandbox" ? (account?.snapshot ?? {}) : {};
-  const fresh = Boolean(
-    connected &&
-    book?.complete &&
-    Date.now() / 1000 - book.received_at >= 0 &&
-    Date.now() / 1000 - book.received_at <= 30 &&
-    account?.status === "running" &&
-    Date.now() / 1000 - account.updated < 10,
-  );
-  const canTrade =
-    fresh &&
-    mode === "sandbox" &&
-    contract?.parse_status === "parsed" &&
-    contract.fee_known;
-  const health = state.health[venue];
-  async function submit(kind: string, payload: Record<string, unknown> = {}) {
-    await commands.send({
-      request_id: crypto.randomUUID(),
-      venue,
-      mode,
-      kind,
-      payload,
-    });
-  }
+
   if (!session)
     return (
       <main className="login">
@@ -770,526 +521,69 @@ function App() {
         <p role="alert">{notice}</p>
       </main>
     );
-  return (
-    <>
-      <header>
-        <div className="brand">
-          NW <span>NICE WEATHER</span>
-        </div>
-        <nav>
-          {["交易", "回测"].map((t) => (
-            <button
-              key={t}
-              className={tab === t ? "active" : ""}
-              onClick={() => setTab(t)}
-            >
-              {t}
-            </button>
-          ))}
-        </nav>
-        <div className="connection">
-          <i className={connected ? "online" : ""} />
-          {connected ? "终端已连接" : "重连中"} <span>{clock(now)}</span>
-        </div>
-      </header>
-      <div className="toolbar">
-        <label>
-          平台
-          <select
-            value={venue}
-            onChange={(e) => {
-              setVenue(e.target.value);
-              setSelected("");
-            }}
-          >
-            <option value="kalshi">Kalshi</option>
-            <option value="poly_us">Polymarket US</option>
-          </select>
-        </label>
-        <label>
-          站点
-          <select aria-label="站点">
-            <option>KNYC · Central Park</option>
-          </select>
-        </label>
-        <label>
-          市场日
-          <select value={chosenDay} onChange={(e) => setDay(e.target.value)}>
-            {days.map((d) => (
-              <option key={d}>{d}</option>
-            ))}
-          </select>
-        </label>
-        <div className="mode">
-          <button
-            className={mode === "sandbox" ? "active" : ""}
-            onClick={() => setMode("sandbox")}
-          >
-            模拟盘
-          </button>
-          <button
-            className={mode === "live" ? "active" : ""}
-            onClick={() => setMode("live")}
-          >
-            实盘
-          </button>
-        </div>
-        <span className="feed-status">
-          {health?.transport ?? "等待行情"}
-          {health?.interval_seconds
-            ? ` · ${health.interval_seconds}s`
-            : ""} · {health?.status ?? "未连接"}
-        </span>
-      </div>
-      {mode === "live" && (
-        <div className="banner">实盘尚未启用 · {state.live.reason}</div>
-      )}
-      {commands.saved.map((c) => (
-        <div className="banner" key={c.request_id}>
-          待核验 · {c.venue} / {c.mode} / {c.kind} · {c.request_id.slice(0, 8)}
-          <button disabled={pending} onClick={() => commands.send(c, true)}>
-            查询回执 / 原 ID 重试
-          </button>
-        </div>
-      ))}
-      <div className="metrics">
-        {[
-          ["账户权益", money(snapshot.equity)],
-          ["可用资金", money(snapshot.available)],
-          ["总收益", money(snapshot.total_pnl)],
-          [
-            "结算来源",
-            contract?.settlement_source === "weather_company"
-              ? "The Weather Company"
-              : "NWS Daily CLI",
-          ],
-        ].map(([label, value]) => (
-          <div key={label}>
-            <span>{label}</span>
-            <strong>{value}</strong>
-          </div>
-        ))}
-      </div>
-      {tab === "交易" ? (
-        <main className="workspace">
-          <section className="market panel">
-            <div className="section-title">
-              <h2>KNYC 每日最高温</h2>
-              <span>{chosenDay} · °F</span>
-            </div>
-            <div className="bins">
-              {markets.map((c) => (
-                <button
-                  key={c.yes_token_id}
-                  aria-pressed={token === c.yes_token_id}
-                  className={token === c.yes_token_id ? "selected" : ""}
-                  onClick={() => {
-                    performance.clearMarks("bin-select");
-                    performance.mark("bin-select");
-                    setSelected(c.yes_token_id);
-                  }}
-                >
-                  <span>{c.title}°F</span>
-                  <strong>
-                    {price(state.books[c.yes_token_id]?.asks[0]?.[0])}
-                  </strong>
-                </button>
-              ))}
-            </div>
-            <div className="section-title">
-              <span>{contract?.title ?? "等待市场"} · YES 中间价</span>
-              <span>行情收到 {clock(book?.received_at)}</span>
-            </div>
-            <Chart token={token} book={book} />
-          </section>
-          <section className="orderbook panel">
-            <div className="section-title">
-              <h2>订单簿 · {outcome}</h2>
-              <span className={fresh ? "" : "warn"}>
-                {fresh ? "有效" : "过期 / 未连接"}
-              </span>
-            </div>
-            <div className="book-head">
-              <span>价格</span>
-              <span>份数</span>
-            </div>
-            {(ticketBook?.asks ?? [])
-              .slice(0, 8)
-              .reverse()
-              .map(([p, q]) => (
-                <button
-                  className="level ask"
-                  key={p}
-                  onClick={() => setLimit(String(p))}
-                >
-                  <span>{price(p)}</span>
-                  <span>{q.toFixed(2)}</span>
-                </button>
-              ))}
-            <div className="spread">
-              价差{" "}
-              {ticketBook?.asks.length && ticketBook.bids.length
-                ? price(ticketBook.asks[0][0] - ticketBook.bids[0][0])
-                : "—"}
-            </div>
-            {(ticketBook?.bids ?? []).slice(0, 8).map(([p, q]) => (
-              <button
-                className="level bid"
-                key={p}
-                onClick={() => setLimit(String(p))}
-              >
-                <span>{price(p)}</span>
-                <span>{q.toFixed(2)}</span>
-              </button>
-            ))}
-          </section>
-          <section className="ticket panel">
-            <div className="section-title">
-              <h2>下单</h2>
-              <span>{mode === "sandbox" ? "模拟资金" : "实盘关闭"}</span>
-            </div>
-            <h3>{contract?.title ?? "选择合约"}°F</h3>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                submit("order", {
-                  token: token + (outcome === "NO" ? ":NO" : ""),
-                  side,
-                  quantity: Number(qty),
-                  price: Number(limit),
-                  tif,
-                });
-              }}
-            >
-              <div className="split">
-                <label>
-                  方向
-                  <select
-                    value={side}
-                    onChange={(e) => setSide(e.target.value)}
-                  >
-                    <option value="BUY">买入</option>
-                    <option value="SELL">卖出</option>
-                  </select>
-                </label>
-                <label>
-                  合约
-                  <select
-                    value={outcome}
-                    onChange={(e) => {
-                      setOutcome(e.target.value);
-                      setLimit("");
-                    }}
-                  >
-                    <option>YES</option>
-                    <option>NO</option>
-                  </select>
-                </label>
-              </div>
-              <label>
-                限价（美元）
-                <input
-                  type="number"
-                  min="0.01"
-                  max="0.99"
-                  step="0.01"
-                  value={limit}
-                  onChange={(e) => setLimit(e.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                数量（份）
-                <input
-                  type="number"
-                  min={contract?.minimum_order_size ?? 0.01}
-                  step="0.01"
-                  value={qty}
-                  onChange={(e) => setQty(e.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                有效方式
-                <select value={tif} onChange={(e) => setTif(e.target.value)}>
-                  <option value="IOC">IOC · 即时成交，余量撤销</option>
-                  <option value="GTC">GTC · 撤销前有效</option>
-                  <option value="FOK">FOK · 全部成交或取消</option>
-                </select>
-              </label>
-              <div className="estimate">
-                <span>限价名义金额 · 未含费</span>
-                <strong>{money(Number(qty) * Number(limit))}</strong>
-              </div>
-              <button
-                className="primary"
-                disabled={
-                  !canTrade ||
-                  pending ||
-                  commands.blocked ||
-                  commands.saved.length > 0
-                }
-              >
-                {pending
-                  ? "提交中…"
-                  : `${side === "BUY" ? "买入" : "卖出"} ${outcome}`}
-              </button>
-            </form>
-            <p className="notice" role="status">
-              {connectionError || notice ||
-                (!canTrade
-                  ? "等待有效行情、账户与规则校验"
-                  : "成交以订单回执为准")}
-            </p>
-          </section>
-          <Weather weather={state.weather} day={chosenDay} />
-          <section className="strategies panel">
-            <div className="section-title">
-              <h2>天气策略</h2>
-              <div>
-                <button
-                  disabled={
-                    mode !== "sandbox" ||
-                    commands.blocked ||
-                    (!snapshot.strategy_enabled &&
-                      (!fresh || pending || commands.saved.length > 0))
-                  }
-                  onClick={() =>
-                    submit(snapshot.strategy_enabled ? "stop" : "start", {
-                      strategy_id: "S1_S2_S3",
-                    })
-                  }
-                >
-                  {snapshot.strategy_enabled ? "停止策略" : "启动三策略"}
-                </button>
-              </div>
-            </div>
-            <div className="strategy-grid">
-              {[
-                ["S1", "相邻两档"],
-                ["S2", "新高跨档"],
-                ["S3", "结束后单档"],
-              ].map(([id, name]) => {
-                const signal = snapshot.signals?.[id];
-                return (
-                  <article key={id}>
-                    <b>
-                      {id} <span>{name}</span>
-                    </b>
-                    <p>{signal?.reason ?? "等待 KNYC 专属模型与有效输入"}</p>
-                    {signal?.p_end != null && <p>
-                      升温结束概率 {(signal.p_end * 100).toFixed(1)}%
-                    </p>}
-                    {signal?.warning && <p>
-                      距上档 {signal.warning.distance.toFixed(1)}°F · 上档概率{" "}
-                      {(signal.warning.probability * 100).toFixed(1)}%
-                      {signal.warning.near_boundary ? " · 接近跨档，等待实况确认" : ""}
-                    </p>}
-                    {signal?.legs?.map((leg: Record<string, any>) => <p key={leg.token}>
-                      {markets.find((c) => c.yes_token_id === leg.token)?.title ?? leg.token}
-                      {" · "}{leg.quantity} 份 · 限价 {price(leg.price)} · 预算 {money(leg.cost)}
-                    </p>)}
-                    {signal?.execution_reason && (
-                      <p className="warn">
-                        组合后续下单已停止；已成交部分保留。
-                      </p>
-                    )}
-                    {signal?.executions?.map((leg: Record<string, any>) => (
-                      <p key={leg.token}>
-                        {markets.find((c) => c.yes_token_id === leg.token)
-                          ?.title ?? leg.token}
-                        {" · "}
-                        {leg.filled} / {leg.requested} 份
-                      </p>
-                    ))}
-                    <small>
-                      {signal?.net_edge != null
-                        ? `净优势 ${(signal.net_edge * 100).toFixed(2)}¢`
-                        : "未产生可执行信号"}
-                    </small>
-                  </article>
-                );
-              })}
-            </div>
-            <div className="weather-line">
-              实况 {clock(state.weather.metar?.received_at)} · CLI{" "}
-              {state.weather.cli?.issued_at ?? "等待报告"} ·
-              条件变化持续重评；每策略每日最多一次建仓，部分成交后停止补单
-            </div>
-          </section>
-          <section className="positions panel">
-            <div className="section-title">
-              <h2>持仓与挂单</h2>
-              <span>{account?.account ?? "账户尚未启动"}</span>
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>合约</th>
-                    <th>方向</th>
-                    <th>数量</th>
-                    <th>价格</th>
-                    <th>状态 / 来源</th>
-                    <th>操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(snapshot.orders ?? []).map((o) => (
-                    <tr key={o.order_id}>
-                      <td title={o.token}>
-                        {markets.find((c) => o.token.startsWith(c.yes_token_id))
-                          ?.title ?? o.token}
-                      </td>
-                      <td>{o.side}</td>
-                      <td>
-                        {o.filled} / {o.quantity}
-                      </td>
-                      <td>{price(o.price)}</td>
-                      <td>
-                        {o.status} · {o.owner}
-                      </td>
-                      <td>
-                        <button
-                          disabled={
-                            commands.blocked ||
-                            o.remaining <= 0 ||
-                            mode !== "sandbox"
-                          }
-                          onClick={() =>
-                            submit("cancel", { order_id: o.order_id })
-                          }
-                        >
-                          撤单
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {!snapshot.orders?.length && (
-                    <tr>
-                      <td colSpan={6} className="empty">
-                        尚无订单
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-            <div className="position-grid">
-              {(snapshot.positions ?? []).map((p) => (
-                <div key={p.token}>
-                  <b>
-                    {p.bin} · {p.outcome}
-                  </b>
-                  <span>{p.quantity} 份</span>
-                  <span>浮动收益 {money(p.unrealized_pnl)}</span>
-                </div>
-              ))}
-            </div>
-            <div className="receipts">
-              {receipts
-                .filter((r) => r.account === account?.account)
-                .slice(0, 3)
-                .map((r) => (
-                  <div key={r.request_id}>
-                    {clock(r.created)} · {r.kind} · {r.status}
-                    {r.error ? ` · ${r.error}` : ""}
-                  </div>
-                ))}
-            </div>
-          </section>
-        </main>
-      ) : (
-        <main className="panel replay">
-          <h2>历史回测与重放</h2>
-          <p>使用实际接收时间和冻结策略规则；缺失盘口或模型时保留 no-trade。</p>
-          <form
-            className="replay-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              setNotice("回测排队中…");
-              try {
-                const start =
-                  new Date(`${replayDay}T00:00:00-05:00`).getTime() / 1000;
-                await api(
-                  "commands",
-                  {
-                    request_id: crypto.randomUUID(),
-                    venue,
-                    mode: "backtest",
-                    kind: "backtest",
-                    payload: {
-                      start,
-                      end: Math.min(start + 86400, Date.now() / 1000),
-                      strategy: replayStrategy,
-                    },
-                  },
-                  csrf,
-                );
-                setNotice("回测任务已提交，在后台运行");
-              } catch (e) {
-                setNotice((e as Error).message);
-              }
-            }}
-          >
-            <label>
-              气候日（UTC−5）
-              <input
-                type="date"
-                value={replayDay}
-                onChange={(e) => setReplayDay(e.target.value)}
-                required
-              />
-            </label>
-            <label>
-              策略
-              <select
-                value={replayStrategy}
-                onChange={(e) => setReplayStrategy(e.target.value)}
-              >
-                <option value="S1_S2_S3">S1 / S2 / S3</option>
-                <option>S1</option>
-                <option>S2</option>
-                <option>S3</option>
-              </select>
-            </label>
-            <button className="primary">运行回测</button>
-          </form>
-          <p role="status">{notice}</p>
-          {state.accounts
-            .filter((a) => a.mode === "backtest")
-            .map((a) => (
-              <article key={a.run_id}>
-                <b>{a.run_id.slice(0, 12)}</b> · {a.status} · 权益{" "}
-                {money(a.snapshot.equity)} · 成交{" "}
-                {a.snapshot.fills?.length ?? "—"}
-                {a.snapshot.replay_audit ? <div>
-                  <p>{a.snapshot.replay_audit.scan_complete ? "扫描完成" : "扫描中"}；
-                    实际覆盖按接收事件统计，不能视为完整市场日验收。</p>
-                  <p>请求区间：{new Date(a.snapshot.replay_audit.requested_start * 1000).toISOString()}
-                    {" → "}{new Date(a.snapshot.replay_audit.requested_end * 1000).toISOString()}</p>
-                  {Object.entries(a.snapshot.replay_audit.inputs).map(([kind, coverage]) =>
-                    <p key={kind}>{kind}：{coverage.count} 条 · {new Date(coverage.first_received * 1000).toISOString()}
-                      {" → "}{new Date(coverage.last_received * 1000).toISOString()}
-                      {" · 最大接收间隔 "}{coverage.max_gap_seconds.toFixed(1)} 秒</p>)}
-                  {Object.entries(a.snapshot.replay_audit.decisions).map(([strategy, reasons]) =>
-                    <p key={strategy}>{strategy} 决策变化：{Object.entries(reasons).map(
-                      ([reason, count]) => `${reason} × ${count}`).join("；")}</p>)}
-                </div> : <p>此记录未保存过程覆盖与决策审计。</p>}
-              </article>
-            ))}
-          {!state.accounts.some((a) => a.mode === "backtest") && (
-            <p className="empty">
-              暂无已完成回测。KNYC 数据正在积累，历史接收时间不会回填。
-            </p>
-          )}
-        </main>
-      )}
-      <footer>
-        <span>NICE WEATHER / KNYC</span>
-        <span>研究信号 · 收益尚未独立验证</span>
-      </footer>
-    </>
-  );
+
+  return <>
+    <header><div className="brand">NW <span>NICE WEATHER</span></div>
+      <nav>{["交易", "回测"].map(t => <button key={t} className={tab === t ? "active" : ""} onClick={() => setTab(t)}>{t}</button>)}</nav>
+      <div className="connection"><i className={connected ? "online" : ""}/>{connected ? "终端已连接" : "重连中"}<span>{clock(now)} 纽约</span></div>
+    </header>
+    {tab === "交易" && <div className="toolbar">
+      <MarketSelector catalog={catalog.data} value={selection} onChange={setSelection} loading={catalog.loading} error={catalog.error}/>
+      <div className="mode"><button className={mode === "sandbox" ? "active" : ""} onClick={() => setMode("sandbox")}>模拟盘</button>
+        <button className={mode === "live" ? "active" : ""} onClick={() => setMode("live")}>实盘</button></div>
+    </div>}
+    {commands.saved.map(c => <div className="banner" key={c.request_id}>待核验 · {c.venue} / {c.mode} / {c.kind} · {c.request_id.slice(0,8)}
+      <button disabled={commands.pending} onClick={() => void commands.send(c,true).catch(e => setNotice(String(e)))}>查询回执 / 原 ID 重试</button></div>)}
+    <p className="notice" role="status">{connectionError || notice}</p>
+    {tab === "回测" ? <BacktestWorkspace csrf={csrf} initialVenue={venue as Venue}/> : <>
+      {mode === "sandbox" && <div className="metrics">{[["现金",snapshot.cash],["可用资金",snapshot.available],["持仓估值",snapshot.market_value],["账户权益",snapshot.equity],["总收益",snapshot.total_pnl],["累计费用",snapshot.fees]].map(([label,value]) =>
+        <div key={String(label)}><span>{label}</span><strong>{money(value as number)}</strong></div>)}</div>}
+      <main className="workspace integrated">
+        <section className="market panel" id="market-chart"><div className="section-title"><h2>KNYC 每日最高温</h2><span>{day} · {contract?.title ?? "所选日期无合约"} · YES 赔率</span></div>
+          <div className="bins">{markets.map(c => <button key={c.yes_token_id} aria-pressed={token === c.yes_token_id} className={token === c.yes_token_id ? "selected" : ""}
+            onClick={() => setSelection({...selection, token:c.yes_token_id})}>{c.title}</button>)}</div>
+          <BacktestChart points={prices} label="市场赔率与策略标记" selectionKey={`${eventKey}/${token}`} selection={chartSelection} events={chartEvents} focus={focus} onLocate={locate}/>
+          <p className="notice">{weather.loading ? "行情历史加载中…" : weather.priceReason || (!prices.length ? "没有价格历史" : "")}{eventError}</p>
+        </section>
+        <section className="orderbook panel"><div className="section-title"><h2>公开报价 · YES</h2><span>{clock(book?.received_at)}</span></div>
+          <div className="book-head"><span>价格</span><span>份数</span></div>
+          {(book?.asks ?? []).slice(0,8).reverse().map(([p,q],i) => <div className="level ask" key={i}><span>{price(p)}</span><span>{q}</span></div>)}
+          <div className="spread">{book ? "市场价格" : "报价缺失"}</div>
+          {(book?.bids ?? []).slice(0,8).map(([p,q],i) => <div className="level bid" key={i}><span>{price(p)}</span><span>{q}</span></div>)}
+        </section>
+        {mode === "sandbox" ? <PaperTicket market={contract ? {...contract, label:contract.title} : null}
+          accountRevision={JSON.stringify([snapshot.cash, snapshot.available, snapshot.positions, snapshot.orders, snapshot.simulation])} simulation={snapshot.simulation ?? {estimated_fee_rate:.01,slippage_pp:0}}
+          blocked={blocked} preview={preview} send={c => commands.send(c, commands.saved.some(s => s.request_id === c.request_id))} onAccountUpdate={refreshAccount}/>
+          : <LiveOrderTicket key={`${venue}/${day}/${token}`} snapshot={liveSnapshot} market={contract?.condition_id ?? ""} pending={blocked} send={(kind,payload) => submit(kind,payload,"live")}/>}
+        <section className="weather-panel"><WeatherAnalysis data={weather.weather} quotes={weather.quotes} token={token} loading={weather.loading} error={weather.error} priceReason={weather.priceReason}/></section>
+        <section className="strategies panel"><div className="section-title"><h2>天气策略信号</h2>
+          <button disabled={commands.blocked || !paperAccount || (!snapshot.strategy_enabled && blocked)} onClick={() => submit(snapshot.strategy_enabled ? "stop" : "start", {strategy_id:"S1_S2_S3"}, "sandbox")}>{snapshot.strategy_enabled ? "停止模拟策略" : "启动模拟三策略"}</button></div>
+          <div className="strategy-grid">{[["S1","相邻两档"],["S2","新高跨档"],["S3","结束后单档"]].map(([id,name]) => {
+            const signal = snapshot.signals?.[id];
+            const current = signal?.day === day && signal?.venue === venue ? signal : undefined;
+            const last = events.key === eventKey ? events.rows.filter(e => e.strategy === id).at(-1) : undefined;
+            return <article key={id}><b>{id} <span>{name}</span></b><p>{current?.candidate_reason ?? current?.reason ?? last?.reason ?? "所选市场日尚无信号记录"}</p>
+              {current?.p_end != null && <p>结束概率 {(current.p_end*100).toFixed(1)}%</p>}
+              {current?.execution_reason && <p>执行状态：{current.execution_reason}</p>}
+              {current?.model_validation && <p>模型验证：{typeof current.model_validation === "object" ? (current.model_validation.kind ?? "验证状态未记录") : String(current.model_validation)}</p>}
+            </article>;
+          })}</div>
+          <p className="notice">模拟策略{snapshot.strategy_enabled ? "已启动" : "已停止"}；天气信号持续更新。Live 策略开关在实盘账户中配置。</p>
+          <details><summary>所选市场日信号与交易记录</summary><div className="event-list">
+            {(events.key === eventKey ? events.rows : []).filter(e => e.stage !== "diagnostic").map(e => <button key={e.id} onClick={() => locate(e)}><EventDetails event={e}/></button>)}
+          </div></details>
+        </section>
+        {mode === "live" ? <div className="positions"><LiveAccountPanel key={venue} snapshot={liveSnapshot} pending={blocked} venue={venue} send={(kind,payload) => submit(kind,payload,"live")}/></div>
+          : <section className="positions panel"><div className="section-title"><h2>模拟持仓与订单</h2><span>{paperAccount?.account ?? "账户尚未启动"} · {snapshot.settlement_status ?? "未记录结算状态"}</span></div>
+            <div className="table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>数量</th><th>价格</th><th>状态 / 来源</th><th>操作</th></tr></thead><tbody>
+              {(snapshot.orders ?? []).map(o => <tr key={o.order_id}><td>{o.token}</td><td>{o.side}</td><td>{o.filled} / {o.quantity}</td><td>{price(o.price)}</td><td>{o.status} · {o.owner}</td><td><button disabled={commands.blocked || o.remaining <= 0} onClick={() => submit("cancel",{order_id:o.order_id},"sandbox")}>撤单</button></td></tr>)}
+              {!snapshot.orders?.length && <tr><td colSpan={6}>尚无订单</td></tr>}
+            </tbody></table></div><div className="position-grid">{(snapshot.positions ?? []).map(p => <div key={p.token}><b>{p.bin} · {p.outcome}</b><span>{p.quantity} 份</span><span>成本 {money(p.cost)}</span><span>浮盈亏 {money(p.unrealized_pnl)}</span></div>)}</div>
+            <div className="receipts">{receipts.filter(r => r.account === paperAccount?.account).slice(0,5).map(r => <div key={r.request_id}>{clock(r.created)} · {r.kind} · {r.status} {r.error}</div>)}</div>
+            <details><summary>模拟账户权益曲线</summary><BacktestChart points={curve.run === paperAccount?.run_id ? curve.points : []} label="模拟账户权益" selectionKey={paperAccount?.run_id ?? ""}/><p>{curveError}</p></details>
+          </section>}
+      </main></>}
+    <footer><span>NICE WEATHER / KNYC</span><span>纽约时间显示 · 结算窗口按合约 · 模拟成交为近似</span></footer>
+  </>;
 }
 createRoot(document.getElementById("root")!).render(<App />);

@@ -245,6 +245,38 @@ class ReplayView:
             self.curve, self.events = [], []
 
 
+def account_events(root, account, venue, day, after=0):
+    """Project persisted signal stages and native fills for the selected market day."""
+    path = root / "results.sqlite3"
+    if not path.exists():
+        return {"events": [], "next": after, "more": False}
+    with connect(path, readonly=True) as con:
+        run = con.execute("SELECT * FROM runs WHERE account=? AND mode='sandbox'",
+                          (account,)).fetchone()
+        if not run:
+            return {"events": [], "next": after, "more": False}
+        records = con.execute("SELECT seq,body FROM inputs WHERE run_id=? AND seq>? "
+                              "ORDER BY seq LIMIT 1000", (run["run_id"], after)).fetchall()
+        snapshot = json.loads(run["snapshot"] or "{}")
+    events = []
+    for record in records:
+        body = json.loads(record["body"])
+        if body.get("kind") == "signal-events":
+            events.extend(decision_events({"feed_seq": record["seq"], "native_index": 0,
+                                          "received_at": 0, "signal": body}))
+    observer = ReplayView()
+    if snapshot.get("ts"):
+        observer.observe(snapshot)
+        events.extend(e for e in observer.events if e["stage"] == "fill")
+    events = [e for e in events if e.get("venue") == venue and e.get("day") == day]
+    for event in events:
+        if (event.get("token") or "").endswith(":NO"):
+            event["outcome"] = "NO"
+            event["token"] = event["token"].removesuffix(":NO")
+    return {"events": events, "next": records[-1]["seq"] if records else after,
+            "more": len(records) == 1000}
+
+
 def router(root):
     routes = APIRouter(prefix="/api/backtests")
 
