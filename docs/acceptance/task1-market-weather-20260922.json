@@ -1,0 +1,169 @@
+{
+  "checked_at": 1790097652.651941,
+  "source": "local archived public facts plus live public metadata; no VM/account access",
+  "history_sampling": "weather every 30 minutes, book snapshots every minute; actual received times retained",
+  "markets": [
+    {
+      "venue": "kalshi",
+      "day": "2026-09-19",
+      "contract_count": 6,
+      "example_token": "kalshi:KXHIGHNY-26SEP19-T69",
+      "has_collected_prices": true,
+      "weather_points": {
+        "metar": 22,
+        "nws_observations": 24,
+        "hourly_temp": 0,
+        "hrrr": 173,
+        "nws_forecast": 0
+      },
+      "cli_versions": 2,
+      "observation_start": "2026-09-19T05:00:00+00:00",
+      "observation_end": "2026-09-20T05:00:00+00:00",
+      "close_time": "2026-09-20T05:00:00Z"
+    },
+    {
+      "venue": "kalshi",
+      "day": "2026-09-22",
+      "contract_count": 6,
+      "example_token": "kalshi:KXHIGHNY-26SEP22-T63",
+      "has_collected_prices": false,
+      "weather_points": {
+        "metar": 0,
+        "nws_observations": 0,
+        "hourly_temp": 0,
+        "hrrr": 0,
+        "nws_forecast": 0
+      },
+      "cli_versions": 0,
+      "observation_start": "2026-09-22T05:00:00+00:00",
+      "observation_end": "2026-09-23T05:00:00+00:00",
+      "close_time": "2026-09-23T05:00:00Z",
+      "public_quote": {
+        "received_at": 1790097654.850798,
+        "exchange_time": null,
+        "bid": [],
+        "ask": [
+          [
+            0.01,
+            125756.0
+          ]
+        ]
+      }
+    },
+    {
+      "venue": "kalshi",
+      "day": "2026-09-23",
+      "contract_count": 6,
+      "example_token": "kalshi:KXHIGHNY-26SEP23-T65",
+      "has_collected_prices": false,
+      "weather_points": {
+        "metar": 0,
+        "nws_observations": 0,
+        "hourly_temp": 0,
+        "hrrr": 0,
+        "nws_forecast": 0
+      },
+      "cli_versions": 0,
+      "observation_start": "2026-09-23T05:00:00+00:00",
+      "observation_end": "2026-09-24T05:00:00+00:00",
+      "close_time": "2026-09-24T05:00:00Z",
+      "public_quote": {
+        "received_at": 1790097655.2628512,
+        "exchange_time": null,
+        "bid": [
+          [
+            0.04,
+            80.0
+          ]
+        ],
+        "ask": [
+          [
+            0.05,
+            8.0
+          ]
+        ]
+      }
+    },
+    {
+      "venue": "poly_us",
+      "day": "2026-09-19",
+      "contract_count": 6,
+      "example_token": "poly_us:tc-temp-nychigh-2026-09-19-lt69f",
+      "has_collected_prices": true,
+      "weather_points": {
+        "metar": 22,
+        "nws_observations": 24,
+        "hourly_temp": 0,
+        "hrrr": 173,
+        "nws_forecast": 0
+      },
+      "cli_versions": 2,
+      "observation_start": "2026-09-19T05:00:00+00:00",
+      "observation_end": "2026-09-20T05:00:00+00:00",
+      "close_time": "2026-09-20T05:00:00Z"
+    },
+    {
+      "venue": "poly_us",
+      "day": "2026-09-22",
+      "contract_count": 6,
+      "example_token": "poly_us:tc-temp-nychigh-2026-09-22-lt63f",
+      "has_collected_prices": false,
+      "weather_points": {
+        "metar": 0,
+        "nws_observations": 0,
+        "hourly_temp": 0,
+        "hrrr": 0,
+        "nws_forecast": 0
+      },
+      "cli_versions": 0,
+      "observation_start": "2026-09-22T05:00:00+00:00",
+      "observation_end": "2026-09-23T05:00:00+00:00",
+      "close_time": "2026-09-23T09:00:00Z",
+      "public_quote": {
+        "received_at": 1790097655.7878246,
+        "exchange_time": "2026-09-22T17:20:28.141966102Z",
+        "bid": [],
+        "ask": [
+          [
+            0.01,
+            656996.0
+          ]
+        ]
+      }
+    },
+    {
+      "venue": "poly_us",
+      "day": "2026-09-23",
+      "contract_count": 6,
+      "example_token": "poly_us:tc-temp-nychigh-2026-09-23-lt65f",
+      "has_collected_prices": false,
+      "weather_points": {
+        "metar": 0,
+        "nws_observations": 0,
+        "hourly_temp": 0,
+        "hrrr": 0,
+        "nws_forecast": 0
+      },
+      "cli_versions": 0,
+      "observation_start": "2026-09-23T05:00:00+00:00",
+      "observation_end": "2026-09-24T05:00:00+00:00",
+      "close_time": "2026-09-24T09:00:00Z",
+      "public_quote": {
+        "received_at": 1790097655.9789102,
+        "exchange_time": "2026-09-22T17:20:45.203330574Z",
+        "bid": [
+          [
+            0.05,
+            20.0
+          ]
+        ],
+        "ask": [
+          [
+            0.07,
+            89.0
+          ]
+        ]
+      }
+    }
+  ]
+}

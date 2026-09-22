@@ -250,6 +250,7 @@ async def settlement_feed(store, stop):
 
 async def market_feed(store, venue, stop, interval=2):
     contracts, day, next_metadata = [], None, 0
+    directory_task = None
     async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "nice-weather/0.1"}) as client:
         while not stop.is_set():
             started = time.monotonic()
@@ -268,6 +269,12 @@ async def market_feed(store, venue, stop, interval=2):
                     contracts = normalize(venue, current, payload, received, series)
                     store.publish("contracts", venue, contracts, received)
                     day, next_metadata = current, time.time() + 300
+                    # Directory facts are separate from the active contracts consumed by trading.
+                    from nice_weather.trading.market_discovery import refresh_directory
+
+                    if directory_task is None or directory_task.done():
+                        directory_task = asyncio.create_task(
+                            refresh_directory(client, store, venue, current, series))
 
                 async def fetch_book(contract):
                     payload, received, _ = await capture_json(
@@ -308,6 +315,10 @@ async def market_feed(store, venue, stop, interval=2):
                 )
             except TimeoutError:
                 pass
+
+        if directory_task is not None:
+            directory_task.cancel()
+            await asyncio.gather(directory_task, return_exceptions=True)
 
 
 async def weather_feed(store, stop):

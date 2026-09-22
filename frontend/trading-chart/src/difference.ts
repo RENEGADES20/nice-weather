@@ -101,8 +101,8 @@ export function minuteChanges(points: RawPoint[], source: string,
     let value: number | null = null;
     if (current.value != null && before?.value != null) {
       if (source === 'forecast') value = current.revisionDelta ?? null;
-      else if (source !== 'price' || (current.priceSource === 'CLOB mid'
-        && before.priceSource === 'CLOB mid' && current.binId === before.binId))
+      else if (source !== 'price' || (["CLOB mid", "public_book_mid"].includes(current.priceSource ?? "")
+        && before.priceSource === current.priceSource && current.binId === before.binId))
         value = current.value - before.value;
     }
     result.set(time, {time, value: value != null && Number.isFinite(value) ? value : null,
