@@ -123,9 +123,84 @@ def test_disabled_signal_then_quote_reassessment_and_recovery(rounding):
         assert recovered.latest_weather == weather
         assert recovered.fee_accumulators == session.fee_accumulators
         assert recovered.depth_fills() == session.depth_fills()
+        # The position opportunity stays consumed, but new weather remains visible.
+        later = weather | {"p_end": .7, "received_at": now + 2, "data_cutoff": now + 2}
+        recovered.apply({"kind": "weather_signal", "ts": int((now + 2) * 1e9), "data": later})
+        assert recovered.signals["S3"]["p_end"] == .7
+        assert recovered.signals["S3"]["execution_reason"] == "DAILY_OPPORTUNITY_CONSUMED"
+        assert not recovered.signals["S3"]["triggered"]
+        assert len(recovered.snapshot()["fills"]) == 1
         if rounding == "poly_us_order_half_even_v1":
             assert session.fee_accumulators
     finally:
         session.dispose()
         if recovered:
             recovered.dispose()
+
+
+@pytest.mark.parametrize("state,reason", [
+    ({"attempt": 1, "orders": ["unknown"]}, "ORDER_RECONCILIATION_REQUIRED"),
+    ({"triggered": True}, "DAILY_OPPORTUNITY_CONSUMED"),
+])
+def test_account_block_does_not_freeze_weather(state, reason):
+    from nice_weather.trading.engine import Session
+    from nice_weather.trading.worker import run_config
+
+    now, contracts, weather, _ = scenario()
+    session = Session(run_config("test", "sandbox", "S3") | {
+        "venue": "kalshi", "station_id": "KNYC", "execution_version": 3,
+        "signal_version": "knyc-executable-v2",
+    })
+    try:
+        for c in contracts:
+            session.apply({"kind": "contract", "ts": int((now - 10) * 1e9), "data": c})
+        session.strategy_state[f"{weather['day']}:S3"] = state
+        session.apply({"kind": "weather_signal", "ts": int(now * 1e9), "data": weather})
+        assert session.signals["S3"]["triggered"]
+        assert session.signals["S3"]["execution_reason"] == reason
+        stages = {e["stage"] for e in session.signals["S3"]["events"]}
+        assert {"weather_trigger", "execution_rejected"} <= stages
+        later = weather | {"p_end": .5, "received_at": now + 1, "data_cutoff": now + 1}
+        session.apply({"kind": "weather_signal", "ts": int((now + 1) * 1e9), "data": later})
+        assert session.signals["S3"]["p_end"] == .5
+        assert not session.snapshot()["fills"]
+    finally:
+        session.dispose()
+
+
+def test_signal_journal_deduplicates_commit_and_restart(tmp_path):
+    import json
+
+    from nice_weather.trading.recovery import PaperRunner
+    from nice_weather.trading.storage import Results
+    from nice_weather.trading.worker import run_config
+
+    now, contracts, weather, _ = scenario()
+    results = Results(tmp_path / "results.sqlite3")
+    config = run_config("test", "sandbox", "S3") | {
+        "venue": "kalshi", "station_id": "KNYC", "execution_version": 3,
+        "signal_version": "knyc-executable-v2",
+    }
+    results.create("signals", "test", "sandbox", config)
+    runner = PaperRunner(results, results.run("signals"))
+    try:
+        for i, c in enumerate(contracts):
+            runner.apply(f"contract-{i}", {"kind": "contract", "ts": int((now - 10) * 1e9),
+                                           "data": c})
+        runner.apply("weather", {"kind": "weather_signal", "ts": int(now * 1e9), "data": weather})
+        rows = results.inputs("signals")
+        batches = [r for r in rows if json.loads(r["body"])["kind"] == "signal-events"]
+        assert len(batches) == 1
+        runner.commit()
+        assert len(results.inputs("signals")) == len(rows)
+    finally:
+        runner.session.dispose()
+    restored = PaperRunner(results, results.run("signals"))
+    try:
+        assert len(results.inputs("signals")) == len(rows)
+        assert restored.session.signals["S3"]["triggered"]
+        restored.apply("weather-later", {"kind": "weather_signal", "ts": int((now + 1) * 1e9),
+                                         "data": weather | {"p_end": .5}})
+        assert len(results.inputs("signals")) == len(rows) + 1
+    finally:
+        restored.session.dispose()
