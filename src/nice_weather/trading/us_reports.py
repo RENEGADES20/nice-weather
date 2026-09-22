@@ -21,6 +21,52 @@ from nautilus_trader.model.identifiers import TradeId, VenueOrderId
 from nautilus_trader.model.objects import Money, Price, Quantity
 
 
+def account_state(venue, account, payload, received_ns):
+    """Report authenticated balance facts without inventing cash/locked mappings.
+
+    Native balances remain unknown until the venue's cash/collateral mapping is
+    verified. This event can register a read-only account, never authorize risk.
+    Amount strings in info preserve precision independently of USD registries.
+    """
+    from nautilus_trader.model.enums import AccountType
+    from nautilus_trader.model.events import AccountState
+    from nautilus_trader.model.objects import Currency
+
+    if (venue not in {"kalshi", "poly_us"} or account.get_issuer() != venue.upper()
+            or type(received_ns) is not int or received_ns <= 0):
+        raise ValueError("Invalid account scope or receipt time")
+    if venue == "kalshi":
+        if type(payload["portfolio_value"]) is not int:
+            raise ValueError("Invalid portfolio cents")
+        facts = {"available_balance_usd": str(number(payload["balance_dollars"])),
+                 "portfolio_value_usd": str(Decimal(payload["portfolio_value"]) / 100)}
+        source = payload["updated_ts"]
+        if type(source) is not int or not 0 <= source * 1_000_000_000 <= received_ns:
+            raise ValueError("Invalid balance source timestamp")
+        source_ns = source * 1_000_000_000
+    else:
+        rows = payload["balances"]
+        if (not isinstance(rows, list) or len(rows) != 1
+                or not isinstance(rows[0], dict) or rows[0].get("currency") != "USD"):
+            raise ValueError("Expected one USD account balance")
+        row = rows[0]
+        facts = {field: str(number(row[field])) for field in ("currentBalance", "buyingPower")}
+        for field in ("assetNotional", "assetAvailable", "pendingCredit", "openOrders",
+                      "unsettledFunds", "marginRequirement", "balanceReservation"):
+            if field in row:
+                facts[field] = None if row[field] is None else str(number(row[field]))
+        source = row.get("lastUpdated")
+        source_ns = 0 if source is None else timestamp(source, received_ns)
+    return AccountState(
+        account_id=account, account_type=AccountType.MARGIN, base_currency=Currency.from_str("USD"),
+        reported=True, balances=[], margins=[],
+        info={"venue": venue, "venue_balance_facts": facts,
+              "balance_mapping_status": "unverified", "source_time_known": source_ns != 0,
+              "reconciled": False, "trading_enabled": False},
+        event_id=UUID4(), ts_event=source_ns, ts_init=received_ns,
+    )
+
+
 def number(value):
     if isinstance(value, bool):
         raise ValueError("Invalid numeric fact")

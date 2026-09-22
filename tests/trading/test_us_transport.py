@@ -129,6 +129,26 @@ def make_poly(tmp_path, handler):
     )
 
 
+def test_response_decimal_facts_survive_read_and_durable_receipt(tmp_path):
+    raw = b'{"id":"exchange-1","amount":1.0000000000000001,"count":1,"eof":true}'
+
+    async def run():
+        client = make_poly(tmp_path, lambda _: httpx.Response(200, content=raw))
+        try:
+            result = await client.read("/account/balances")
+            assert result["amount"] == "1.0000000000000001"
+            assert result["count"] == 1 and result["eof"] is True
+            result = await client.submit("exact", contract("poly_us"), {
+                "outcome": "YES", "side": "BUY", "price": ".35", "quantity": "1",
+            })
+            assert result["status"] == "accepted"
+            assert result["response"]["amount"] == "1.0000000000000001"
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     "status,body,expected",
     [

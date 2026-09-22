@@ -1,0 +1,51 @@
+{
+  "kind": "real read-only authentication and native account construction; not full reconciliation",
+  "venues": {
+    "kalshi": {
+      "authenticated": true,
+      "reconciled": false,
+      "balance_fields": [
+        "balance",
+        "balance_breakdown",
+        "balance_dollars",
+        "portfolio_value",
+        "updated_ts"
+      ],
+      "orders_count": 15,
+      "positions_count": 0,
+      "native_account_constructed": true,
+      "native_cash_known": false,
+      "balance_mapping_status": "unverified",
+      "received_at": 1790053136.6891375,
+      "history_received_at": 1790053137.0333345,
+      "fills_count": 28,
+      "non_knyc_orders_count": 15,
+      "orders_missing_original_tif": 15
+    },
+    "poly_us": {
+      "authenticated": true,
+      "reconciled": false,
+      "balance_fields": [
+        "balances"
+      ],
+      "orders_count": 0,
+      "positions_count": 0,
+      "native_account_constructed": true,
+      "native_cash_known": false,
+      "balance_mapping_status": "unverified",
+      "received_at": 1790053139.7565486,
+      "history_received_at": 1790053139.8339243
+    }
+  },
+  "raw_evidence_directory": "var\\knyc\\account-native-20260922",
+  "source_hashes": {
+    "kalshi": "a72aabcefbf874e7d49139cadb202f4a316136d56515b561cb0f312fb5866025",
+    "poly_us": "bd2eee7e4ceba891ba1ca1bcf494a5c5913409319b43a3b576cc2c1939e4f6a3"
+  },
+  "implementation_hashes": {
+    "src/nice_weather/trading/us_reports.py": "abd297277f5ccc36e2299169e0111c6b494da1a723b0b58fc1c301277d4a45f3",
+    "src/nice_weather/trading/us_transport.py": "e3f4380424dfd3e84731fbe43f7bad65294f59c147249c91e219d15a2942dbb2",
+    "scripts/check_us_accounts.py": "9b196176215d69015af38b510249f886f025e13faa46166b2612b848eb93d1bb"
+  },
+  "persisted_order_attempts": 0
+}

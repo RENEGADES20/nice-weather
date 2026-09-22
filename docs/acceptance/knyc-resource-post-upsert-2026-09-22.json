@@ -1,0 +1,40 @@
+{
+  "kind": "30-minute production observation, not full market-day acceptance",
+  "vm_raw_file": "/home/hdharrison1206/knyc-post-upsert-20260922-0441.jsonl",
+  "vm_summary_file": "/home/hdharrison1206/knyc-post-upsert-20260922-summary.json",
+  "raw_sha256": "0d01664a2d848da870c0f7fe389cc3c08adb3546ba9edf0c5ed87ba8e3a3a5ad",
+  "samples": 31,
+  "errors": 0,
+  "sha": "298f7e90114bcdd793d1764e6f16268ea9e3ea16",
+  "first": 1790052075.706894,
+  "last": 1790053875.7130818,
+  "min_free_bytes": 2267910144,
+  "max_pending_age_seconds": 0.956871509552002,
+  "all_six_services_active_and_stable_pid": true,
+  "write_bytes_per_second": {
+    "terminal": 0.0,
+    "feed": 311672.7,
+    "hrrr": 289.0,
+    "paper_kalshi": 354496.2,
+    "paper_poly_us": 282431.9,
+    "backtest": 57924.1
+  },
+  "cancelled_write_bytes_per_second": {
+    "terminal": 0.0, "feed": 0.0, "hrrr": 0.0,
+    "paper_kalshi": 154812.3, "paper_poly_us": 160419.3, "backtest": 56324.4
+  },
+  "cpu_percent": {
+    "terminal": 0.19, "feed": 4.53, "hrrr": 1.48,
+    "paper_kalshi": 10.18, "paper_poly_us": 6.41, "backtest": 0.2
+  },
+  "max_memory_bytes": {
+    "terminal": 49971200, "feed": 50913280, "hrrr": 235577344,
+    "paper_kalshi": 227725312, "paper_poly_us": 215318528, "backtest": 20848640
+  },
+  "notes": [
+    "write_bytes and cancelled_write_bytes are Linux task counters. Raw write_bytes and per-task subtraction do not establish device-level physical writes. This corrects the earlier physical-write interpretation.",
+    "A read-only 30-query VM comparison produced write_bytes=864256/cancelled_write_bytes=860160 with short connections; both counters were zero with one reused connection. No business rows were changed.",
+    "Summary transcribed from VM-side calculation over preserved JSONL; all samples use the same release and service PIDs.",
+    "Write amplification and long-term capacity remain unresolved. No foreground UI latency or full-day acceptance is inferred."
+  ]
+}
