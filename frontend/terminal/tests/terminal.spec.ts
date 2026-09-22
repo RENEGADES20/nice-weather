@@ -100,9 +100,12 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
       },
     }),
   );
-  await page.route("**/api/commands", (r) => {
+  let releaseFirstCommand: () => void;
+  const firstCommandResponse = new Promise<void>((resolve) => { releaseFirstCommand = resolve; });
+  await page.route("**/api/commands", async (r) => {
     expect(r.request().headers()["x-csrf-token"]).toBe(csrfValue);
     commands++;
+    if (commands === 1) await firstCommandResponse;
     return r.fulfill({
       status: 202,
       json: {
@@ -179,6 +182,11 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
         return performance.now() - start;
       }),
     );
+    if (i === 0) {
+      await expect.poll(() => measuredNames.has("command-local-feedback")).toBe(true);
+      await expect(page.getByRole("status")).toContainText("提交中");
+      releaseFirstCommand!();
+    }
     await expect(page.getByRole("status")).toContainText(/已排队|accepted/);
     const ask = 0.61 + i * 0.001;
     wsMock!.send(
@@ -273,7 +281,7 @@ test("cached bin interaction stays local; trading, stale feed and responsive lay
   });
   expect(errors).toEqual([]);
   expect(measuredNames).toEqual(new Set([
-    "terminal-ready", "bin-select-display", "market-event-display",
+    "terminal-ready", "bin-select-display", "market-event-display", "command-local-feedback",
   ]));
   const percentile = (a: number[]) =>
     a.toSorted((a, b) => a - b)[Math.ceil(a.length * 0.95) - 1];

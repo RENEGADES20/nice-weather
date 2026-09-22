@@ -1,5 +1,13 @@
 # 当前状态
 
+## 2026-09-22 队列连接及订单证据已部署，前台性能未达标
+
+PR #67 检查通过后合并，06:28 UTC 核验 VM 精确版本 697be59c18d29f9a346bfe4b9a7632a9eb1f9175：74 文件哈希和健康版本一致，六个应用服务 active。该版本同时包含 PR #66 的发送前订单意图证据；两个 Paper 策略启用状态在重启后保留，仍无成交。未改变 VM 配置，剩余容量约 2.19 GB。见 acceptance/knyc-queue-reader-deployment-2026-09-22.json。
+
+用户确认 Chrome 终端前台后，保留的 500 条真实消息绘制样本 p95=881.2ms，未满足 100ms 门槛。全部保留样本参与统计，控制台窗口未覆盖采样起点后的全部事件；详见 acceptance/knyc-foreground-baseline-2026-09-22.json。本地新增命令反馈及提交/等待绘制帧分段计时，尚未发布；不能将测量改进写成性能修复。完整市场日、最终结算、Live 接线与用户交易验收仍未完成。
+
+资源诊断发现 rsyslog 对 /dev/console 的 Permission denied 导致反复 suspended/resumed 日志。未改系统日志权限或基础设施配置，长期容量仍待解决。06:29 UTC 启动当前版本 31 次分钟采样，输出 /home/hdharrison1206/knyc-post-reader-20260922-0629.jsonl，结果待核验。
+
 ## 2026-09-22 双平台 Paper 已启用，队列连接复用待发布
 
 06:12 UTC 核对两个持久化 start 请求均 accepted，Kalshi/Poly US Paper 的 S1/S2/S3 均已启用，各 100 模拟现金、零成交；现有模拟限制为每策略预算 5、单档 5、当日 20 美元。当前 HRRR 尚未覆盖日末，三策略继续明确 no-trade；Kalshi 规则门禁未解除。Live 保持关闭，其用户测试限额仍为每平台累计 5 美元。启用及回执证据见 acceptance/knyc-paper-activation-2026-09-22.json，不能据此宣称成交或完整市场日通过。
