@@ -65,6 +65,8 @@ class Requests:
             "cancel_run",
             "balance",
             "reset",
+            "configure",
+            "reconcile",
         }:
             raise ValueError("Unsupported request")
         if not 0 < ttl <= 86400:

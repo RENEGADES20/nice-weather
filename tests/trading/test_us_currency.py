@@ -6,7 +6,9 @@ import pytest
 from nice_weather.trading.us_currency import register_live_usd
 
 
-@pytest.mark.parametrize("venue,precision", [("kalshi", 4), ("kalshi", 2), ("poly_us", 2)])
+@pytest.mark.parametrize(
+    "venue,precision", [("kalshi", 6), ("kalshi", 4), ("kalshi", 2), ("poly_us", 2)]
+)
 def test_isolated_live_currency_survives_native_account_roundtrip(venue, precision):
     # A child is essential: both registries are global and Paper must stay USD2.
     program = """
@@ -52,7 +54,7 @@ else:
 
 
 @pytest.mark.parametrize("venue,precision", [
-    ("poly_intl", 2), ("poly_us", 4), ("kalshi", True), ("kalshi", "4"), ("kalshi", 6),
+    ("poly_intl", 2), ("poly_us", 4), ("kalshi", True), ("kalshi", "4"), ("kalshi", 3),
 ])
 def test_invalid_currency_profile_does_not_mutate_registry(venue, precision):
     from nautilus_trader.model.objects import Currency

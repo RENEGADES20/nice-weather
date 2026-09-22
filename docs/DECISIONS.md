@@ -1,5 +1,15 @@
 # 决策记录
 
+## D-KNYC-20260922-TASK5-LIVE：独立 Live 运行器与资金事实
+
+任务 5 复用现有 SQLite 请求、结果和传输事务，不增加数据库或部署依赖。每个平台一个独立进程，以每市场单个 YES 原生合约表达净持仓。Nautilus 消息总线、Cache、Portfolio 和执行引擎接收真实订单/成交/持仓报告；缺成交时拒绝整体对账，关闭引擎补造成交。引擎会修改传入批量报告容器，因此页面投影保留独立容器，避免后续刷新丢失历史订单。
+
+原生 USD 精度 Kalshi 使用 6 位承载官方成交费用，实际现金网格通过 --balance-precision 明确配置 2/4；Poly US 为 2 位。不得在 Paper/API 进程重注册币种。资金字段保留平台原始口径：Kalshi 全分区可用余额及分区明细分别展示，下单检查实际市场 exchange_index；Poly currentBalance、buyingPower、openOrders、balanceReservation 分列。缺少平台现金/冻结分解时保持未知；Native AccountState.info 保留精确资金事实，不编造 AccountBalance 分解。
+
+每平台所有本地绑定共用累计 5 USD，包括买入支出、正费用和挂单预留；卖出不补回预算。先持久化身份及预留再发送；未知不重发。策略停止先保存禁用再撤该策略挂单，断线恢复继续撤单，人工挂单保留，迟到成交继续入账。人工订单不读取模型验收或策略概率；策略候选由共享队列提交，执行时核验启用和风险。日亏损字段明确为纽约成交日已实现净损益（含费用），持仓成本限额另控未实现敞口。
+
+当前真实只读通过不等于真实交易或完整市场日通过。Kalshi KNYC 规则歧义沿用原审计；Poly REST activities 缺订单 ID 时无法替代私有逐笔成交。此类证据缺口保留并具体阻止新增风险。主入口/发布交任务 6，本任务不操作 VM。
+
 ## D-KNYC-20260920-US-REPORTS：US 实盘净持仓及 YES 价格口径
 
 US 原生账户报告按每个市场一个 YES 合约映射，净负仓位为 NO 敞口；Paper 既有双 token 历史保持原状。Poly US 官方 Orders & Trading 明确所有订单价格使用 YES 侧，传输层将用户的 NO 价格转换为其补数。原生报告保留交易所成交费、数量与来源时间，不能以估算费用或 activities 缺失的订单关联补造成交。Poly US 小数净持仓采用 netPositionDecimal，旧整数值的舍入不能覆盖它。

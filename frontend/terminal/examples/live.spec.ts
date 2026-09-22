@@ -1,0 +1,35 @@
+import { test, expect } from "@playwright/test";
+
+test("native live components through authenticated API, queue and mock exchange", async ({ page }) => {
+  await page.goto("/examples/live.html");
+  await page.getByRole("button", { name: "登录本地验收" }).click();
+  await page.getByText("账户绑定与风险配置", { exact: true }).click();
+  await page.getByLabel("绑定当前已认证账户").check();
+  await page.getByLabel("启用人工 Live").check();
+  await page.getByLabel("市场白名单（每行一个）").fill("KNYC-TEST");
+  await page.getByRole("button", { name: "保存配置" }).click();
+  await expect(page.getByTestId("receipt")).toHaveText("accepted");
+  await page.getByLabel("数量", { exact: true }).fill("2");
+  await page.getByRole("combobox", { name: "有效方式", exact: true }).selectOption("GTC");
+  await page.getByRole("button", { name: "提交 Live 订单" }).click();
+  await expect(page.getByRole("cell", { name: "PARTIALLY_FILLED", exact: true })).toBeVisible();
+  await expect(page.getByText(/净 YES\s+1.0/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("cell", { name: "PARTIALLY_FILLED", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "撤单", exact: true }).click();
+  await expect(page.getByRole("cell", { name: "CANCELED", exact: true })).toBeVisible();
+  await page.getByRole("combobox", { name: "方向", exact: true }).selectOption("SELL");
+  await page.getByLabel("数量", { exact: true }).fill("1");
+  await page.getByLabel("限价（USD）").fill("0.50");
+  await page.getByRole("button", { name: "提交 Live 订单" }).click();
+  await expect(page.getByRole("cell", { name: "FILLED", exact: true })).toBeVisible();
+  await expect(page.getByText("暂无已对账持仓", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "启用 S1", exact: true }).click();
+  await page.getByRole("button", { name: "停止并撤单 S1", exact: true }).click();
+  await expect(page.getByRole("button", { name: "启用 S1", exact: true })).toBeEnabled();
+  await page.getByRole("combobox", { name: "平台", exact: true }).selectOption("kalshi");
+  await expect(page.getByText("Live 账户尚未启动", { exact: true })).toBeVisible();
+  await page.getByRole("combobox", { name: "平台", exact: true }).selectOption("poly_us");
+  await expect(page.getByRole("cell", { name: "FILLED", exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/task5-live.png", fullPage: true });
+});

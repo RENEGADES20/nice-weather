@@ -1,0 +1,13 @@
+.nw-live { font: 14px/1.5 system-ui, sans-serif; color: #182536; background: #fff; padding: 16px; border: 1px solid #c7d0dc; border-radius: 6px; margin: 12px 0; }
+.nw-live h2 { font-size: 18px; margin-top: 0; }
+.nw-live label { display: block; margin: 8px 0; }
+.nw-live input, .nw-live select, .nw-live textarea, .nw-live button { font: inherit; padding: 6px; margin: 4px; }
+.nw-live textarea { display: block; width: min(90%, 560px); min-height: 70px; }
+.nw-live button { cursor: pointer; }
+.nw-live button:disabled { cursor: default; opacity: .55; }
+.nw-live :focus-visible { outline: 2px solid #1765b5; outline-offset: 2px; }
+.nw-live-funds, .nw-live-actions { display: flex; flex-wrap: wrap; gap: 12px; }
+.nw-live-funds dd { margin: 0; font-weight: 600; }
+.nw-live table { width: 100%; text-align: left; border-collapse: collapse; }
+.nw-live td, .nw-live th { padding: 6px; border-bottom: 1px solid #e0e5ec; }
+.nw-live pre { max-height: 240px; overflow: auto; }

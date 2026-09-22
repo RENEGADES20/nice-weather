@@ -137,6 +137,61 @@ class USRest:
                 account TEXT NOT NULL, request_id TEXT NOT NULL, evidence TEXT NOT NULL,
                 created REAL NOT NULL,
                 PRIMARY KEY(account,request_id))""")
+            con.execute("""CREATE TABLE IF NOT EXISTS us_private_executions (
+                account TEXT NOT NULL, trade_id TEXT NOT NULL, body TEXT NOT NULL,
+                received REAL NOT NULL, PRIMARY KEY(account,trade_id))""")
+
+    def save_execution(self, execution, received=None):
+        """Poly's private stream is the authoritative order-linked fill evidence."""
+        if execution.get("type") not in {"EXECUTION_TYPE_FILL", "EXECUTION_TYPE_PARTIAL_FILL"}:
+            return
+        key = execution["tradeId"]
+        if not isinstance(key, str) or not key:
+            raise ValueError("Missing private trade identity")
+        body = encoded(execution)
+        with connect(self.path) as con:
+            row = con.execute("SELECT body FROM us_private_executions "
+                              "WHERE account=? AND trade_id=?",
+                              (self.account, key)).fetchone()
+            if row and row[0] != body:
+                # Order state can advance on a repeated fill. Compare execution facts only.
+                previous = json.loads(row[0])
+                fields = ("tradeId", "lastShares", "lastPx", "commissionNotionalCollected",
+                          "transactTime", "aggressor")
+                if (any(previous.get(f) != execution.get(f) for f in fields)
+                        or any(previous["order"].get(f) != execution["order"].get(f)
+                               for f in ("id", "marketSlug", "side"))):
+                    raise ValueError("Conflicting private fill")
+            con.execute("INSERT OR IGNORE INTO us_private_executions VALUES (?,?,?,?)",
+                        (self.account, key, body, time.time() if received is None else received))
+
+    def executions(self):
+        with connect(self.path, readonly=True) as con:
+            return [json.loads(r[0]) for r in con.execute(
+                "SELECT body FROM us_private_executions WHERE account=? ORDER BY received,trade_id",
+                (self.account,))]
+
+    def recover_kalshi_identity(self, attempt, orders):
+        """Exact client ID + original payload, never price/time similarity matching."""
+        if self.venue != "kalshi" or attempt["status"] not in {"unknown", "submitting"}:
+            return
+        evidence = attempt.get("evidence") or {}
+        if evidence.get("method") != "POST" or "ticker" not in evidence.get("body", {}):
+            return
+        matches = [r for r in orders if r.get("client_order_id") == attempt["request_id"]]
+        if len(matches) != 1:
+            raise ValueError("UNKNOWN_SUBMISSION")
+        row, body = matches[0], evidence["body"]
+        if (row["ticker"] != body["ticker"] or row["book_side"] != body["side"]
+                or Decimal(row["yes_price_dollars"]) != Decimal(body["price"])
+                or Decimal(row["initial_count_fp"]) != Decimal(body["count"])):
+            raise ValueError("RECOVERED_ORDER_MISMATCH")
+        with connect(self.path) as con:
+            con.execute("UPDATE transport_attempts SET status='accepted',response=?,error=NULL,"
+                        "updated=? WHERE account=? AND request_id=? "
+                        "AND status IN ('unknown','submitting')",
+                        (encoded({"order_id": row["order_id"]}), time.time(),
+                         self.account, attempt["request_id"]))
 
     def headers(self, method, path, timestamp=None):
         stamp = str(int(time.time() * 1000) if timestamp is None else timestamp)
@@ -255,6 +310,7 @@ class USRest:
             )
         else:
             snapshot["activities"] = await self._pages("/portfolio/activities", "activities")
+            snapshot["executions"] = self.executions()
         snapshot["history_received_at"] = time.time()
         # Native order/fill/position matching is still required after collecting history.
         return snapshot
@@ -264,18 +320,25 @@ class USRest:
             raise ValueError("Invalid API path")
         return PREFIXES[self.venue] + path
 
-    def attempt(self, request_id):
+    def attempts(self, request_id=None):
+        """Read account-scoped durable intents, including interrupted submissions."""
         with connect(self.path, readonly=True) as con:
-            row = con.execute(
+            rows = con.execute(
                 "SELECT a.*,i.evidence,i.created intent_created_at "
                 "FROM transport_attempts a LEFT JOIN transport_intents i "
-                "USING(account,request_id) WHERE a.account=? AND a.request_id=?",
-                (self.account, request_id),
-            ).fetchone()
-        if not row:
-            return None
-        return dict(row) | {"response": json.loads(row["response"] or "null"),
-                            "evidence": json.loads(row["evidence"] or "null")}
+                "USING(account,request_id) WHERE a.account=? "
+                + ("AND a.request_id=? " if request_id is not None else "")
+                + "ORDER BY a.updated,a.request_id LIMIT 10001",
+                (self.account, request_id) if request_id is not None else (self.account,),
+            ).fetchall()
+        if len(rows) > 10000:
+            raise ValueError("Durable history exceeds bounded read; reconciliation incomplete")
+        return [dict(row) | {"response": json.loads(row["response"] or "null"),
+                             "evidence": json.loads(row["evidence"] or "null")} for row in rows]
+
+    def attempt(self, request_id):
+        rows = self.attempts(request_id)
+        return rows[0] if rows else None
 
     async def submit(self, request_id, contract, order):
         if contract.get("parse_status") != "parsed":
@@ -293,9 +356,14 @@ class USRest:
         # The caller's gate must still establish account ownership of this exact venue order.
         if self.venue == "kalshi":
             method, path, body = "DELETE", "/portfolio/events/orders/" + venue_order_id, None
+            market = contract["condition_id"]
+            if not isinstance(market, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+", market):
+                raise ValueError("Invalid cancellation market")
+            params = {"market_ticker": market}
         else:
             method, path = "POST", "/order/" + venue_order_id + "/cancel"
             body = {"marketSlug": contract["condition_id"]}
+            params = None
         return await self._write(
             request_id,
             method,
@@ -304,13 +372,15 @@ class USRest:
             contract,
             {"kind": "cancel", "venue_order_id": venue_order_id},
             cancel_id=venue_order_id,
+            params=params,
         )
 
-    async def _write(self, request_id, method, path, body, contract, order, *, cancel_id=None):
+    async def _write(self, request_id, method, path, body, contract, order, *,
+                     cancel_id=None, params=None):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", request_id):
             raise ValueError("Invalid request ID")
         full = self._path(path)
-        identity = digest([method, full, body])
+        identity = digest([method, full, body] + ([params] if params else []))
         # Only public contract/order facts; never persist authentication headers or keys.
         evidence = {
             "venue": self.venue, "method": method, "path": full, "body": body,
@@ -319,6 +389,8 @@ class USRest:
             "rules_version": contract.get("rules_version"),
             "contract_received_at": contract.get("received_at"),
         }
+        if params:
+            evidence["params"] = params
         previous = self.attempt(request_id)
         if previous:
             if previous["identity"] != identity:
@@ -364,7 +436,8 @@ class USRest:
         status, error, payload = "unknown", None, None
         try:
             response = await self.client.request(
-                method, HOSTS[self.venue] + full, json=body, headers=self.headers(method, full)
+                method, HOSTS[self.venue] + full, json=body, params=params,
+                headers=self.headers(method, full)
             )
             if response.status_code in (200, 201):
                 payload = response.json(parse_float=str)
