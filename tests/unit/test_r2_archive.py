@@ -76,6 +76,24 @@ def test_raw_sync_is_content_addressed_and_idempotent(tmp_path) -> None:
     assert archive.sync_raw() == []
     with WeatherStore(database) as store:
         assert store.r2_usage_summary()["object_count"] == 1
+    original = fake.objects[("weather", keys[0])]
+    fake.objects[("weather", keys[0])] = b"corrupt"
+    import pytest
+
+    with pytest.raises(RuntimeError, match="verification"):
+        archive.prune_verified_raw()
+    with WeatherStore(database) as store:
+        row = store.connection.execute("SELECT length(raw_blob) FROM source_captures").fetchone()
+        assert row[0]
+    fake.objects[("weather", keys[0])] = original
+    assert archive.prune_verified_raw() == {"captures": 1, "screenshots": 0}
+    with WeatherStore(database) as store:
+        row = store.connection.execute("SELECT * FROM source_captures").fetchone()
+        assert row["raw_blob"] == b""
+        assert row["received_at"] == now.isoformat()
+        assert row["content_hash"] == digest
+    assert archive.prune_verified_raw() == {"captures": 0, "screenshots": 0}
+    assert archive.sync_raw() == []
 
 
 def test_r2_check_writes_and_reads_without_deleting(tmp_path) -> None:

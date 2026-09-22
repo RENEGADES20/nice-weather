@@ -258,6 +258,60 @@ class R2Archive:
             uploaded.append(key)
         return uploaded
 
+    def prune_verified_raw(self) -> dict[str, int]:
+        """Evict only bytes recovered from R2; preserve IDs, times and parsed weather."""
+        counts = {"captures": 0, "screenshots": 0}
+        with WeatherStore(self.database_path) as store:
+            exports = store.connection.execute("""
+                SELECT DISTINCT e.* FROM r2_exports e JOIN r2_export_items i USING(export_id)
+                LEFT JOIN source_captures c ON c.capture_id=i.source_id
+                LEFT JOIN settlement_evidence s ON s.evidence_id=i.source_id
+                WHERE e.status='uploaded' AND
+                  ((e.export_type='raw' AND length(c.raw_blob)>0) OR
+                   (e.export_type='evidence' AND s.screenshot_png IS NOT NULL))
+            """).fetchall()
+        for export in exports:
+            response = self.client.get_object(Bucket=self.r2.bucket, Key=export["object_key"])
+            body = response["Body"]
+            try:
+                payload = body.read()
+            finally:
+                if hasattr(body, "close"):
+                    body.close()
+            if len(payload) != export["size_bytes"] or _sha256(payload) != export["sha256"]:
+                raise RuntimeError("R2 archive verification failed; local bytes retained")
+            ids = json.loads(export["source_ids_json"])
+            if export["export_type"] == "raw":
+                records = [json.loads(line) for line in gzip.decompress(payload).splitlines()]
+                if sorted(r["capture_id"] for r in records) != sorted(ids):
+                    raise RuntimeError("R2 capture inventory mismatch; local bytes retained")
+                with WeatherStore(self.database_path) as store, store.transaction() as con:
+                    for record in records:
+                        raw = base64.b64decode(record["raw_base64"], validate=True)
+                        row = con.execute("SELECT * FROM source_captures WHERE capture_id=?",
+                                          (record["capture_id"],)).fetchone()
+                        if row is None or not row["raw_blob"]:
+                            continue
+                        for field in ("source", "station_id", "received_at", "content_hash"):
+                            if row[field] != record[field]:
+                                raise RuntimeError("R2 capture metadata mismatch")
+                        if bytes(row["raw_blob"]) != raw:
+                            raise RuntimeError("R2 capture bytes mismatch")
+                        con.execute("UPDATE source_captures SET raw_blob=X'' WHERE capture_id=?",
+                                    (record["capture_id"],))
+                        counts["captures"] += 1
+            else:
+                with WeatherStore(self.database_path) as store, store.transaction() as con:
+                    for evidence_id in ids:
+                        counts["screenshots"] += con.execute(
+                            "UPDATE settlement_evidence SET screenshot_png=NULL "
+                            "WHERE evidence_id=? AND screenshot_png=?",
+                            (evidence_id, payload),
+                        ).rowcount
+        with WeatherStore(self.database_path) as store:
+            store.connection.execute("PRAGMA incremental_vacuum(4096)").fetchall()
+        return counts
+
     def export_parquet(self, local_date: date) -> list[str]:
         try:
             import pyarrow as pa
@@ -344,7 +398,10 @@ class R2Archive:
         if export_day is not None:
             parquet = self.export_parquet(export_day)
             manifest = self.export_manifest(export_day)
-        return {"raw": raw, "evidence": evidence, "parquet": parquet, "manifest": manifest}
+        result = {"raw": raw, "evidence": evidence, "parquet": parquet, "manifest": manifest}
+        if os.environ.get("R2_PRUNE_VERIFIED_RAW") == "true":
+            result["pruned"] = self.prune_verified_raw()
+        return result
 
     def check(self) -> dict[str, Any]:
         now = utc_now()

@@ -1,0 +1,10 @@
+[Unit]
+Description=Archive and verify KNYC weather raw captures every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15min
+Unit=nice-weather-knyc-r2.service
+
+[Install]
+WantedBy=timers.target
