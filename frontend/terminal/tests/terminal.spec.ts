@@ -1,5 +1,33 @@
 import { test, expect, type WebSocketRoute } from "@playwright/test";
 
+test("replay distinguishes requested interval, partial coverage and legacy evidence", async ({ page }) => {
+  await page.route("**/api/auth", r => r.fulfill({ json: { mode: "cloudflare" } }));
+  await page.route("**/api/session", r => r.fulfill({ json: { csrf: "fixture" } }));
+  await page.route("**/api/requests", r => r.fulfill({ json: [] }));
+  await page.routeWebSocket("**/api/events*", () => {});
+  await page.route("**/api/snapshot", r => r.fulfill({ json: {
+    cursor: 1, contracts: [], books: {}, weather: {}, health: {},
+    live: { enabled: false, reason: "pending" },
+    accounts: [
+      { run_id: "partial-replay", mode: "backtest", account: "backtest-kalshi", status: "running",
+        updated: 100, snapshot: { replay_audit: {
+          requested_start: 10, requested_end: 100, scan_complete: false,
+          inputs: { prediction: { count: 2, first_received: 30, last_received: 50,
+            max_gap_seconds: 20 } }, decisions: { S1: { STALE_KNYC_OBSERVATIONS: 2 } },
+        } } },
+      { run_id: "legacy-replay", mode: "backtest", account: "backtest-kalshi", status: "completed",
+        updated: 100, snapshot: { equity: 100, fills: [] } },
+    ],
+  } }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "回测", exact: true }).click();
+  await expect(page.getByText(/扫描中；/)).toBeVisible();
+  await expect(page.getByText(/请求区间：1970-01-01T00:00:10/)).toBeVisible();
+  await expect(page.getByText(/prediction：2 条/)).toContainText("00:00:30.000Z");
+  await expect(page.getByText(/S1 决策变化/)).toContainText("STALE_KNYC_OBSERVATIONS × 2");
+  await expect(page.getByText("此记录未保存过程覆盖与决策审计。")).toBeVisible();
+});
+
 test("cached bin interaction stays local; trading, stale feed and responsive layout", async ({
   page,
 }, testInfo) => {
