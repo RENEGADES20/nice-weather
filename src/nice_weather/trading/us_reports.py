@@ -57,10 +57,13 @@ def account_state(venue, account, payload, received_ns):
                 facts[field] = None if row[field] is None else str(number(row[field]))
         source = row.get("lastUpdated")
         source_ns = 0 if source is None else timestamp(source, received_ns)
+    from nice_weather.trading.us_live_state import money_facts
+
     return AccountState(
         account_id=account, account_type=AccountType.MARGIN, base_currency=Currency.from_str("USD"),
         reported=True, balances=[], margins=[],
         info={"venue": venue, "venue_balance_facts": facts,
+              "funds": money_facts(venue, payload),
               "balance_mapping_status": "unverified", "source_time_known": source_ns != 0,
               "reconciled": False, "trading_enabled": False},
         event_id=UUID4(), ts_event=source_ns, ts_init=received_ns,
@@ -150,7 +153,8 @@ def kalshi_fill_report(account, instrument, market, row, received_ns):
                        row["created_time"], received_ns)
 
 
-def kalshi_order_report(account, instrument, market, row, received_ns, *, original_tif):
+def kalshi_order_report(account, instrument, market, row, received_ns, *, original_tif,
+                        client_order_id=None):
     """TIF must come from the persisted submitted request; the REST row omits it."""
     scope("kalshi", account, instrument, market, row["ticker"])
     if row.get("subaccount_number") != 0 or row["type"] != "limit":
@@ -182,6 +186,7 @@ def kalshi_order_report(account, instrument, market, row, received_ns, *, origin
     return OrderStatusReport(
         account_id=account, instrument_id=instrument.id,
         venue_order_id=VenueOrderId(row["order_id"]),
+        client_order_id=client_order_id,
         order_side={"bid": OrderSide.BUY, "ask": OrderSide.SELL}[row["book_side"]],
         order_type=OrderType.LIMIT, time_in_force=original_tif, order_status=status,
         quantity=total, filled_qty=filled, price=px, report_id=UUID4(),
@@ -226,7 +231,8 @@ def poly_fill_report(account, instrument, market, row, received_ns):
                        row["transactTime"], received_ns)
 
 
-def poly_order_report(account, instrument, market, row, received_ns, *, source_updated=None):
+def poly_order_report(account, instrument, market, row, received_ns, *, source_updated=None,
+                      client_order_id=None):
     scope("poly_us", account, instrument, market, row["marketSlug"])
     if row["type"] != "ORDER_TYPE_LIMIT":
         raise ValueError("Unsupported order type")
@@ -258,6 +264,7 @@ def poly_order_report(account, instrument, market, row, received_ns, *, source_u
     updated = timestamp(source_updated, received_ns) if source_updated is not None else 0
     return OrderStatusReport(
         account_id=account, instrument_id=instrument.id, venue_order_id=VenueOrderId(row["id"]),
+        client_order_id=client_order_id,
         order_side=side, order_type=OrderType.LIMIT, time_in_force=tif, order_status=status,
         quantity=total, filled_qty=filled, price=px, report_id=UUID4(),
         ts_accepted=timestamp(row["insertTime"], received_ns) if row.get("insertTime") else 0,

@@ -293,3 +293,44 @@ def test_known_order_can_be_cancelled_while_submission_is_unknown(tmp_path):
         await client.close()
 
     asyncio.run(run())
+
+
+def test_kalshi_cancel_routes_and_persists_market_identity(tmp_path):
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    secret = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                               serialization.NoEncryption()).decode()
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        assert request.url.params["market_ticker"] == contract("kalshi")["condition_id"]
+        stamp = request.headers["KALSHI-ACCESS-TIMESTAMP"]
+        key.public_key().verify(
+            base64.b64decode(request.headers["KALSHI-ACCESS-SIGNATURE"]),
+            (stamp + "DELETE" + request.url.path).encode(),
+            padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=hashes.SHA256.digest_size),
+            hashes.SHA256(),
+        )
+        return httpx.Response(200, json={"order_id": "known-order"})
+
+    async def run():
+        client = USRest("kalshi", "live-kalshi-test", "test-key", secret,
+                        tmp_path / "attempts.sqlite3", gate=lambda *args: True,
+                        transport=httpx.MockTransport(handle))
+        c = contract("kalshi")
+        assert (await client.cancel("cancel-one", c, "known-order"))["status"] == "accepted"
+        await client.cancel("cancel-one", c, "known-order")
+        assert len(calls) == 1
+        assert client.attempt("cancel-one")["evidence"]["params"] == {
+            "market_ticker": c["condition_id"]}
+        assert client.attempts() == [client.attempt("cancel-one")]
+        with sqlite3.connect(client.path) as con:
+            con.execute("INSERT INTO transport_attempts VALUES "
+                        "('live-kalshi-other','foreign','digest','unknown',NULL,NULL,0)")
+        assert len(client.attempts()) == 1
+        with pytest.raises(ValueError, match="different order"):
+            await client.cancel("cancel-one", c | {"condition_id": "OTHER"}, "known-order")
+        assert len(calls) == 1
+        await client.close()
+
+    asyncio.run(run())

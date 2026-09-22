@@ -1,0 +1,59 @@
+{
+  "scope": "task5-only; no VM changes",
+  "readonly": [
+    {
+      "venue": "kalshi",
+      "verified_at": 1790099274.9304798,
+      "read_requests": 18,
+      "write_attempts": 0,
+      "authenticated": true,
+      "reconciled": true,
+      "reason": null,
+      "stream_connected": true,
+      "managed_orders": 0,
+      "managed_fills": 0,
+      "managed_positions": 0,
+      "raw_orders": 10,
+      "raw_positions": 0,
+      "source_hashes": {
+        "us_live.py": "a32a29536cf8b0c235af43ff9eeb27f18296d890fd4eafa2d53785348bab13e0",
+        "us_execution.py": "441ce251d356e2ea3c82772732c8dd9d261836b6146cf7b77f073305ac7236e5",
+        "us_transport.py": "c3c3401f7010a6bfbcd88b0cd9def0491e5400deb33c7082a6598320e23cfa90",
+        "us_reconcile.py": "0fa713a4c0ce163e67dfa45716a17d6bcbeb792bb2c12d465f163fd36cc0f048"
+      }
+    },
+    {
+      "venue": "poly_us",
+      "verified_at": 1790099274.6191726,
+      "read_requests": 8,
+      "write_attempts": 0,
+      "authenticated": true,
+      "reconciled": true,
+      "reason": null,
+      "stream_connected": true,
+      "managed_orders": 0,
+      "managed_fills": 0,
+      "managed_positions": 0,
+      "raw_orders": 0,
+      "raw_positions": 0,
+      "source_hashes": {
+        "us_live.py": "a32a29536cf8b0c235af43ff9eeb27f18296d890fd4eafa2d53785348bab13e0",
+        "us_execution.py": "441ce251d356e2ea3c82772732c8dd9d261836b6146cf7b77f073305ac7236e5",
+        "us_transport.py": "c3c3401f7010a6bfbcd88b0cd9def0491e5400deb33c7082a6598320e23cfa90",
+        "us_reconcile.py": "0fa713a4c0ce163e67dfa45716a17d6bcbeb792bb2c12d465f163fd36cc0f048"
+      }
+    }
+  ],
+  "local_tests": {
+    "trading_passed": 195,
+    "trading_environment_failures": 2,
+    "reason": "redis-server absent locally; CI installs Redis",
+    "browser": "1 passed; authenticated API + queue + native mock exchange",
+    "typecheck": "passed",
+    "build": "passed",
+    "ruff": "passed"
+  },
+  "real_trade_acceptance": "not performed",
+  "real_write_attempts": 0,
+  "private_financial_values": "Retained only in local ignored evidence; excluded from PR"
+}

@@ -11,7 +11,7 @@ _profile = None
 def register_live_usd(venue: str, precision: int):
     global _profile
 
-    if type(precision) is not int or precision not in {2, 4}:
+    if type(precision) is not int or precision not in {2, 4, 6}:
         raise ValueError("Unverified USD precision")
     if venue not in {"kalshi", "poly_us"} or (venue == "poly_us" and precision != 2):
         raise ValueError("Unsupported venue currency profile")
