@@ -157,14 +157,23 @@ def paper(root, venue, once=False):
             runner.session.dispose()
 
 
-def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
+def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
+           cash=100, simulation=None):
     """Replay original receipts, not final labels or reconstructed receipt times."""
+    from nice_weather.trading.backtest_view import ReplayView
     from nice_weather.trading.engine import Session
     from nice_weather.trading.storage import connect
 
     if venue not in VENUES or not 0 <= start < end <= time.time():
         raise ValueError("Invalid received-time replay interval")
-    identifier = request_id or digest([venue, start, end, strategy, "knyc-executable-v2"])
+    execution = {}
+    if simulation is not None:
+        from nice_weather.trading.paper_execution import VERSION, settings
+
+        execution = {"simulation": settings(simulation), "execution_model": VERSION,
+                     "execution": "Market-price approximation; received-time replay"}
+    identifier = request_id or digest([venue, start, end, strategy, "knyc-executable-v2",
+                                      cash, execution])
     results = Results(root / "results.sqlite3")
     existing = results.run(run_id=identifier)
     if existing:
@@ -172,7 +181,7 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
             results.status(identifier, "failed", "Interrupted replay; create a new request")
             return results.run(run_id=identifier)
         return existing
-    config = run_config("backtest-" + venue, "backtest", strategy) | {
+    config = run_config("backtest-" + venue, "backtest", strategy, cash=cash) | {
         "venue": venue,
         "station_id": "KNYC",
         "execution_version": 3,
@@ -182,11 +191,12 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
         "start": start,
         "end": end,
         "execution": "Native L2 received-time replay; no assumed historical receipt times",
-    }
+    } | execution
     config.pop("config_hash", None)
     config["config_hash"] = digest(config)
     results.create(identifier, "backtest-" + venue, "backtest", config)
     session = Session(config)
+    view = ReplayView()
     try:
         with connect(root / "feed.sqlite3", readonly=True) as con:
             # Seed only contract definitions known at start. Quotes require actual interval events.
@@ -221,6 +231,8 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
                     reasons[reason] = reasons.get(reason, 0) + 1
             for index, native in enumerate(native_events):
                 session.apply(native)
+                if not seed:
+                    view.observe_session(session)
                 for strategy_id, signal in session.signals.items():
                     signature = digest(signal)
                     if previous_signals.get(strategy_id) == signature:
@@ -238,6 +250,7 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
         session.apply(
             {"kind": "start", "ts": max(int(start * 1e9), session.now + 1), "data": {}}
         )
+        view.observe(session.snapshot(), force=True)
         predictions, cursor, last_progress = 0, 0, float("-inf")
         # Immutable receipt events and a fixed ceiling allow short read transactions.
         # Release each WAL snapshot before running the potentially slow native replay.
@@ -254,6 +267,7 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
                 predictions += row["kind"] == "prediction" and row["key"] == venue
                 apply(row)
             cursor = rows[-1]["seq"]
+            view.flush(results, identifier, cursor)
             audit["cursor"] = cursor
             if pending_decisions:
                 results.append(identifier, f"replay-decisions-{cursor}", {
@@ -267,6 +281,8 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
                                                    time.time(), identifier))
                 last_progress = time.monotonic()
         snapshot = session.snapshot()
+        view.observe(snapshot, force=True)
+        view.flush(results, identifier, "final")
         snapshot["prediction_events"] = predictions
         audit["scan_complete"] = True
         snapshot["replay_audit"] = audit
@@ -302,6 +318,7 @@ def backtest_worker(root, once=False):
                             body["end"],
                             body.get("strategy", "S1_S2_S3"),
                             request["request_id"],
+                            cash=body.get("cash", 100), simulation=body.get("simulation"),
                         )
                         requests.finish(request["request_id"], run["status"])
                     except (ValueError, KeyError, RuntimeError) as exc:
