@@ -38,30 +38,61 @@ def fee(quantity, price, contract):
     return float(amount)
 
 
-def select(strategy, contracts, weather, asof):
-    """Return target indexes or None; invalid inputs cannot consume a weather trigger."""
+def evidence_time(row, context="online", field="received_at"):
+    """Keep absent receipts absent; source-time research is explicitly opt-in."""
+    if context not in {"online", "historical_received", "historical_source"}:
+        raise ValueError("UNKNOWN_SIGNAL_CONTEXT")
+    value = row.get(field)
+    if value is None and context == "historical_source":
+        value = row.get("source_time" if field == "received_at" else "observation_at")
+    if not finite(value):
+        raise ValueError("MISSING_EVIDENCE_TIME")
+    return value
+
+
+def validate_weather(strategy, weather, asof, context="online"):
+    """Validate weather independently of account, market price and execution readiness."""
     if strategy not in STRATEGY_IDS:
         raise ValueError("UNKNOWN_STRATEGY")
-    required = ("received_at", "data_cutoff", "p_end", "floor", "model_trained_at")
+    required = ("data_cutoff", "p_end", "floor")
     if any(not finite(weather.get(k)) for k in required):
         raise ValueError("INVALID_WEATHER_INPUT")
     if not isinstance(weather.get("model_version"), str) or not weather["model_version"].startswith(
         "knyc-"
     ):
         raise ValueError("KNYC_MODEL_REQUIRED")
-    if weather.get("station") != "KNYC" or not contracts:
+    if weather.get("station") != "KNYC":
         raise ValueError("STATION_OR_CONTRACT_MISSING")
-    if not weather["model_trained_at"] <= weather["data_cutoff"] <= weather["received_at"] <= asof:
+    receipt = evidence_time(weather, context)
+    cutoff = weather.get("model_data_cutoff") if context == "historical_source" else (
+        weather.get("model_trained_at")
+    )
+    if not finite(cutoff):
+        raise ValueError("MISSING_MODEL_CUTOFF")
+    if not cutoff <= weather["data_cutoff"] <= receipt <= asof:
         raise ValueError("FUTURE_INPUT")
-    if asof - weather["received_at"] > 120 or not 0 <= weather["p_end"] <= 1:
+    if (context == "online" and asof - receipt > 120) or not 0 <= weather["p_end"] <= 1:
         raise ValueError("STALE_OR_INVALID_WEATHER")
     local = datetime.fromtimestamp(asof, ZoneInfo("America/New_York"))
-    if not 12 <= local.hour + local.minute / 60 <= 22:
-        return None
-    if weather.get("day") != contracts[0]["local_day"]:
-        raise ValueError("WEATHER_DAY_MISMATCH")
     if weather["day"] != local.date().isoformat():
         raise ValueError("SIGNAL_DAY_EXPIRED")
+    return 12 <= local.hour + local.minute / 60 + local.second / 3600 <= 22
+
+
+def containing(contracts, value):
+    return next((i for i, c in enumerate(contracts)
+                 if (c["lower"] is None or c["lower"] <= value)
+                 and (c["upper"] is None or value <= c["upper"])), None)
+
+
+def select(strategy, contracts, weather, asof, *, context="online"):
+    """Return target indexes or None; invalid inputs cannot consume a weather trigger."""
+    if not validate_weather(strategy, weather, asof, context):
+        return None
+    if not contracts:
+        raise ValueError("STATION_OR_CONTRACT_MISSING")
+    if weather.get("day") != contracts[0]["local_day"]:
+        raise ValueError("WEATHER_DAY_MISMATCH")
     if len({c["yes_token_id"] for c in contracts}) != len(contracts):
         raise ValueError("DUPLICATE_BIN")
     for c in contracts:
@@ -75,7 +106,7 @@ def select(strategy, contracts, weather, asof):
         or c["local_day"] != weather["day"]
         or c["venue"] != contracts[0]["venue"]
         or c.get("settlement_source") != weather.get("settlement_source")
-        or c["received_at"] > asof
+        or evidence_time(c, context) > asof
         or c.get("parse_status") != "parsed"
         for c in contracts
     ):
@@ -96,27 +127,17 @@ def select(strategy, contracts, weather, asof):
         previous = weather.get("previous_floor")
         if not finite(previous) or weather["floor"] <= previous:
             return None
-        if not weather.get("is_high") or not weather.get("observation_received_at"):
+        if not weather.get("is_high"):
             return None
+        observation_time = evidence_time(weather, context, "observation_received_at")
         if (
-            not finite(weather["observation_received_at"])
-            or not 0 <= weather["data_cutoff"] - weather["observation_received_at"] <= 120
+            observation_time > weather["data_cutoff"]
+            or (context == "online" and weather["data_cutoff"] - observation_time > 120)
         ):
             raise ValueError("FUTURE_HIGH_EVENT")
 
-        def containing(value):
-            return next(
-                (
-                    i
-                    for i, c in enumerate(contracts)
-                    if (c["lower"] is None or c["lower"] <= value)
-                    and (c["upper"] is None or value <= c["upper"])
-                ),
-                None,
-            )
-
-        index = containing(weather["floor"])
-        if index is None or index == containing(previous) or q[index] < 0.9:
+        index = containing(contracts, weather["floor"])
+        if index is None or index == containing(contracts, previous) or q[index] < 0.9:
             return None
         return [index]
     if weather["p_end"] < 0.9:

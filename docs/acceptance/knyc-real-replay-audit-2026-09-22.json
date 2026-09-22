@@ -1,0 +1,50 @@
+{
+  "code_sha": "348123a4f11fb5acb2c3427ca1aad3bd708534bb",
+  "requested_start": 1789966800,
+  "requested_end": 1790053200,
+  "remote_evidence": "/var/lib/nice-weather-knyc/replay-audit-verification-20260922.json",
+  "remote_evidence_sha256": "3033dcc9e9a6f349fad3790c9cf7ec3301b716af7a822e3d04098a37a5c5f248",
+  "kalshi": {
+    "run_id": "ab96d9a4-35b0-47ea-804e-e9c09c5bd322",
+    "status": "completed",
+    "equity": 100,
+    "fills": 0,
+    "prediction_count": 148,
+    "prediction_first_received": 1790048625.1208224,
+    "prediction_last_received": 1790053199.7023304,
+    "book_count": 13726,
+    "book_max_gap_seconds": 80513.28936767578,
+    "contract_count": 19,
+    "settlement_input_count": 6,
+    "decision_changes": 582,
+    "each_strategy_reason_counts": {"STALE_KNYC_OBSERVATIONS": 129, "STALE_OR_INCOMPLETE_HRRR": 6, "UNVALIDATED_SETTLEMENT_MODEL": 59},
+    "persisted_decision_counts_match": true,
+    "input_journal_sha256": "450689184ad0882408176704f8ba0bc45120bcd0c03faaef614a22a229774c5b"
+  },
+  "poly_us": {
+    "run_id": "f8101675-ee5c-4515-b6a6-6e6d9ea575a4",
+    "status": "completed",
+    "equity": 100,
+    "fills": 0,
+    "prediction_count": 148,
+    "prediction_first_received": 1790048625.2082853,
+    "prediction_last_received": 1790053199.7064698,
+    "book_count": 13726,
+    "book_max_gap_seconds": 80511.50532412529,
+    "contract_count": 19,
+    "settlement_input_count": 6,
+    "decision_changes": 228,
+    "each_strategy_reason_counts": {"CONTRACT_RULES_UNVERIFIED": 43, "STALE_KNYC_OBSERVATIONS": 32, "STALE_OR_INCOMPLETE_HRRR": 1},
+    "persisted_decision_counts_match": true,
+    "input_journal_sha256": "00393e75e0da242359a2c17ce35ccf33cc354536b680e0caf161aec662bad53c"
+  },
+  "limitations": [
+    "Actual prediction coverage is approximately 76 minutes, not the requested 24 hours",
+    "Book and contract receipt gaps are approximately 22.4 hours",
+    "Decision-change counts include weather and quote reassessments; they are not input event counts",
+    "Settlement inputs without held positions do not prove a fill-position-settlement-PnL cycle",
+    "Historical rule/model gates remain based on evidence known at the original receipt"
+  ],
+  "full_market_day_accepted": false,
+  "real_fill_settlement_cycle_accepted": false
+}

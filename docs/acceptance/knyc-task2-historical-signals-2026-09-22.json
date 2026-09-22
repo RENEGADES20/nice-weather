@@ -1,0 +1,485 @@
+{
+  "context": "historical_source",
+  "start": "2026-09-01",
+  "end": "2026-09-13",
+  "execution": "signal_only",
+  "model": {
+    "temperature": 1.159195637486506,
+    "end_temperature": 0.8565719862105455,
+    "train_last": "2026-07-01",
+    "calibration_last": "2026-08-30",
+    "data_cutoff": 1788220800.0,
+    "station": "KNYC",
+    "trained_at": 1790097118.4432156,
+    "settlement_sources": [
+      "nws_cli"
+    ],
+    "version": "knyc-research-frozen-2026-09-01",
+    "validation": {
+      "production_validated": false,
+      "historical_received_at": false,
+      "hrrr_availability_assumption": "nominal cycle + 2h"
+    }
+  },
+  "sources": {
+    "pilot_features.csv": "2320b099db5d4f31eb0665169ece07a8f3eef7243f672e7738753655c441955d",
+    "forecasts.jsonl": "5a8838edbf60c4ac882f6fa6971892550e2d1e858abbff68ed9ba9a5ec330460"
+  },
+  "results": {
+    "weather_only:S1": {
+      "counts": {
+        "evaluations": 100,
+        "input_available": 100,
+        "in_window": 100,
+        "weather_trigger": 53,
+        "candidate": 0,
+        "execution_accepted": 0,
+        "fill": 0
+      },
+      "reasons": {
+        "CONTRACT_HISTORY_MISSING": 100
+      },
+      "examples": {
+        "False:CONTRACT_HISTORY_MISSING": {
+          "strategy": "S1",
+          "version": "knyc-executable-v2",
+          "station": "KNYC",
+          "venue": null,
+          "day": "2026-09-01",
+          "asof": 1788282000.0,
+          "data_cutoff": 1788282000.0,
+          "model_version": "knyc-research-frozen-2026-09-01",
+          "model_data_cutoff": 1788220800.0,
+          "model_generated_at": 1790097118.4432156,
+          "p_end": 0.3396018312066132,
+          "probabilities": {},
+          "model_validation": {
+            "production_validated": false,
+            "historical_received_at": false,
+            "hrrr_availability_assumption": "nominal cycle + 2h"
+          },
+          "time_basis": "historical_source",
+          "received_at": null,
+          "source_time": 1788282000.0,
+          "capture_ids": [
+            "features:25906"
+          ],
+          "rules_versions": [],
+          "action": "no-trade",
+          "triggered": false,
+          "legs": [],
+          "input_available": true,
+          "in_window": true,
+          "reason": "CONTRACT_HISTORY_MISSING",
+          "signal_id": "00d507a5891dcb764963f92f6fc66d0c9ba2e4f6bbc35da17dd50f02d738da44",
+          "basket_id": "00d507a5891dcb764963f92f6fc66d0c9ba2e4f6bbc35da17dd50f02d738da44",
+          "stage": "waiting",
+          "events": [
+            {
+              "signal_id": "00d507a5891dcb764963f92f6fc66d0c9ba2e4f6bbc35da17dd50f02d738da44",
+              "basket_id": "00d507a5891dcb764963f92f6fc66d0c9ba2e4f6bbc35da17dd50f02d738da44",
+              "account": null,
+              "mode": null,
+              "venue": null,
+              "day": "2026-09-01",
+              "strategy": "S1",
+              "asof": 1788282000.0,
+              "time_basis": "historical_source",
+              "received_at": null,
+              "source_time": 1788282000.0,
+              "version": "knyc-executable-v2",
+              "model_version": "knyc-research-frozen-2026-09-01",
+              "model_validation": {
+                "production_validated": false,
+                "historical_received_at": false,
+                "hrrr_availability_assumption": "nominal cycle + 2h"
+              },
+              "rules_versions": [],
+              "p_end": 0.3396018312066132,
+              "capture_ids": [
+                "features:25906"
+              ],
+              "execution_eligible": null,
+              "model_data_cutoff": 1788220800.0,
+              "model_generated_at": 1790097118.4432156,
+              "stage": "waiting",
+              "reason": "CONTRACT_HISTORY_MISSING",
+              "candidate_reason": "CONTRACT_HISTORY_MISSING",
+              "legs": [],
+              "targets": [],
+              "warning": null,
+              "executions": [],
+              "event_id": "053c1e2429acae5552b246348aa819fc5faf57b159ad1e33c33cf1ef9de46aca"
+            }
+          ]
+        },
+        "True:CONTRACT_HISTORY_MISSING": {
+          "strategy": "S1",
+          "version": "knyc-executable-v2",
+          "station": "KNYC",
+          "venue": null,
+          "day": "2026-09-01",
+          "asof": 1788296400.0,
+          "data_cutoff": 1788296400.0,
+          "model_version": "knyc-research-frozen-2026-09-01",
+          "model_data_cutoff": 1788220800.0,
+          "model_generated_at": 1790097118.4432156,
+          "p_end": 0.9881839018469785,
+          "probabilities": {},
+          "model_validation": {
+            "production_validated": false,
+            "historical_received_at": false,
+            "hrrr_availability_assumption": "nominal cycle + 2h"
+          },
+          "time_basis": "historical_source",
+          "received_at": null,
+          "source_time": 1788296400.0,
+          "capture_ids": [
+            "features:25910"
+          ],
+          "rules_versions": [],
+          "action": "no-trade",
+          "triggered": true,
+          "legs": [],
+          "input_available": true,
+          "in_window": true,
+          "reason": "CONTRACT_HISTORY_MISSING",
+          "signal_id": "60d39a3b704bc6b2a5ce169cf24d5bf2cb5ba9668ffec097612eaea6ffb024c8",
+          "basket_id": "60d39a3b704bc6b2a5ce169cf24d5bf2cb5ba9668ffec097612eaea6ffb024c8",
+          "stage": "weather_trigger",
+          "events": [
+            {
+              "signal_id": "60d39a3b704bc6b2a5ce169cf24d5bf2cb5ba9668ffec097612eaea6ffb024c8",
+              "basket_id": "60d39a3b704bc6b2a5ce169cf24d5bf2cb5ba9668ffec097612eaea6ffb024c8",
+              "account": null,
+              "mode": null,
+              "venue": null,
+              "day": "2026-09-01",
+              "strategy": "S1",
+              "asof": 1788296400.0,
+              "time_basis": "historical_source",
+              "received_at": null,
+              "source_time": 1788296400.0,
+              "version": "knyc-executable-v2",
+              "model_version": "knyc-research-frozen-2026-09-01",
+              "model_validation": {
+                "production_validated": false,
+                "historical_received_at": false,
+                "hrrr_availability_assumption": "nominal cycle + 2h"
+              },
+              "rules_versions": [],
+              "p_end": 0.9881839018469785,
+              "capture_ids": [
+                "features:25910"
+              ],
+              "execution_eligible": null,
+              "model_data_cutoff": 1788220800.0,
+              "model_generated_at": 1790097118.4432156,
+              "stage": "weather_trigger",
+              "reason": "WEATHER_CONDITION_MET",
+              "candidate_reason": "CONTRACT_HISTORY_MISSING",
+              "legs": [],
+              "targets": [],
+              "warning": null,
+              "executions": [],
+              "event_id": "b2d31e06d847f1a39f4fe5e809f8a60959890effc97b2dff671b47a2ada96523"
+            }
+          ]
+        }
+      },
+      "days": [
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+        "2026-09-04",
+        "2026-09-05",
+        "2026-09-06",
+        "2026-09-07",
+        "2026-09-08",
+        "2026-09-09",
+        "2026-09-10"
+      ],
+      "first_asof": 1788282000.0,
+      "last_asof": 1789092000.0
+    },
+    "weather_only:S2": {
+      "counts": {
+        "evaluations": 100,
+        "input_available": 100,
+        "in_window": 100,
+        "weather_trigger": 0,
+        "candidate": 0,
+        "execution_accepted": 0,
+        "fill": 0
+      },
+      "reasons": {
+        "CONTRACT_HISTORY_MISSING": 100
+      },
+      "examples": {
+        "False:CONTRACT_HISTORY_MISSING": {
+          "strategy": "S2",
+          "version": "knyc-executable-v2",
+          "station": "KNYC",
+          "venue": null,
+          "day": "2026-09-01",
+          "asof": 1788282000.0,
+          "data_cutoff": 1788282000.0,
+          "model_version": "knyc-research-frozen-2026-09-01",
+          "model_data_cutoff": 1788220800.0,
+          "model_generated_at": 1790097118.4432156,
+          "p_end": 0.3396018312066132,
+          "probabilities": {},
+          "model_validation": {
+            "production_validated": false,
+            "historical_received_at": false,
+            "hrrr_availability_assumption": "nominal cycle + 2h"
+          },
+          "time_basis": "historical_source",
+          "received_at": null,
+          "source_time": 1788282000.0,
+          "capture_ids": [
+            "features:25906"
+          ],
+          "rules_versions": [],
+          "action": "no-trade",
+          "triggered": false,
+          "legs": [],
+          "input_available": true,
+          "in_window": true,
+          "reason": "CONTRACT_HISTORY_MISSING",
+          "signal_id": "e6d25f6c880802e7aec4bc1e0f9f8984a9d579081e490221693f881336ac2214",
+          "basket_id": "e6d25f6c880802e7aec4bc1e0f9f8984a9d579081e490221693f881336ac2214",
+          "stage": "waiting",
+          "events": [
+            {
+              "signal_id": "e6d25f6c880802e7aec4bc1e0f9f8984a9d579081e490221693f881336ac2214",
+              "basket_id": "e6d25f6c880802e7aec4bc1e0f9f8984a9d579081e490221693f881336ac2214",
+              "account": null,
+              "mode": null,
+              "venue": null,
+              "day": "2026-09-01",
+              "strategy": "S2",
+              "asof": 1788282000.0,
+              "time_basis": "historical_source",
+              "received_at": null,
+              "source_time": 1788282000.0,
+              "version": "knyc-executable-v2",
+              "model_version": "knyc-research-frozen-2026-09-01",
+              "model_validation": {
+                "production_validated": false,
+                "historical_received_at": false,
+                "hrrr_availability_assumption": "nominal cycle + 2h"
+              },
+              "rules_versions": [],
+              "p_end": 0.3396018312066132,
+              "capture_ids": [
+                "features:25906"
+              ],
+              "execution_eligible": null,
+              "model_data_cutoff": 1788220800.0,
+              "model_generated_at": 1790097118.4432156,
+              "stage": "waiting",
+              "reason": "CONTRACT_HISTORY_MISSING",
+              "candidate_reason": "CONTRACT_HISTORY_MISSING",
+              "legs": [],
+              "targets": [],
+              "warning": null,
+              "executions": [],
+              "event_id": "e07def6c2d4433a37a7480fe564e775d1ce23911e8561c1439481a829c36538f"
+            }
+          ]
+        }
+      },
+      "days": [
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+        "2026-09-04",
+        "2026-09-05",
+        "2026-09-06",
+        "2026-09-07",
+        "2026-09-08",
+        "2026-09-09",
+        "2026-09-10"
+      ],
+      "first_asof": 1788282000.0,
+      "last_asof": 1789092000.0
+    },
+    "weather_only:S3": {
+      "counts": {
+        "evaluations": 100,
+        "input_available": 100,
+        "in_window": 100,
+        "weather_trigger": 53,
+        "candidate": 0,
+        "execution_accepted": 0,
+        "fill": 0
+      },
+      "reasons": {
+        "CONTRACT_HISTORY_MISSING": 100
+      },
+      "examples": {
+        "False:CONTRACT_HISTORY_MISSING": {
+          "strategy": "S3",
+          "version": "knyc-executable-v2",
+          "station": "KNYC",
+          "venue": null,
+          "day": "2026-09-01",
+          "asof": 1788282000.0,
+          "data_cutoff": 1788282000.0,
+          "model_version": "knyc-research-frozen-2026-09-01",
+          "model_data_cutoff": 1788220800.0,
+          "model_generated_at": 1790097118.4432156,
+          "p_end": 0.3396018312066132,
+          "probabilities": {},
+          "model_validation": {
+            "production_validated": false,
+            "historical_received_at": false,
+            "hrrr_availability_assumption": "nominal cycle + 2h"
+          },
+          "time_basis": "historical_source",
+          "received_at": null,
+          "source_time": 1788282000.0,
+          "capture_ids": [
+            "features:25906"
+          ],
+          "rules_versions": [],
+          "action": "no-trade",
+          "triggered": false,
+          "legs": [],
+          "input_available": true,
+          "in_window": true,
+          "reason": "CONTRACT_HISTORY_MISSING",
+          "signal_id": "c95314188847619a7db1ab7d4f56e34af636ad983def28b77ab1a1723d8bce8b",
+          "basket_id": "c95314188847619a7db1ab7d4f56e34af636ad983def28b77ab1a1723d8bce8b",
+          "stage": "waiting",
+          "events": [
+            {
+              "signal_id": "c95314188847619a7db1ab7d4f56e34af636ad983def28b77ab1a1723d8bce8b",
+              "basket_id": "c95314188847619a7db1ab7d4f56e34af636ad983def28b77ab1a1723d8bce8b",
+              "account": null,
+              "mode": null,
+              "venue": null,
+              "day": "2026-09-01",
+              "strategy": "S3",
+              "asof": 1788282000.0,
+              "time_basis": "historical_source",
+              "received_at": null,
+              "source_time": 1788282000.0,
+              "version": "knyc-executable-v2",
+              "model_version": "knyc-research-frozen-2026-09-01",
+              "model_validation": {
+                "production_validated": false,
+                "historical_received_at": false,
+                "hrrr_availability_assumption": "nominal cycle + 2h"
+              },
+              "rules_versions": [],
+              "p_end": 0.3396018312066132,
+              "capture_ids": [
+                "features:25906"
+              ],
+              "execution_eligible": null,
+              "model_data_cutoff": 1788220800.0,
+              "model_generated_at": 1790097118.4432156,
+              "stage": "waiting",
+              "reason": "CONTRACT_HISTORY_MISSING",
+              "candidate_reason": "CONTRACT_HISTORY_MISSING",
+              "legs": [],
+              "targets": [],
+              "warning": null,
+              "executions": [],
+              "event_id": "f1c024a333adb0fd2496d744ff2ee18f6bc91b106cb955c5782983090cae965f"
+            }
+          ]
+        },
+        "True:CONTRACT_HISTORY_MISSING": {
+          "strategy": "S3",
+          "version": "knyc-executable-v2",
+          "station": "KNYC",
+          "venue": null,
+          "day": "2026-09-01",
+          "asof": 1788296400.0,
+          "data_cutoff": 1788296400.0,
+          "model_version": "knyc-research-frozen-2026-09-01",
+          "model_data_cutoff": 1788220800.0,
+          "model_generated_at": 1790097118.4432156,
+          "p_end": 0.9881839018469785,
+          "probabilities": {},
+          "model_validation": {
+            "production_validated": false,
+            "historical_received_at": false,
+            "hrrr_availability_assumption": "nominal cycle + 2h"
+          },
+          "time_basis": "historical_source",
+          "received_at": null,
+          "source_time": 1788296400.0,
+          "capture_ids": [
+            "features:25910"
+          ],
+          "rules_versions": [],
+          "action": "no-trade",
+          "triggered": true,
+          "legs": [],
+          "input_available": true,
+          "in_window": true,
+          "reason": "CONTRACT_HISTORY_MISSING",
+          "signal_id": "eb2936222f68a70c087dadd3b881469ece5b2b916fb5ab999a197f41b4ae7719",
+          "basket_id": "eb2936222f68a70c087dadd3b881469ece5b2b916fb5ab999a197f41b4ae7719",
+          "stage": "weather_trigger",
+          "events": [
+            {
+              "signal_id": "eb2936222f68a70c087dadd3b881469ece5b2b916fb5ab999a197f41b4ae7719",
+              "basket_id": "eb2936222f68a70c087dadd3b881469ece5b2b916fb5ab999a197f41b4ae7719",
+              "account": null,
+              "mode": null,
+              "venue": null,
+              "day": "2026-09-01",
+              "strategy": "S3",
+              "asof": 1788296400.0,
+              "time_basis": "historical_source",
+              "received_at": null,
+              "source_time": 1788296400.0,
+              "version": "knyc-executable-v2",
+              "model_version": "knyc-research-frozen-2026-09-01",
+              "model_validation": {
+                "production_validated": false,
+                "historical_received_at": false,
+                "hrrr_availability_assumption": "nominal cycle + 2h"
+              },
+              "rules_versions": [],
+              "p_end": 0.9881839018469785,
+              "capture_ids": [
+                "features:25910"
+              ],
+              "execution_eligible": null,
+              "model_data_cutoff": 1788220800.0,
+              "model_generated_at": 1790097118.4432156,
+              "stage": "weather_trigger",
+              "reason": "WEATHER_CONDITION_MET",
+              "candidate_reason": "CONTRACT_HISTORY_MISSING",
+              "legs": [],
+              "targets": [],
+              "warning": null,
+              "executions": [],
+              "event_id": "fd52354d580f378d6a81255dcc4ccde05ef83e9cf6e06446f494de24892c5e48"
+            }
+          ]
+        }
+      },
+      "days": [
+        "2026-09-01",
+        "2026-09-02",
+        "2026-09-03",
+        "2026-09-04",
+        "2026-09-05",
+        "2026-09-06",
+        "2026-09-07",
+        "2026-09-08",
+        "2026-09-09",
+        "2026-09-10"
+      ],
+      "first_asof": 1788282000.0,
+      "last_asof": 1789092000.0
+    }
+  }
+}

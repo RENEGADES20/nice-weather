@@ -1,0 +1,20 @@
+{
+  "sha": "348123a4f11fb5acb2c3427ca1aad3bd708534bb",
+  "pr": 70,
+  "ci_run": 35701700366,
+  "checks_passed": 7,
+  "verified_at": "2026-09-22T08:07:13.988992+00:00",
+  "files_verified": 74,
+  "hash_mismatches": [],
+  "health_sha_matches": true,
+  "active_services": 6,
+  "restarted_services": ["nice-weather-terminal", "nice-weather-knyc-backtest", "nice-weather-knyc-paper@kalshi", "nice-weather-knyc-paper@poly_us"],
+  "package_sha256": "3b81a498b2f9e40a6859d10d5fbcf4d6c830c07070fcf54ed3b4252db7dbe773",
+  "remote_evidence": "/home/hdharrison1206/knyc-replay-audit-deploy-20260922.json",
+  "free_bytes": 2072805376,
+  "paper": {"kalshi": {"enabled": true, "cash": 100, "fills": 0}, "poly_us": {"enabled": true, "cash": 100, "fills": 0}},
+  "infrastructure_changed": false,
+  "performance_accepted": false,
+  "full_market_day_accepted": false,
+  "foreground_measurement_interrupted": "Browser control connection rebuilt before deployment; new sampling window required"
+}
