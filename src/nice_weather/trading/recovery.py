@@ -213,6 +213,7 @@ class PaperRunner:
         config["execution"] = "L2 depth consumption; no maker queue priority; native fact recovery"
         config["config_hash"] = digest({k: v for k, v in config.items() if k != "config_hash"})
         self.last_state_hash = None
+        self.last_signal_events = None
         snapshot = self.session.snapshot()
         self.last_financial_hash = (
             digest([snapshot["fills"], snapshot["settled"], config.get("funding_events", [])])
@@ -252,8 +253,19 @@ class PaperRunner:
             [snapshot["fills"], snapshot["settled"], self.session.config.get("funding_events", [])]
         )
         financial = financial_hash != self.last_financial_hash
+        events = [e for signal in self.session.signals.values() for e in signal.get("events", [])]
+        event_hash = digest(events)
         valuation = financial or minute != self.last_minute or valid != self.last_valid
         with connect(self.results.path) as con:
+            if events and event_hash != self.last_signal_events:
+                seq = con.execute(
+                    "SELECT COALESCE(MAX(seq),0)+1 FROM inputs WHERE run_id=?", (self.run_id,)
+                ).fetchone()[0]
+                con.execute(
+                    "INSERT OR IGNORE INTO inputs VALUES (?,?,?,?,NULL)",
+                    (self.run_id, seq, "signals-" + event_hash,
+                     encoded({"kind": "signal-events", "events": events})),
+                )
             if archive is not None:
                 con.execute(
                     "INSERT INTO paper_resets VALUES (?,?,?,?)",
@@ -295,6 +307,7 @@ class PaperRunner:
             )
         self.last_state_hash, self.last_minute, self.last_valid = state_hash, minute, valid
         self.last_financial_hash = financial_hash
+        self.last_signal_events = event_hash
         return snapshot
 
     def apply(self, input_id, event):

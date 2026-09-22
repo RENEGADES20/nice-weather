@@ -6,6 +6,7 @@ import sys
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal
 from importlib.metadata import version
+from zoneinfo import ZoneInfo
 
 from nice_weather.trading import ENGINE_VERSION, validate_strategy
 from nice_weather.trading.dataset import timestamp, valid_quote
@@ -383,7 +384,8 @@ class Session:
             self.config.get("signal_version") == "knyc-executable-v2"
             and self.latest_weather is not None
             and kind in {
-                "depth", "contract", "start", "order", "cancel", "close", "settlement", "clock"
+                "depth", "contract", "start", "stop", "order", "cancel", "close",
+                "settlement", "clock"
             }
         ):
             self.weather_signal(self.latest_weather)
@@ -582,6 +584,7 @@ class Session:
                 r
                 for r in self.metadata.values()
                 if r["outcome"] == "YES" and r["local_day"] == weather.get("day")
+                and r.get("venue") == self.config.get("venue", r.get("venue"))
             ],
             key=lambda r: float("-inf") if r["lower"] is None else r["lower"],
         )
@@ -607,7 +610,12 @@ class Session:
             if self.config["strategy_id"] not in {strategy, "S1_S2_S3"}:
                 continue
             if continuous:
+                from nice_weather.trading.signals_v2 import signal_events
+
                 self.continuous_signal(strategy, contracts, weather, books)
+                signal = self.signals[strategy]
+                signal.update(account=self.config["account"], mode=self.config["mode"])
+                signal["events"] = signal_events(signal)
                 continue
             key = f"{weather.get('day')}:{strategy}"
             if key in self.strategy_state:
@@ -646,22 +654,16 @@ class Session:
 
     def continuous_signal(self, strategy, contracts, weather, books):
         from nice_weather.trading.signals import finite
-        from nice_weather.trading.signals_v2 import evaluate
+        from nice_weather.trading.signals_v2 import evaluate, opportunity_status
 
         key = f"{weather.get('day')}:{strategy}"
         state = self.strategy_state.setdefault(key, {"attempt": 0, "orders": []})
-        # Old v1 triggers retain their consumed meaning after an explicit upgrade.
-        if "attempt" not in state:
-            return
-        pending = [self.engine.cache.order(ClientOrderId(i)) for i in state["orders"]]
-        if any(o is None or not o.is_closed for o in pending):
-            self.signals[strategy] = self.signals.get(strategy, {}) | {
-                "action": "no-trade", "reason": "ORDER_RECONCILIATION_REQUIRED"
-            }
-            return
-        if state.get("consumed") or any(float(o.filled_qty) > 0 for o in pending):
-            state["consumed"] = True
-            return
+        # Account restrictions do not stop weather evaluation, including old v1 opportunities.
+        pending = [self.engine.cache.order(ClientOrderId(i)) for i in state.get("orders", [])]
+        blocked = opportunity_status(state, [
+            {"filled": float(o.filled_qty), "status": o.status.name} if o is not None
+            else {"status": "UNKNOWN"} for o in pending
+        ])
         snapshot = self.snapshot()
         positions = self.engine.cache.positions_open()
         open_buys = [o for o in self.open_orders() if o.side == OrderSide.BUY]
@@ -685,6 +687,8 @@ class Session:
         def fresh(stamp):
             return finite(stamp) and 0 <= asof - stamp <= 120
 
+        local = datetime.fromtimestamp(asof, ZoneInfo("America/New_York"))
+        hour = local.hour + local.minute / 60 + local.second / 3600
         signature = digest([
             {k: v for k, v in weather.items()
              if k not in {"received_at", "data_cutoff", "features"}},
@@ -693,7 +697,7 @@ class Session:
                                     "accepting_orders", "parse_status")} for c in contracts],
             {t: [b["bids"], b["asks"], b["complete"], 0 <= asof - b["received_at"] <= 30]
              for t, b in books.items()}, risk, self.enabled,
-            datetime.fromtimestamp(asof, UTC).strftime("%Y-%m-%d-%H"),
+            local.date().isoformat(), 12 <= hour <= 22, blocked,
         ])
         if state.get("evaluation_signature") == signature:
             return
@@ -702,20 +706,26 @@ class Session:
         self.signals[strategy] = signal
         if signal["triggered"]:
             state.setdefault("first_trigger", signal["asof"])
-        if not self.enabled or signal["action"] != "buy":
+        signal["execution_reason"] = blocked or (None if self.enabled else "AUTO_TRADING_DISABLED")
+        signal["execution_eligible"] = not blocked and self.enabled and signal["action"] == "buy"
+        if blocked or not self.enabled or signal["action"] != "buy":
             return
         # Preflight the whole basket, including conservative fragmented-fill fee reserves.
         reserved = sum(leg["price"] * leg["quantity"] + self.fee_reserve(
             self.metadata[leg["token"]], leg["quantity"]
         ) for leg in signal["legs"])
         if reserved > risk["cash"] + 1e-9:
-            signal.update(action="no-trade", reason="INSUFFICIENT_BASKET_RESERVE", legs=[])
+            signal["execution_reason"] = "INSUFFICIENT_BASKET_RESERVE"
+            signal["execution_eligible"] = False
             return
         if any(self.market_rejection(leg["token"]) for leg in signal["legs"]):
-            signal.update(action="no-trade", reason="MARKET_NOT_EXECUTABLE", legs=[])
+            signal["execution_reason"] = "MARKET_NOT_EXECUTABLE"
+            signal["execution_eligible"] = False
             return
         state["attempt"] += 1
         state["orders"] = []
+        # This candidate is being dispatched; only a later reassessment may authorize another.
+        signal["execution_eligible"] = False
         for i, leg in enumerate(signal["legs"]):
             request_id = f"{strategy}-{weather['day']}-v2-{state['attempt']}-{i}"
             try:
@@ -726,7 +736,8 @@ class Session:
                 )), custom=True)
                 filled = float(order.filled_qty)
                 signal.setdefault("executions", []).append({
-                    "token": leg["token"], "filled": filled,
+                    "order_id": request_id, "token": leg["token"], "filled": filled,
+                    "price": float(order.avg_px) if filled else None,
                     "requested": leg["quantity"], "status": order.status.name,
                 })
                 if filled:

@@ -100,7 +100,6 @@ class StrategyModel:
             raise ValueError("INCOMPATIBLE_STRATEGY_MODEL")
 
     def predict(self, weather, contracts, asof):
-        model = self.model
         metar = weather["metar"]
         if metar["station"] != "KNYC" or not 0 <= asof - metar["received_at"] <= 120:
             raise ValueError("STALE_METAR_RECEIPT")
@@ -111,9 +110,31 @@ class StrategyModel:
             temp, stamp = row.get("temp"), row.get("obsTime")
             if type(temp) in (int, float) and type(stamp) in (int, float):
                 if math.isfinite(temp) and -60 <= temp <= 60 and stamp <= asof:
+                    first_received = row.get("first_received_at")
+                    if first_received is None or first_received > asof:
+                        continue
                     observations[stamp] = temp * 1.8 + 32
                     receipts[stamp] = row.get("first_received_at")
         values, previous, observation_at = features(observations, asof, weather["hrrr"])
+        return self.predict_features(values, contracts, asof) | {
+            "received_at": asof,
+            "data_cutoff": asof,
+            "previous_floor": previous,
+            "is_high": values["observed_proxy_high"] > previous,
+            "observation_received_at": receipts.get(observation_at),
+            "observation_at": observation_at,
+            "capture_ids": [metar["capture_id"]],
+            "hrrr_cycle": weather["hrrr"]["cycle"],
+        }
+
+    def predict_features(self, values, contracts, asof, *, context="online"):
+        """The same exported model math for archived features and live observations."""
+        model = self.model
+        cutoff = model.get("data_cutoff") if context == "historical_source" else model["trained_at"]
+        if not isinstance(cutoff, (int, float)) or not cutoff <= asof or not contracts:
+            raise ValueError("MODEL_CUTOFF_OR_CONTRACT_MISSING")
+        if contracts[0]["settlement_source"] not in model["settlement_sources"]:
+            raise ValueError("SETTLEMENT_TARGET_MISMATCH")
         x = [
             values[name] if values[name] is not None else model["medians"][i]
             for i, name in enumerate(FEATURES)
@@ -137,28 +158,18 @@ class StrategyModel:
             )
             for c in contracts
         }
-        if not model["trained_at"] <= asof or not contracts:
-            raise ValueError("MODEL_CUTOFF_OR_CONTRACT_MISSING")
-        if contracts[0]["settlement_source"] not in model["settlement_sources"]:
-            raise ValueError("UNVALIDATED_SETTLEMENT_MODEL")
         return {
             "station": "KNYC",
             "day": contracts[0]["local_day"],
-            "received_at": asof,
-            "data_cutoff": asof,
+            "received_at": None,
             "model_trained_at": model["trained_at"],
+            "model_data_cutoff": model.get("data_cutoff"),
             "model_version": model["version"],
             "settlement_source": contracts[0]["settlement_source"],
             "p_end": p_end,
             "floor": high,
-            "previous_floor": previous,
-            "is_high": high > previous,
-            "observation_received_at": receipts.get(observation_at),
-            "observation_at": observation_at,
             "probabilities": probabilities,
             "features": values,
-            "capture_ids": [metar["capture_id"]],
-            "hrrr_cycle": weather["hrrr"]["cycle"],
             "validation": model["validation"],
         }
 

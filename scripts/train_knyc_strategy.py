@@ -92,16 +92,16 @@ def fit(frame, cutoff):
         "support": support.tolist(),
         "train_last": train.day.max(),
         "calibration_last": cal.day.max(),
+        "data_cutoff": cutoff.tz_localize("UTC").timestamp(),
     }
 
 
-def main(features_path, hrrr_path, output):
-    from nice_weather.trading.knyc_model import forest_predict, temper
-
+def load_features(features_path, hrrr_path):
     frame = pd.read_csv(features_path)
     forecasts = [json.loads(line) for line in hrrr_path.open(encoding="utf-8")]
     cycles = [r["cycle"] for r in forecasts]
     remaining = []
+    available = []
     for row in frame.itertuples():
         i = bisect.bisect_right(cycles, row.t - 7200) - 1
         end = (
@@ -120,10 +120,19 @@ def main(features_path, hrrr_path, output):
             if values and max(t for t, _ in values) >= end - 3600
             else np.nan
         )
+        available.append(cycles[i] + 7200 if i >= 0 else np.nan)
     frame["hrrr_remaining"] = remaining
+    frame["hrrr_available_at"] = available
     frame = frame.dropna(subset=["hrrr_remaining"])
     if not frame.target.between(-20, 50).all():
         raise ValueError("Signed residual exceeds retained support")
+    return frame
+
+
+def main(features_path, hrrr_path, output):
+    from nice_weather.trading.knyc_model import forest_predict, temper
+
+    frame = load_features(features_path, hrrr_path)
     frozen = fit(frame, "2026-01-01")
     test = frame[frame.day >= "2026-01-01"]
     observed, predicted = [], []
