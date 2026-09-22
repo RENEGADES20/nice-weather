@@ -9,6 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 from nice_weather.trading.feed import FeedStore
+from nice_weather.trading.paper_execution import VERSION, ensure_equity, save_equity, settings
 from nice_weather.trading.recovery import PaperRunner
 from nice_weather.trading.storage import Requests, Results, connect, digest, single_writer
 from nice_weather.trading.us_markets import VENUES
@@ -17,7 +18,18 @@ from nice_weather.trading.worker import run_config
 
 def feed_event(session, event):
     """One received-time conversion for both replay and online native sessions."""
-    ts = max(session.now + 1, int(event["received"] * 1e9))
+    known = event.get("received")
+    if known is None:
+        if session.config["mode"] != "backtest" or event.get("time_basis") != "source_time":
+            raise ValueError("Missing received time; source-time research must be explicit")
+        known = event["source_time"]
+    ts = max(session.now + 1, int(known * 1e9))
+    if event["kind"] == "market_price" and event["key"] in session.metadata:
+        return [{"kind": "market_price", "ts": ts, "data": event["data"] | {
+            "token_id": event["key"], "received_at": event.get("received"),
+            "time_basis": event.get("time_basis", "received_at"),
+            "source_time": event.get("source_time", event["data"].get("source_time")),
+        }}]
     if event["kind"] == "contracts":
         if event["key"] != session.config["venue"]:
             return []
@@ -45,6 +57,8 @@ def feed_event(session, event):
                         "asks": sorted(asks),
                         "received_ns": received_ns,
                         "valid": book["complete"],
+                        "source_time": book.get("exchange_time"),
+                        "source": book.get("source", session.config["venue"]),
                     },
                 }
             )
@@ -87,17 +101,33 @@ def paper(root, venue, once=False):
                 "venue": venue,
                 "station_id": "KNYC",
                 "execution_version": 3,
+                "execution_model": VERSION,
+                "simulation": settings(),
                 "signal_version": "knyc-executable-v2",
                 "strategy_version": "knyc-executable-v2",
                 "projection_version": 2,
                 "feed_cursor": 0,
-                "execution": "Native L2 IOC/GTC; received-time snapshots; no maker rebates",
+                "execution": "Market-price approximation; native orders and account events",
             }
             config.pop("config_hash", None)
             config["config_hash"] = digest(config)
             results.create(account, account, "sandbox", config)
             run = results.run(account=account)
         runner = PaperRunner(results, run)
+        if not runner.session.approximate:
+            from nice_weather.trading.recovery import native_state, restore
+
+            state = native_state(runner.session)
+            state["config"] = state["config"] | {
+                "execution_model": VERSION, "simulation": settings(),
+                "execution": "Market-price approximation; historical fills unchanged",
+            }
+            state["config"]["config_hash"] = digest({
+                k: v for k, v in state["config"].items() if k != "config_hash"})
+            replacement = restore(state)
+            runner.session.dispose()
+            runner.session = replacement
+            runner.commit("market-price-v1-upgrade")
         if runner.session.config.get("signal_version") != "knyc-executable-v2":
             runner.session.config.update(signal_version="knyc-executable-v2",
                                          strategy_version="knyc-executable-v2")
@@ -157,14 +187,16 @@ def paper(root, venue, once=False):
             runner.session.dispose()
 
 
-def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
+def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
+           cash=100, simulation=None):
     """Replay original receipts, not final labels or reconstructed receipt times."""
     from nice_weather.trading.engine import Session
     from nice_weather.trading.storage import connect
 
     if venue not in VENUES or not 0 <= start < end <= time.time():
         raise ValueError("Invalid received-time replay interval")
-    identifier = request_id or digest([venue, start, end, strategy, "knyc-executable-v2"])
+    simulation = settings(simulation)
+    identifier = request_id or digest([venue, start, end, strategy, VERSION, cash, simulation])
     results = Results(root / "results.sqlite3")
     existing = results.run(run_id=identifier)
     if existing:
@@ -176,20 +208,25 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
         "venue": venue,
         "station_id": "KNYC",
         "execution_version": 3,
+        "execution_model": VERSION,
+        "simulation": simulation,
+        "cash": cash,
         "signal_version": "knyc-executable-v2",
         "strategy_version": "knyc-executable-v2",
         "projection_version": 2,
         "start": start,
         "end": end,
-        "execution": "Native L2 received-time replay; no assumed historical receipt times",
+        "execution": "Market-price approximation; received-time replay",
     }
     config.pop("config_hash", None)
     config["config_hash"] = digest(config)
     results.create(identifier, "backtest-" + venue, "backtest", config)
     session = Session(config)
     try:
+        with connect(results.path) as con:
+            ensure_equity(con)
         with connect(root / "feed.sqlite3", readonly=True) as con:
-            # Seed only contract definitions known at start. Quotes require actual interval events.
+            # Seed definitions and, below, original prices already known at the requested start.
             seed = con.execute(
                 "SELECT * FROM feed_events WHERE kind='contracts' AND key=? AND received<? "
                 "ORDER BY seq DESC LIMIT 1",
@@ -201,8 +238,10 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
                  "scan_complete": False,
                  "cursor": 0, "inputs": {}, "decisions": {}, "decision_changes": 0}
         previous_signals, pending_decisions = {}, []
+        last_equity = None
 
         def apply(row, *, seed=False):
+            nonlocal last_equity
             event = dict(row) | {"data": json.loads(row["body"])}
             native_events = feed_event(session, event)
             if native_events and not seed:
@@ -220,7 +259,14 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
                     reason = event["data"].get("reason") or "not_reported"
                     reasons[reason] = reasons.get(reason, 0) + 1
             for index, native in enumerate(native_events):
-                session.apply(native)
+                snapshot = session.apply(native)
+                if snapshot and not seed:
+                    signature = (snapshot["ts"] // 60_000_000_000, len(snapshot["fills"]),
+                                 len(snapshot["settled"]), snapshot["equity"] is not None)
+                    if signature != last_equity:
+                        with connect(results.path) as con:
+                            save_equity(con, identifier, snapshot)
+                        last_equity = signature
                 for strategy_id, signal in session.signals.items():
                     signature = digest(signal)
                     if previous_signals.get(strategy_id) == signature:
@@ -235,6 +281,15 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
 
         for row in seed:
             apply(row, seed=True)
+        # Carry only prices actually known before the requested interval; do not restamp them.
+        with connect(root / "feed.sqlite3", readonly=True) as con:
+            prior_prices = con.execute(
+                "SELECT * FROM feed_events WHERE seq IN (SELECT MAX(seq) FROM feed_events "
+                "WHERE kind IN ('book','market_price') AND received<? GROUP BY kind,key) "
+                "ORDER BY seq", (start,)).fetchall()
+        for row in prior_prices:
+            if row["key"] in session.metadata:
+                apply(row, seed=True)
         session.apply(
             {"kind": "start", "ts": max(int(start * 1e9), session.now + 1), "data": {}}
         )
@@ -266,7 +321,10 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
                                 "WHERE run_id=?", (json.dumps({"replay_audit": audit}),
                                                    time.time(), identifier))
                 last_progress = time.monotonic()
-        snapshot = session.snapshot()
+        snapshot = session.apply({"kind": "clock", "ts": max(int(end * 1e9), session.now),
+                                  "data": {}})
+        with connect(results.path) as con:
+            save_equity(con, identifier, snapshot)
         snapshot["prediction_events"] = predictions
         audit["scan_complete"] = True
         snapshot["replay_audit"] = audit
@@ -302,6 +360,7 @@ def backtest_worker(root, once=False):
                             body["end"],
                             body.get("strategy", "S1_S2_S3"),
                             request["request_id"],
+                            cash=body.get("cash", 100), simulation=body.get("simulation"),
                         )
                         requests.finish(request["request_id"], run["status"])
                     except (ValueError, KeyError, RuntimeError) as exc:

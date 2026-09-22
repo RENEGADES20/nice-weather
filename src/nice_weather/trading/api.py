@@ -257,6 +257,50 @@ def create_app(root: Path, *, password=None, origin=None):
                 )
             ]
 
+    @app.post("/api/paper/preview")
+    def paper_preview(body: Command):
+        from nice_weather.trading.paper_execution import VERSION, preview
+
+        if body.mode != "sandbox" or body.venue not in VENUES or body.kind != "order":
+            raise HTTPException(400, "Paper order preview only")
+        account = "sandbox-" + body.venue + "-knyc"
+        unavailable = {"available": False, "reason": "Account worker disconnected",
+                       "approximate": True, "execution_model": VERSION}
+        path = root / "results.sqlite3"
+        if not path.exists():
+            return unavailable
+        with connect(path, readonly=True) as con:
+            con.execute("BEGIN")
+            run = con.execute("SELECT * FROM runs WHERE account=?", (account,)).fetchone()
+            if not run or run["status"] != "running" or time.time() - run["updated"] > 10:
+                return unavailable
+            saved = con.execute("SELECT body FROM paper_state WHERE run_id=?",
+                                (run["run_id"],)).fetchone()
+        if not saved:
+            return unavailable
+        state = json.loads(saved["body"])
+        if state["config"].get("execution_model") != VERSION:
+            return unavailable | {"reason": "Paper worker requires market-price-v1 upgrade"}
+        return preview(state["config"], state["metadata"], state.get("market_prices", {}),
+                       json.loads(run["snapshot"]), body.payload, time.time())
+
+    @app.get("/api/paper/equity")
+    def paper_equity(run_id: str, after: int = -1):
+        if len(run_id) > 100:
+            raise HTTPException(400, "Invalid run ID")
+        path = root / "results.sqlite3"
+        if not path.exists():
+            return {"points": [], "next": None}
+        with connect(path, readonly=True) as con:
+            if not con.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='simulation_equity'"
+            ).fetchone():
+                return {"points": [], "next": None}
+            rows = con.execute("SELECT ts,body FROM simulation_equity WHERE run_id=? AND ts>? "
+                               "ORDER BY ts LIMIT 1000", (run_id, after)).fetchall()
+        return {"points": [json.loads(r["body"]) for r in rows],
+                "next": rows[-1]["ts"] if len(rows) == 1000 else None}
+
     @app.get("/api/requests/{request_id}")
     def receipt(request_id: str):
         if len(request_id) > 100:
@@ -296,7 +340,7 @@ def create_app(root: Path, *, password=None, origin=None):
             return {"request_id": body.request_id, "status": "queued"}
         if body.venue not in VENUES or body.mode != "sandbox":
             raise HTTPException(409, "Live execution has not passed adapter acceptance")
-        if body.kind not in {"order", "cancel", "close", "start", "stop"}:
+        if body.kind not in {"order", "cancel", "close", "start", "stop", "simulation_settings"}:
             raise HTTPException(400, "Unsupported command")
         account = "sandbox-" + body.venue + "-knyc"
         active = next((r for r in accounts() if r["account"] == account), None)
