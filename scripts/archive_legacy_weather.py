@@ -106,7 +106,9 @@ def archive(path, client, bucket):
                 where, params = " WHERE source IN (?,?,?)", WEATHER
             cursor = con.execute(f'SELECT * FROM "{table}"{where}', params)
             count = 0
-            while rows := cursor.fetchmany(100):
+            batch = 5000 if table in {"forecast_points", "weather_observations",
+                                      "settlement_rows"} else 100
+            while rows := cursor.fetchmany(batch):
                 payload = gzip.compress(json.dumps(
                     {"table": table, "rows": [dict(r) for r in rows]},
                     default=json_default, sort_keys=True).encode(), mtime=0)
