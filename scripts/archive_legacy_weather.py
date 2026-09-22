@@ -10,6 +10,7 @@ import gzip
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from nice_weather.r2_archive import R2Config
@@ -32,13 +33,13 @@ def compact_weather(source, target):
     """Create a compact weather-preserving copy; never replace or delete the source."""
     if target.exists():
         raise ValueError("Destination already exists")
-    with sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True) as src:
+    with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as src:
         src.execute("BEGIN")
         schema = src.execute("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL"
                              " ORDER BY type DESC").fetchall()
         if any(kind not in {"table", "index"} for kind, _, _ in schema):
             raise ValueError("Unexpected database schema; source retained")
-        with sqlite3.connect(target) as dst:
+        with closing(sqlite3.connect(target)) as dst, dst:
             dst.execute("PRAGMA auto_vacuum=INCREMENTAL")
             for kind, _, ddl in schema:
                 if kind == "table":
@@ -93,7 +94,7 @@ def verified_put(client, bucket, prefix, payload):
 
 def archive(path, client, bucket):
     manifest = {"database": str(path.resolve()), "tables": {}, "objects": []}
-    with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as con:
+    with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as con:
         con.row_factory = sqlite3.Row
         con.execute("BEGIN")
         schema = {r["name"]: r["sql"] for r in con.execute(
@@ -106,7 +107,9 @@ def archive(path, client, bucket):
                 where, params = " WHERE source IN (?,?,?)", WEATHER
             cursor = con.execute(f'SELECT * FROM "{table}"{where}', params)
             count = 0
-            while rows := cursor.fetchmany(100):
+            batch = 5000 if table in {"forecast_points", "weather_observations",
+                                      "settlement_rows"} else 100
+            while rows := cursor.fetchmany(batch):
                 payload = gzip.compress(json.dumps(
                     {"table": table, "rows": [dict(r) for r in rows]},
                     default=json_default, sort_keys=True).encode(), mtime=0)
