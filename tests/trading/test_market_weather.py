@@ -37,6 +37,14 @@ def test_catalog_days_isolation_and_legacy_history(tmp_path):
     assert market_day(feed.path, "kalshi", "2026-09-21")["reason"] == "NO_CONTRACTS"
     assert scoped_history(feed, "kalshi", "2026-09-23", "kalshi:2026-09-23:bin")[
         "points"][0]["time"] == 2  # Pre-market-day quotes are retained.
+    feed.publish("book", "kalshi:2026-09-23:bin", {
+        "bids": [[0.42, 2], [0.40, 100]], "asks": [[0.51, 3], [0.54, 100]],
+        "received_at": None, "exchange_time": 1.5}, 3)
+    quotes = scoped_history(feed, "kalshi", "2026-09-23", "kalshi:2026-09-23:bin")["points"]
+    assert quotes[-1]["bids"] == [[0.42, 2]]
+    assert quotes[-1]["asks"] == [[0.51, 3]]
+    assert quotes[-1]["received_at"] is None
+    assert quotes[-1]["exchange_time"] == 1.5
     with pytest.raises(ValueError, match="belong"):
         scoped_history(feed, "poly_us", "2026-09-23", "kalshi:2026-09-23:bin")
     # A later contract snapshot replaces that day's bins without deleting earlier days.

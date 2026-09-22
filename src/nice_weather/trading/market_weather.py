@@ -149,7 +149,9 @@ def weather_history(path, venue, day):
 
     with connect(path, readonly=True) as con:
         # Scan weather facts only. Late reports/revisions and pre-day forecasts must survive.
-        for row in con.execute("SELECT key,seq,received,body FROM feed_events "
+        # The (kind,key,seq) index would sort all weather bodies into a disk
+        # temporary table for ORDER BY seq. Walk the append-only rowid instead.
+        for row in con.execute("SELECT key,seq,received,body FROM feed_events NOT INDEXED "
                                "WHERE kind='weather' ORDER BY seq"):
             body = json.loads(row["body"])
             if body.get("station") != "KNYC":
@@ -202,12 +204,25 @@ def scoped_history(feed, venue, day, token, before=None):
     context = market_day(feed.path, venue, day)
     if token not in {c["yes_token_id"] for c in context["contracts"]}:
         raise ValueError("Token does not belong to the requested venue/market day")
-    rows = feed.history(token, before, limit=1500)
+    # This chart only needs the best bid/ask. Extract them inside SQLite rather
+    # than decoding full captured depth for every historical quote.
+    with connect(feed.path, readonly=True) as con:
+        rows = con.execute(
+            "SELECT seq,received,"
+            "CASE WHEN json_type(body,'$.received_at') IS NULL THEN received "
+            "ELSE json_extract(body,'$.received_at') END AS receipt,"
+            "json_extract(body,'$.exchange_time') AS exchange_time,"
+            "json_extract(body,'$.bids[0]') AS bid,"
+            "json_extract(body,'$.asks[0]') AS ask "
+            "FROM feed_events WHERE kind='book' AND key=? AND seq<? "
+            "ORDER BY seq DESC LIMIT 1500", (token, before or 2**63 - 1),
+        ).fetchall()
     return {"venue": venue, "day": day, "token": token,
-            "points": [{"seq": r["seq"], "time": r["time"],
-                        "received_at": r.get("received_at", r["time"]),
-                        "exchange_time": r.get("exchange_time"), "source": "public_book",
-                        "bids": r.get("bids", [])[:1], "asks": r.get("asks", [])[:1]}
-                       for r in rows],
-            "next_before": rows[0]["seq"] if len(rows) == 1500 else None,
+            "points": [{"seq": r["seq"], "time": r["received"],
+                        "received_at": r["receipt"],
+                        "exchange_time": r["exchange_time"], "source": "public_book",
+                        "bids": [json.loads(r["bid"])] if r["bid"] else [],
+                        "asks": [json.loads(r["ask"])] if r["ask"] else []}
+                       for r in reversed(rows)],
+            "next_before": rows[-1]["seq"] if len(rows) == 1500 else None,
             "reason": None if rows else "NO_PRICE_HISTORY"}
