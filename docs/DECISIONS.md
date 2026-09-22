@@ -844,3 +844,7 @@ YES/NO 分别使用真实 token 记录；旧 Repricing 显式筛选 YES。历史
 
 VM 只读挂载验收暴露结果库短连接在空闲时移除 WAL/SHM 的问题。模拟与回测 worker 在进程生命周期内保留一个无事务数据库连接，使只读 Dashboard 始终可以访问 WAL；不授予结果库写权限。增加空闲 worker 辅助文件及只读查询回归。
 
+### 2026-09-22：Poly US 合约级数量规则
+
+以官方 Create Order OpenAPI 和实际市场 minimumTradeQty 联合确定份数约束，取代 9 月 19 日通用整份帮助页造成的数量冲突判断。小于一份的市场支持小数；其余市场使用整数步长，缺失或非法 minimumTradeQty 不补默认值。数量解释和执行步长进入规则版本；原始历史记录保留，其余天气口径歧义继续 no-trade。依据及六档真实数据验证见 KNYC_US_RULES_AUDIT.md 与 acceptance/knyc-poly-quantity-2026-09-22.json。
+

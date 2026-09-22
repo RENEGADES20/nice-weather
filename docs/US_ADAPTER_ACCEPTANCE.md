@@ -2,6 +2,8 @@
 
 ## 2026-09-22 当前接线状态
 
+账户口径补充：直接读取官方 Markdown OpenAPI 确认 [Kalshi Total Resting Order Value](https://docs.kalshi.com/api-reference/portfolio/get-total-resting-order-value.md) 仅供 FCM 会员使用，不能将其当作当前个人账户的通用冻结金额接口。Poly US 的 [余额定义](https://docs.polymarket.us/api-reference/account/get-account-balances.md) 将 currentBalance 定义为不含证券价值的现金，buyingPower 则还考虑证券估值和挂单；两者不能未经验证直接映射为同一现金余额。其 [抵押规则](https://docs.polymarket.us/market-structure/collateral-and-margin) 对挂单按单合约核验，跨合约挂单共享购买力；本项目全账户累计预算必须独立预留，不能依赖交易所替代。当前仍未构造不完整的原生现金事实。
+
 签名传输和双平台原生 OrderStatusReport / FillReport / PositionStatusReport 转换已部署；真实只读账户认证、分页历史读取及 Poly US 空订单 WebSocket 快照已完成，仍未完成 LiveExecutionClient、余额/抵押映射与完整原生对账。下文 9 月 19 日的“未读取密钥”等表述仅记录当时状态。
 
 新增独立 Live 进程使用的 USD 初始化模块 `us_currency.py`，同时注册 Nautilus Python/Rust 币种表，要求显式提供核验后的两位或四位精度；同一进程不允许切换平台或精度。导入模块不修改注册表。8 项测试通过，包括独立子进程中的亚分币 Money 往返、AccountState 序列化恢复及父进程 Paper USD2 隔离。首次测试一个子进程启动超时，保持 60 秒限制重新运行后 8 项通过；没有跳过或放宽断言。该模块尚未接入独立 Live worker，不能视作实盘精度验收完成。
