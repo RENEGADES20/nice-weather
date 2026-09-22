@@ -15,6 +15,42 @@ VENUES = ("kalshi", "poly_us")
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
 POLY_US = "https://gateway.polymarket.us/v1"
 CLIMATE_ZONE = timezone(timedelta(hours=-5))
+POLY_WEATHER_AUDITED_AT = 1790055536.7176864
+
+
+def poly_weather_audit(raw, day, lower, upper, received_at):
+    """Match the audited TC/NWS CLI terms exactly; never backdate rule knowledge."""
+    if (type(received_at) not in (int, float) or not math.isfinite(received_at)
+            or received_at < POLY_WEATHER_AUDITED_AT or day < "2026-04-07"):
+        return None
+    condition = (f"less than or equal to {upper}F" if lower is None else
+                 f"greater than or equal to {lower}F" if upper is None else
+                 f"between {lower}F and {upper}F")
+    expected = (
+        f"Will the highest temperature recorded at Central Park (KNYC) in New York City for {day} "
+        "as reported by the National Weather Service's Climatological Report (Daily) be "
+        + condition + "? Outcome verified from NWS Climatological Report."
+    )
+    start = datetime.combine(date.fromisoformat(day), datetime.min.time(), CLIMATE_ZONE)
+    try:
+        close = datetime.fromisoformat(raw["endDate"].replace("Z", "+00:00"))
+        outcomes = json.loads(raw["outcomes"])
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return None
+    # API trading/expiry time is independent of the source's observation window.
+    if (raw["description"] != expected or close.tzinfo is None or close < start
+            or outcomes != ["Yes", "No"]):
+        return None
+    return {
+        "version": "poly-us-tc-20260403-nws-cli-20260922",
+        "audited_at": POLY_WEATHER_AUDITED_AT,
+        "product_sha256": "e79cd6f91384d0ee2ccd25ef2405ec8f7fa2bd36ce7f79476073148d4717239f",
+        "observation_window": "midnight_to_midnight_local_standard_time",
+        "temperature_precision": "source_reported_fahrenheit",
+        "rounding": "source_reported_no_local_rerounding",
+        "revision": "first_finalized_excluding_later_revisions_subject_to_exchange_review",
+        "finality": "exchange_settlement_required",
+    }
 
 
 def event_url(venue, day):
@@ -108,9 +144,10 @@ def normalize(venue, day, payload, received_at, series=None):
             or float(minimum) <= 0
         ):
             raise ValueError("Invalid market fees/minimum")
-        # Prose and API close times are not sufficient proof of the observation window,
-        # rounding and post-final corrections. Capture and display; execution fails closed.
-        ambiguities = ["observation window, rounding and revision rules awaiting venue audit"]
+        audit = (poly_weather_audit(raw, day, lower, upper, received_at)
+                 if venue == "poly_us" else None)
+        ambiguities = ([] if audit else
+                       ["observation window, rounding and revision rules awaiting venue audit"])
         # The venue's Create Order schema explicitly supports decimals when
         # minimumTradeQty < 1. The generic whole-share help page does not
         # override this market-specific API rule (verified 2026-09-22).
@@ -142,7 +179,9 @@ def normalize(venue, day, payload, received_at, series=None):
                 "close_time": close,
                 "active": active,
                 "closed": not active,
-                "accepting_orders": active,
+                "accepting_orders": active and (venue == "kalshi" or (
+                    raw.get("status") == "MARKET_STATUS_OPEN" and raw.get("ep3Status") == "OPEN"
+                )),
                 "tick_size": str(tick),
                 "minimum_order_size": minimum,
                 "quantity_step": quantity_step,
@@ -155,9 +194,10 @@ def normalize(venue, day, payload, received_at, series=None):
                                          "fee_rounding": rounding, "minimum": minimum,
                                          "quantity_rule": "poly-us-api-20260922"
                                          if venue == "poly_us" else "kalshi-unverified",
-                                         "quantity_step": quantity_step}),
+                                         "quantity_step": quantity_step, "weather_audit": audit}),
+                "rules_audit": audit,
                 "received_at": received_at,
-                "parse_status": "ambiguous",
+                "parse_status": "ambiguous" if ambiguities else "parsed",
                 "ambiguities_json": json.dumps(ambiguities),
             }
         )
