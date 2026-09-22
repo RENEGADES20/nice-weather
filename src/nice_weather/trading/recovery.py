@@ -31,6 +31,9 @@ def native_state(session):
         "signals": session.signals,
         "latest_weather": session.latest_weather,
         "fee_accumulators": session.fee_accumulators,
+        **({"market_prices": session.market_prices, "quotes": session.quotes,
+            "execution_evidence": session.execution_evidence,
+            "order_payloads": session.order_payloads} if session.approximate else {}),
         "rejections": session.rejections,
         "peak": session.equity_peak,
         "maximum_drawdown": session.maximum_drawdown,
@@ -109,6 +112,11 @@ def restore(state):
     session.signals = state.get("signals", {})
     session.latest_weather = state.get("latest_weather")
     session.fee_accumulators = state.get("fee_accumulators", {})
+    session.market_prices = state.get("market_prices", {})
+    session.execution_evidence = state.get("execution_evidence", {})
+    session.order_payloads = state.get("order_payloads", {})
+    if session.approximate:
+        session.quotes = state.get("quotes", {})
     session.rejections = state["rejections"]
     session.equity_peak, session.maximum_drawdown = state["peak"], state["maximum_drawdown"]
     # Only closed orders are loaded; native startup has no order to re-submit.
@@ -180,6 +188,9 @@ class PaperRunner:
                     run_id TEXT NOT NULL, input_id TEXT NOT NULL, ts INTEGER NOT NULL,
                     body TEXT NOT NULL, PRIMARY KEY(run_id,input_id));
             """)
+            from nice_weather.trading.paper_execution import ensure_equity
+
+            ensure_equity(con)
             saved = con.execute(
                 "SELECT * FROM paper_state WHERE run_id=?", (self.run_id,)
             ).fetchone()
@@ -248,6 +259,11 @@ class PaperRunner:
         minute = self.session.now // 60_000_000_000
         valid = snapshot["equity"] is not None
         important = input_id is not None or state_hash != self.last_state_hash
+        if self.session.approximate:
+            # One bounded latest-price checkpoint, never an additional tick history.
+            price_hash = digest(state["market_prices"])
+            important |= price_hash != getattr(self, "last_price_hash", None)
+            self.last_price_hash = price_hash
         sample = important or minute != self.last_minute or valid != self.last_valid
         financial_hash = digest(
             [snapshot["fills"], snapshot["settled"], self.session.config.get("funding_events", [])]
@@ -277,6 +293,10 @@ class PaperRunner:
                     "SET body=excluded.body,checksum=excluded.checksum",
                     (self.run_id, encoded(state), digest(state)),
                 )
+            if self.session.approximate and valuation:
+                from nice_weather.trading.paper_execution import save_equity
+
+                save_equity(con, self.run_id, snapshot)
             if input_id:
                 con.execute(
                     "INSERT OR IGNORE INTO paper_receipts VALUES (?,?)", (self.run_id, input_id)
