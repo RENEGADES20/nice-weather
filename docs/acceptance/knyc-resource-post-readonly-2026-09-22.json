@@ -23,9 +23,7 @@
   },
   "subsequent_checkpoint_inspection": {
     "kalshi_state_bytes": 168973,
-    "poly_us_state_bytes": 108715,
-    "kalshi_public_snapshot_bytes": 14677,
-    "poly_us_public_snapshot_bytes": 13725
+    "poly_us_state_bytes": 108715
   },
   "limitations": [
     "The observation crosses deployment; the full two-version summary remains on the VM.",
