@@ -46,7 +46,7 @@ test("account heartbeats do not invalidate Paper preview; reconnect keeps select
     if(connection===1)setTimeout(()=>{clearInterval(timer);socket.close();},700);
   });
   await page.route("**/api/paper/preview",async r=>{
-    await new Promise(resolve=>setTimeout(resolve,350));
+    await new Promise(resolve=>setTimeout(resolve,2500));
     await r.fulfill({json:{available:true,reason:"可用"}});
   });
   await page.goto("/?venue=poly_us&day=2026-09-19");
