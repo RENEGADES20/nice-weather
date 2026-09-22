@@ -25,6 +25,8 @@ export function BacktestChart({ points, label, selectionKey, selection, events =
   const [hover, setHover] = useState<StrategyEvent[]>([]);
   const [cursor, setCursor] = useState("");
   const locate = useRef(onLocate); locate.current = onLocate;
+  const activeFocus = focus && (!selection || (focus.venue === selection.venue &&
+    focus.day === selection.day && focus.token === selection.token)) ? focus : null;
   useEffect(() => {
     const api = createChart(host.current!, {
       autoSize: true, height: 300,
@@ -74,7 +76,7 @@ export function BacktestChart({ points, label, selectionKey, selection, events =
     };
     api.subscribeCrosshairMove(crosshair);
     if (lastKey.current !== selectionKey || !range) api.timeScale().fitContent();
-    else api.timeScale().setVisibleRange(range);
+    else if (created.length) api.timeScale().setVisibleRange(range);
     lastKey.current = selectionKey;
     setHover([]); setCursor("");
     return () => {
@@ -84,12 +86,12 @@ export function BacktestChart({ points, label, selectionKey, selection, events =
     };
   }, [points, events, selectionKey, selection]);
   useEffect(() => {
-    if (focus && chart.current) chart.current.timeScale().setVisibleRange({
-      from: (focus.time - 900) as UTCTimestamp, to: (focus.time + 900) as UTCTimestamp,
+    if (activeFocus && chart.current?.timeScale().getVisibleLogicalRange()) chart.current.timeScale().setVisibleRange({
+      from: (activeFocus.time - 900) as UTCTimestamp, to: (activeFocus.time + 900) as UTCTimestamp,
     });
-  }, [focus, points, selectionKey]);
+  }, [activeFocus, points, selectionKey]);
   return <div className="bt-chart-wrap">
-    <div ref={host} className="bt-chart" role="img" aria-label={label} data-focus={focus?.id ?? ""} />
+    <div ref={host} className="bt-chart" role="img" aria-label={label} data-focus={activeFocus?.id ?? ""} />
     <div className="bt-crosshair" aria-live="polite">{cursor || "滚轮缩放 · 拖动平移 · 十字线查看纽约时间"}
       {hover.map(e => <div key={e.id}><EventDetails event={e} /></div>)}
     </div>
