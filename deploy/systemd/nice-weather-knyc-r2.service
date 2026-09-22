@@ -1,0 +1,16 @@
+[Unit]
+Description=Verify KNYC weather raw archives in R2 before evicting local bytes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=nice-weather
+Group=nice-weather
+EnvironmentFile=/etc/nice-weather/r2.env
+ExecStart=/opt/nice-weather/.venv/bin/python -m nice_weather.trading.r2_retention --db /var/lib/nice-weather-knyc/feed.sqlite3 --prune
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/nice-weather-knyc
