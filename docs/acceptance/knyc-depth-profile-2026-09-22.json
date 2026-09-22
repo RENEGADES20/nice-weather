@@ -1,0 +1,30 @@
+{
+  "venue": "kalshi",
+  "received_interval": [1790060400, 1790060460],
+  "raw_events": 443,
+  "native_apply_calls": 369,
+  "weather_signal_calls": 326,
+  "baseline_engine_sha256": "99813e51edbd77f251fe10f73173d93b78d713ed1a6a8a94612cf9b215f5e14d",
+  "candidate_engine_sha256": "7117f05736c7a08ebeeb1e81d0d2f87dbb28c932b5decf406d23e2aa2c6f7c5c",
+  "probe_sha256": "6a940b8f8c073487c50e3405d4d3e230beff3c136b2b7307a86478ea52a52628",
+  "remote_directory": "/var/lib/nice-weather-knyc",
+  "samples_in_execution_order": [
+    {"label": "baseline-a", "seconds": 30.034693166147918, "sha256": "35c7e5b813bcefd15c3f3332ef443d11f9b421f7f3ccd56c39376115a0da4c60"},
+    {"label": "candidate-a", "seconds": 2.540652356110513, "sha256": "17fa05c385407973b7436c72a0344ef6fbfc4a526ad4d71c0469bc7363a2e93e"},
+    {"label": "candidate-b", "seconds": 3.743466353043914, "sha256": "a508cb6cb5bc9087c3a72cb4d3216eb199d3eedfffa95054890fac4f559a2ace"},
+    {"label": "baseline-b", "seconds": 4.656594736035913, "sha256": "735c4e216855b40e756266afa95aaa1b795a786274f1e0c355fe03f6e5b57d21"},
+    {"label": "baseline-c", "seconds": 4.629270364996046, "sha256": "7d61f0fcc9ecafd8d39ed9106d8157a285b0ad4e1a52371597a8bc17bd37ca57"},
+    {"label": "candidate-c", "seconds": 2.844330618157983, "sha256": "3d8d65863185267c7fd212b323900b0e699e2b1ce7025cdd704fb0b76c5daf87"}
+  ],
+  "baseline_median_seconds": 4.656594736035913,
+  "candidate_median_seconds": 2.844330618157983,
+  "snapshots_equal_except_strategy_state_evaluation_signature": true,
+  "fills_each_run": 0,
+  "limitations": [
+    "Raw evidence filenames are depth-profile-{label}.json; all six samples are retained, including the first slow baseline.",
+    "cProfile was enabled, imports completed before timing, services remained active and operating conditions varied.",
+    "The candidate ran in separate diagnostic processes and did not replace service code for this comparison.",
+    "One minute of real receipts with no fills cannot establish full-day or frontend performance acceptance.",
+    "Native fill, partial basket, depth, risk, settlement and recovery semantics are separately covered by 49 targeted tests."
+  ]
+}

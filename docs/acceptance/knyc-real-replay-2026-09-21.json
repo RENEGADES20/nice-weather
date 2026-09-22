@@ -1,0 +1,38 @@
+{
+  "executed_release": "d0383ff4c9bf293b2ce55d77959c35e9a77cec9e",
+  "requested_received_interval": [1789966800, 1790053200],
+  "climate_day": "2026-09-21",
+  "mode": "backtest",
+  "kalshi": {
+    "run_id": "abfedbab-9e9c-4fbb-a49c-507d957d595d",
+    "status": "completed",
+    "prediction_events": 148,
+    "first_prediction_received": 1790048625.1208224,
+    "last_prediction_received": 1790053199.7023304,
+    "prediction_status_counts": {"unavailable": 148},
+    "prediction_reason_counts": {"STALE_OR_INCOMPLETE_HRRR": 2, "UNVALIDATED_SETTLEMENT_MODEL": 30, "STALE_KNYC_OBSERVATIONS": 116},
+    "fills": 0,
+    "equity": 100
+  },
+  "poly_us": {
+    "run_id": "bbd9680d-ed39-4a2a-9127-53a482b3f5f3",
+    "status": "completed",
+    "prediction_events": 148,
+    "first_prediction_received": 1790048625.2082853,
+    "last_prediction_received": 1790053199.7064698,
+    "prediction_status_counts": {"unavailable": 118, "missing": 30},
+    "prediction_reason_counts": {"STALE_OR_INCOMPLETE_HRRR": 2, "none": 30, "STALE_KNYC_OBSERVATIONS": 116},
+    "fills": 0,
+    "equity": 100
+  },
+  "final_strategy_reason_both_venues": "STALE_KNYC_OBSERVATIONS",
+  "remote_input_coverage": "/var/lib/nice-weather-knyc/replay-20260921-input-coverage.json",
+  "full_market_day_accepted": false,
+  "real_fill_settlement_loop_accepted": false,
+  "limitations": [
+    "A requested 24-hour interval does not prove 24-hour model coverage; prediction receipts only span approximately the final 76 minutes.",
+    "Poly US missing status means the source object omitted that field, not a verified usable prediction.",
+    "Only final strategy decisions are retained by this replay implementation; input reason counts do not describe every intermediate strategy decision.",
+    "No historical receipt times, triggers, fills or settlements were fabricated."
+  ]
+}

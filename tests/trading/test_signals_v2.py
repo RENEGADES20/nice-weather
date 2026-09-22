@@ -122,6 +122,7 @@ def test_disabled_signal_then_quote_reassessment_and_recovery(rounding):
         assert len(recovered.snapshot()["fills"]) == 1
         assert recovered.latest_weather == weather
         assert recovered.fee_accumulators == session.fee_accumulators
+        assert recovered.depth_fills() == session.depth_fills()
         if rounding == "poly_us_order_half_even_v1":
             assert session.fee_accumulators
     finally:

@@ -1,0 +1,18 @@
+{
+  "sha": "d0383ff4c9bf293b2ce55d77959c35e9a77cec9e",
+  "pr": 68,
+  "ci_run": 35696726389,
+  "checks_passed": 7,
+  "verified_at": "2026-09-22T07:02:09.514219+00:00",
+  "files_verified": 74,
+  "hash_mismatches": [],
+  "health_sha_matches": true,
+  "active_services": 6,
+  "restarted_services": ["nice-weather-terminal"],
+  "package_sha256": "0a660d615442e4aafb8c6674020f42858dbf1a3c5f1cb03c6acc8d3a7c0fdf37",
+  "remote_evidence": "/home/hdharrison1206/knyc-feedback-deploy-20260922.json",
+  "free_bytes": 2156232704,
+  "infrastructure_changed": false,
+  "performance_accepted": false,
+  "full_market_day_accepted": false
+}

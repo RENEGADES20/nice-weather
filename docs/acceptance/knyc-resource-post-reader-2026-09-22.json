@@ -1,0 +1,22 @@
+{
+  "sha": "697be59c18d29f9a346bfe4b9a7632a9eb1f9175",
+  "raw_path": "/home/hdharrison1206/knyc-post-reader-20260922-0629.jsonl",
+  "raw_sha256": "a492f28c4b5ee25c14a15e11ccf2699ce9d6af6beda5c335f7ae07f6a08735f7",
+  "samples": 31,
+  "seconds": 1800.0078167477623,
+  "errors": 0,
+  "min_free_bytes": 2162106368,
+  "max_pending_age_seconds": 0.9772133827209473,
+  "all_services_active_and_pids_stable": true,
+  "units": {
+    "terminal": {"peak_memory": 59514880, "write_bytes_per_second": 22.7555},
+    "feed": {"peak_memory": 50958336, "write_bytes_per_second": 332081.7579},
+    "hrrr": {"peak_memory": 135925760, "write_bytes_per_second": 0},
+    "paper_kalshi": {"peak_memory": 241152000, "write_bytes_per_second": 266725.8106},
+    "paper_poly_us": {"peak_memory": 243638272, "write_bytes_per_second": 118257.8331},
+    "backtest": {"peak_memory": 20099072, "write_bytes_per_second": 0}
+  },
+  "cancelled_write_bytes_delta_all_services": 0,
+  "file_growth_bytes": {"feed.sqlite3": 14938112, "feed.sqlite3-wal": 24720, "results.sqlite3": 16384, "results.sqlite3-wal": 304880},
+  "limitations": ["Task I/O counters are not physical device write measurements.", "Thirty minutes does not satisfy a full market day.", "Legacy database and syslog growth are outside these file measurements.", "Long-term capacity remains unaccepted."]
+}
