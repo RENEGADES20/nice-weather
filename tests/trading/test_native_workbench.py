@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import pytest
+from nautilus_trader.model.enums import OrderSide
 
 from nice_weather.trading.dataset import timestamp
 from nice_weather.trading.engine import Session
@@ -107,6 +108,11 @@ def test_yes_no_exit_fees_and_settlement(session):
     assert len(session.snapshot()["positions"]) == 2
     session.apply(event("close", 6, {"token": "111"}))
     assert len(session.snapshot()["positions"]) == 1
+    filled = session.depth_fills()
+    assert session.depth_filled("111", OrderSide.SELL, "0.400", filled) == 1
+    assert session.depth_filled("111", OrderSide.BUY, "0.39", filled) == 1
+    assert session.depth_filled("222", OrderSide.SELL, "0.60", filled) == 1
+    assert session.depth_filled("222", OrderSide.SELL, "0.40", filled) == 0
     result = session.apply(
         event(
             "settlement",

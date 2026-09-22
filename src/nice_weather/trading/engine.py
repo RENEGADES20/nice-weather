@@ -274,6 +274,7 @@ class Session:
                     for p, q in levels
                 }
                 deltas = []
+                filled = self.depth_fills()
                 for (side, price), quantity in (
                     current | {k: "0" for k in previous.keys() - current.keys()}
                 ).items():
@@ -281,7 +282,7 @@ class Session:
                         continue
                     anchors = getattr(self, "_depth_anchors", {})
                     key = (token, side.name, price)
-                    consumed = self.depth_filled(token, side, price)
+                    consumed = self.depth_filled(token, side, price, filled)
                     if (side, price) not in previous:
                         anchors[key] = consumed
                     self._depth_anchors = anchors
@@ -585,28 +586,23 @@ class Session:
             key=lambda r: float("-inf") if r["lower"] is None else r["lower"],
         )
         books = {}
+        tokens = {c["yes_token_id"] for c in contracts} if continuous else set(self.quotes)
+        filled = self.depth_fills() if continuous else {}
         for token, quote in self.quotes.items():
+            if token not in tokens:
+                continue
             levels = getattr(self, "_depth", {}).get(token, {})
             books[token] = {
                 "received_at": quote["ts"] / 1e9,
                 "complete": True,
-                "bids": [
-                    [float(p), float(q)] for (side, p), q in levels.items() if side == OrderSide.BUY
-                ],
-                "asks": [
-                    [float(p), float(q)]
-                    for (side, p), q in levels.items()
-                    if side == OrderSide.SELL
-                ],
             }
-            if continuous:
-                for field, side in (("bids", OrderSide.BUY), ("asks", OrderSide.SELL)):
-                    books[token][field] = [
-                        [float(p), max(0, float(q) - self.depth_filled(token, side, p)
-                                      + getattr(self, "_depth_anchors", {}).get(
-                                          (token, side.name, p), 0))]
-                        for (level_side, p), q in levels.items() if level_side == side
-                    ]
+            for field, side in (("bids", OrderSide.BUY), ("asks", OrderSide.SELL)):
+                books[token][field] = [
+                    [float(p), max(0, float(q) - self.depth_filled(token, side, p, filled)
+                                  + getattr(self, "_depth_anchors", {}).get(
+                                      (token, side.name, p), 0)) if continuous else float(q)]
+                    for (level_side, p), q in levels.items() if level_side == side
+                ]
         for strategy in STRATEGY_IDS:
             if self.config["strategy_id"] not in {strategy, "S1_S2_S3"}:
                 continue
@@ -806,13 +802,14 @@ class Session:
         if tif == "FOK" and self.config.get("execution_version") == 3:
             book_side = OrderSide.SELL if side == "BUY" else OrderSide.BUY
             available = Decimal(0)
+            filled = self.depth_fills()
             for (level_side, level_price), size in (
                 getattr(self, "_depth", {}).get(token, {}).items()
             ):
                 p = Decimal(level_price)
                 if level_side != book_side or (p > price if side == "BUY" else p < price):
                     continue
-                used = self.depth_filled(token, book_side, level_price)
+                used = self.depth_filled(token, book_side, level_price, filled)
                 baseline = getattr(self, "_depth_anchors", {}).get(
                     (token, book_side.name, level_price), 0
                 )
@@ -894,17 +891,19 @@ class Session:
         self.control.submit_order(order)
         return order
 
-    def depth_filled(self, token, book_side, price):
+    def depth_fills(self):
+        # Local to one calculation; never retain across native fills or recovery.
+        filled = {}
+        for order in self.engine.cache.orders():
+            for event in order.events:
+                if type(event).__name__ == "OrderFilled":
+                    key = (order.instrument_id, event.order_side, event.last_px.as_decimal())
+                    filled[key] = filled.get(key, 0) + float(event.last_qty)
+        return filled
+
+    def depth_filled(self, token, book_side, price, filled):
         trade_side = OrderSide.BUY if book_side == OrderSide.SELL else OrderSide.SELL
-        return sum(
-            float(e.last_qty)
-            for order in self.engine.cache.orders()
-            if order.instrument_id == self.instruments[token].id
-            for e in order.events
-            if type(e).__name__ == "OrderFilled"
-            and e.order_side == trade_side
-            and e.last_px.as_decimal() == Decimal(price)
-        )
+        return filled.get((self.instruments[token].id, trade_side, Decimal(price)), 0)
 
     def snapshot(self):
         account = self.engine.cache.account_for_venue(self.venue)
