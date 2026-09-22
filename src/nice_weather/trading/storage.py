@@ -5,7 +5,7 @@ import json
 import re
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 
@@ -85,8 +85,9 @@ class Requests:
                 raise ValueError("Request ID reused with a different payload")
         return request_id
 
-    def pending(self, account, mode):
-        with connect(self.path, readonly=True) as con:
+    def pending(self, account, mode, *, connection=None):
+        with (nullcontext(connection) if connection is not None
+              else connect(self.path, readonly=True)) as con:
             return [
                 dict(row)
                 for row in con.execute(

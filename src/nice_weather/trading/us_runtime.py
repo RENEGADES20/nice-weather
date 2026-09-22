@@ -78,7 +78,8 @@ def paper(root, venue, once=False):
     requests = Requests(root / "requests" / "requests.sqlite3")
     feed = FeedStore(root / "feed.sqlite3")
     # No transaction is held; avoid a checkpoint on every short-lived writer close.
-    with single_writer(root / (account + ".lock")), connect(results.path):
+    with (single_writer(root / (account + ".lock")), connect(results.path),
+          connect(requests.path, readonly=True) as request_reader):
         run = results.run(account=account)
         if not run:
             config = run_config(account, "sandbox", "S1_S2_S3") | {
@@ -124,7 +125,7 @@ def paper(root, venue, once=False):
                     now = max(time.time_ns(), runner.session.now + 1)
                     runner.apply("clock", {"kind": "clock", "ts": now, "data": {}})
                     last_heartbeat = time.monotonic()
-                for request in requests.pending(account, "sandbox"):
+                for request in requests.pending(account, "sandbox", connection=request_reader):
                     if request["expires"] < time.time():
                         requests.finish(request["request_id"], "rejected", "Request expired")
                         continue
@@ -237,10 +238,12 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None):
 
 def backtest_worker(root, once=False):
     requests = Requests(root / "requests" / "requests.sqlite3")
-    with single_writer(root / "us-backtests.lock"):
+    with (single_writer(root / "us-backtests.lock"),
+          connect(requests.path, readonly=True) as request_reader):
         while True:
             for venue in VENUES:
-                for request in requests.pending("backtest-" + venue, "backtest"):
+                for request in requests.pending("backtest-" + venue, "backtest",
+                                                connection=request_reader):
                     if request["expires"] < time.time():
                         requests.finish(request["request_id"], "rejected", "Request expired")
                         continue
