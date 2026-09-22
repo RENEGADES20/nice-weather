@@ -2,6 +2,7 @@
 
 import asyncio
 
+from nautilus_trader.accounting.factory import AccountFactory
 from nautilus_trader.common.providers import InstrumentProvider
 from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.enums import AccountType, OmsType
@@ -48,6 +49,9 @@ class USReadOnlyExecutionClient(LiveExecutionClient):
                     int(snapshot["received_at"] * 1_000_000_000),
                 )
                 previous = self._cache.account(self.account_id)
+                candidate = previous if previous is not None else AccountFactory.create(state)
+                if candidate.calculate_account_state:
+                    raise RuntimeError("US Live accounts require a separate process from Paper")
                 if previous is not None:
                     last = previous.last_event
                     if state.ts_init < last.ts_init or (

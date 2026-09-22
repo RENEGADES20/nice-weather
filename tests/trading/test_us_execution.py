@@ -1,4 +1,7 @@
 import asyncio
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,9 +14,11 @@ from nautilus_trader.portfolio.portfolio import Portfolio
 from nice_weather.trading.us_execution import USReadOnlyExecutionClient
 
 
-@pytest.mark.parametrize("venue", ["kalshi", "poly_us"])
-def test_native_account_bus_cache_refresh_and_incomplete_reconciliation(venue):
+def exercise_account(venue, contaminated=False):
     async def run():
+        if contaminated:
+            from nautilus_trader.accounting.factory import AccountFactory
+            AccountFactory.register_calculated_account(venue.upper())
         clock, cache = LiveClock(), Cache()
         bus = MessageBus(TraderId("TEST-001"), clock)
         portfolio = Portfolio(msgbus=bus, cache=cache, clock=clock)
@@ -27,6 +32,12 @@ def test_native_account_bus_cache_refresh_and_incomplete_reconciliation(venue):
                                    close=AsyncMock())
         client = USReadOnlyExecutionClient(transport=transport, loop=asyncio.get_running_loop(),
                                           msgbus=bus, cache=cache, clock=clock)
+        if contaminated:
+            with pytest.raises(RuntimeError, match="separate process"):
+                await client._connect()
+            assert cache.account(client.account_id) is None
+            assert client.snapshot is None
+            return
         await client._connect()
         native = cache.account(client.account_id)
         assert native is not None
@@ -59,6 +70,18 @@ def test_native_account_bus_cache_refresh_and_incomplete_reconciliation(venue):
         await client._disconnect()
         transport.close.assert_awaited_once()
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("venue,contaminated", [
+    ("kalshi", False), ("poly_us", False), ("kalshi", True),
+])
+def test_native_account_bus_and_paper_process_isolation(venue, contaminated):
+    # BacktestEngine mutates AccountFactory globally. Use the production process boundary.
+    code = ("import runpy,sys; runpy.run_path(sys.argv[1])['exercise_account']"
+            "(sys.argv[2], sys.argv[3]=='True')")
+    result = subprocess.run([sys.executable, "-c", code, str(Path(__file__).resolve()),
+                             venue, str(contaminated)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_client_requires_readonly_transport():
