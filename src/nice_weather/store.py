@@ -52,6 +52,8 @@ class WeatherStore:
         self.connection.execute(f"PRAGMA busy_timeout={5000 if read_only else 30000}")
         if not read_only:
             self.connection.execute("PRAGMA journal_mode=WAL")
+            # Bound retained WAL space after readers release a completed checkpoint.
+            self.connection.execute("PRAGMA journal_size_limit=16777216")
             self.connection.execute("PRAGMA synchronous=NORMAL")
 
     def close(self) -> None:

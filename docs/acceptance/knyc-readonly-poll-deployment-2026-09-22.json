@@ -1,0 +1,22 @@
+{
+  "evidence_method": "Observed authorized SSH browser output; manually transcribed summary",
+  "observed_utc": "2026-09-22T03:45:25Z",
+  "pr": "https://github.com/RENEGADES20/nice-weather/pull/60",
+  "commit": "1e8a76df9a42e1e9c6d4eece5ecc2e94dbfaf604",
+  "previous_commit": "23b540bc781b51905f623f67497a9a092274481c",
+  "archive_sha256": "bfa4eb3585491fb81eb42cd9b366e79007f50067ec4daa42ae8d5ffbdb926093",
+  "archive_bytes": 645161,
+  "updater_sha256": "38a000161ae018d71a30a56bdd198644011e3dafc0a61cce9817515a46fc9095",
+  "manifest_files_checked": 72,
+  "manifest_mismatches": [],
+  "health": {"status": "ok", "release": "1e8a76df9a42e1e9c6d4eece5ecc2e94dbfaf604"},
+  "changed_modules": ["storage.py", "us_reports.py", "us_transport.py"],
+  "restarted_by_deployment": ["nice-weather-terminal", "nice-weather-knyc-backtest", "nice-weather-knyc-paper@kalshi", "nice-weather-knyc-paper@poly_us"],
+  "active_verified": ["nice-weather-terminal", "nice-weather-knyc-feed", "nice-weather-knyc-hrrr", "nice-weather-knyc-backtest", "nice-weather-knyc-paper@kalshi", "nice-weather-knyc-paper@poly_us"],
+  "free_bytes": 2395144192,
+  "paper_accounts": [{"venue": "kalshi", "status": "running", "cash": 100, "fills": 0, "enabled": false}, {"venue": "poly_us", "status": "running", "cash": 100, "fills": 0, "enabled": false}],
+  "resource_observation": {"pid": 1729290, "path": "/home/hdharrison1206/knyc-post-readonly-20260922-0347.jsonl", "planned_samples": 31, "verified_samples": 1, "errors": 0, "oldest_pending_age_seconds": [0, 0], "full_market_day": false},
+  "vm_configuration_changed": false,
+  "real_orders_submitted_by_agent": 0,
+  "acceptance": {"deployment": "passed", "capacity_sustained": "pending", "performance": "pending", "live_reconciliation": "pending", "full_market_day": "pending", "user_real_trade": "pending"}
+}

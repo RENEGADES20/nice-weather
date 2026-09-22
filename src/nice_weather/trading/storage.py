@@ -25,6 +25,8 @@ def connect(path: Path, *, readonly=False):
         path.parent.mkdir(parents=True, exist_ok=True)
         con = sqlite3.connect(path, timeout=10)
         con.execute("PRAGMA journal_mode=WAL")
+        # This caps reusable space, never live WAL pages needed by a reader.
+        con.execute("PRAGMA journal_size_limit=16777216")
         con.execute("PRAGMA synchronous=FULL")
     con.row_factory = sqlite3.Row
     try:
