@@ -33,14 +33,15 @@ test("cross-day selection, Live account isolation and refresh",async({page})=>{
   await page.setViewportSize({width:390,height:844});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();expect(errors).toEqual([]);
 });
 
-test("account heartbeats do not invalidate Paper preview; reconnect keeps selection",async({page})=>{
+test("position mark updates do not invalidate Paper sell preview; reconnect keeps selection",async({page})=>{
   await setup(page);
-  let connection = 0;
+  let connection = 0, mark = 0;
   await page.routeWebSocket("**/api/events*",socket=>{
     connection++;
     const timer=setInterval(()=>socket.send(JSON.stringify({accounts:[{
       account:"sandbox-poly_us-knyc",run_id:"sandbox-poly_us-knyc",mode:"sandbox",
-      updated:Date.now()/1000,snapshot:{cash:100,available:100,equity:100,positions:[],orders:[]},
+      updated:Date.now()/1000,snapshot:{cash:99.99,available:99.99,equity:100+mark/100,
+        positions:[{token:"poly_us:2026-09-19:0",quantity:1,unrealized_pnl:mark++/100}],orders:[]},
     }]})),100);
     socket.onClose(()=>clearInterval(timer));
     if(connection===1)setTimeout(()=>{clearInterval(timer);socket.close();},700);
@@ -51,11 +52,12 @@ test("account heartbeats do not invalidate Paper preview; reconnect keeps select
   });
   await page.goto("/?venue=poly_us&day=2026-09-19");
   await expect(page.getByLabel("温度档位")).toHaveValue("poly_us:2026-09-19:0");
+  await page.getByLabel("方向").selectOption("SELL");
   await page.getByLabel("限价",{exact:true}).fill("0.5");
-  await expect(page.getByRole("button",{name:"模拟买入",exact:true})).toBeEnabled();
+  await expect(page.getByRole("button",{name:"模拟卖出",exact:true})).toBeEnabled({timeout:15000});
   await expect.poll(()=>connection).toBe(2);
   await expect(page.getByLabel("市场日",{exact:true})).toHaveValue("2026-09-19");
-  await expect(page.getByRole("button",{name:"模拟买入",exact:true})).toBeEnabled();
+  await expect(page.getByRole("button",{name:"模拟卖出",exact:true})).toBeEnabled();
 });
 
 test("a focused fill cannot crash an empty future market",async({page})=>{
