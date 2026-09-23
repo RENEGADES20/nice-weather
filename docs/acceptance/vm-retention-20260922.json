@@ -1,0 +1,99 @@
+{
+  "status": "complete",
+  "authorization": "2026-09-22 user: delete VM market, old ledgers, simulations; weather raw only after verified R2, ongoing automatic cleanup",
+  "maintenance_commit": "2c0f1624336333bf0d83aba2cd9b2077ba908311",
+  "pull_requests": [
+    81,
+    82,
+    83
+  ],
+  "checks": "7 CI checks passed for each merged PR",
+  "old_simulation": {
+    "bytes_before": 103559168,
+    "bytes_after": 69632,
+    "runs_deleted": 1,
+    "requests_deleted": 11
+  },
+  "knyc_simulation": {
+    "bytes_before": 23826432,
+    "bytes_after": 155648,
+    "runs_deleted": 15,
+    "requests_deleted": 14,
+    "live_records_unchanged": true
+  },
+  "deleted_old_0": {
+    "path": "/var/lib/nice-weather/weather.sqlite3",
+    "bytes": 272932864,
+    "remote_manifest": "legacy-weather/v1/manifests/4382d0a6a587ff7aa2da6179c7af82ff61ed5cdfad2f8579a7a21df33f3e7581.json.gz",
+    "verified_readback": true
+  },
+  "knyc_first_archive": {
+    "pruned_unique_bodies": 1454,
+    "completed_utc": "2026-09-22T23:59:38Z"
+  },
+  "vm_receipts": "/var/lib/nice-weather/retention-20260922",
+  "pending": [],
+  "knyc_feed": {
+    "bytes_before": 1516687360,
+    "bytes_after": 527679488,
+    "events_retained": 207210,
+    "weather_events_retained": 20366,
+    "max_seq_unchanged": 1154468,
+    "capture_metadata_rows_retained": 978336,
+    "integrity_check": "ok",
+    "auto_vacuum": 2,
+    "installed": true
+  },
+  "deleted_old_1": {
+    "path": "/var/lib/nice-weather/nice-weather.pre-dashboard-20260904T033236Z.sqlite3",
+    "bytes": 712949760,
+    "remote_manifest": "legacy-weather/v1/manifests/79b851f220e15dc9b564db41178919653ee600da0507613ff74c751ab9224656.json.gz",
+    "verified_readback": true
+  },
+  "deleted_old_2": {
+    "vm_receipt": "deleted-old-2.json",
+    "bytes": 1449570304,
+    "remote_manifest": "legacy-weather/v1/manifests/de097daac37c0b491222b339fdaae08a0af155393d11cb683110014ac5422c3c.json.gz",
+    "verified_readback": true
+  },
+  "deleted_old_databases_total_bytes": 2435452928,
+  "main": {
+    "bytes_before": 15555043328,
+    "bytes_after_copy": 761565184,
+    "bytes_after": 377626624,
+    "checked_at": "2026-09-23T00:57:29.746464+00:00",
+    "raw_remaining_at_cutoff": {
+      "captures": 0,
+      "screenshots": 0,
+      "snapshots": 0
+    },
+    "all_retained_row_counts_unchanged": true,
+    "quick_check": "ok",
+    "freelist_pages": 0,
+    "final_batch_pruned": {
+      "raw_snapshots": 1669,
+      "source_captures": 8029,
+      "settlement_evidence": 68
+    },
+    "notes": "Earlier verified eviction already cleared other raw fields; final counts are at maintenance cutoff before collectors resumed."
+  },
+  "disk_available_bytes": 19674050560,
+  "services": {
+    "knyc_feed_hrrr_terminal_backtest_paper_live": "active",
+    "legacy_collector_dashboard": "active",
+    "r2_timers": "enabled",
+    "legacy_r2_last_success_utc": "2026-09-23T00:57:42Z",
+    "knyc_r2_last_success_utc": "2026-09-23T00:52:38Z",
+    "disabled": [
+      "nice-weather-market-stream",
+      "nice-weather-runner",
+      "nice-weather-sandbox",
+      "nice-weather-backtest"
+    ]
+  },
+  "main_remote_manifests": [
+    "legacy-weather/v1/manifests/920ced80a2ab02b6aa3082e6d5d763efa2cfac844a6d5b4f1e8617d62f6dc419.json.gz",
+    "legacy-weather/v1/manifests/9f570fd903fda763c11f61e421023b71afe1b2835808fe62e25108c74b410bd.json.gz"
+  ],
+  "real_funds_actions": 0
+}

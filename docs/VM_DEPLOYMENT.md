@@ -1,5 +1,16 @@
 # 当前发布规则（2026-09-19）
 
+## 2026-09-22：天气原文验证归档后自动清理
+
+用户已批准清理 VM 市场历史、旧账本和模拟数据。天气原文仅在 R2 GET 回读与本地字节、SHA-256、大小和记录身份一致后清空；解析结果、来源时间、实际 received_at、版本、哈希及远端对象索引保留。实盘账户与订单记录不属于本次旧账本清理。
+
+- 旧 KLGA：`nice-weather-r2-sync.service` 的 `verified-retention.conf` 设置 `R2_PRUNE_VERIFIED_RAW=true`，沿用 15 分钟 timer。首次积压允许长时间执行；失败保留未验证原文。
+- KNYC：`nice-weather-knyc-r2.timer` 在上次任务结束 15 分钟后调用 `nice_weather.trading.r2_retention --db /var/lib/nice-weather-knyc/feed.sqlite3 --prune`。使用同一服务器 R2 环境文件，原始对象位于 `knyc/v1/weather-raw/`。
+- 旧混合库退役：`scripts/archive_legacy_weather.py` 只归档天气表，逐对象回读校验后写远端 manifest；移除原库前再次核验文件大小/修改时间、占用、WAL 与远端 manifest。不能用上传台账代替真实回读。
+- 首次通过保留天气的副本压缩，设置 SQLite `auto_vacuum=INCREMENTAL`；以后清空原文字段后回收空闲页。逻辑字节清空和磁盘容量回收分别记录。
+- 旧 Poly Intl 市场、runner、sandbox、backtest 服务停用，保留 KNYC 服务及 KLGA 天气采集。回滚代码不能恢复清理前的旧数据库覆盖新记录。
+
+
 2026-09-22 任务 6 补充：前端在本地构建。update_knyc_runtime.py 纳入市场目录、信号、Paper、回测与 Live 模块的实际服务映射；只停止已经安装且受影响的实例。新增 nice-weather-knyc-live@kalshi/poly_us，读取 /etc/nice-weather/knyc-live-{venue}.env 中的 NICE_WEATHER_LIVE_CREDENTIALS 文件路径与 NICE_WEATHER_BALANCE_PRECISION（Kalshi 4、Poly US 2）。凭据存 /etc/nice-weather/credentials，root:nice-weather、640；环境文件只含路径/精度，不含密钥。两实例使用现有虚拟环境和 /var/lib/nice-weather-knyc，初始交易关闭。部署前核验包大小、实际展开增量及可用空间；不增加固定容量门槛，不修改采集数据。
 
 2026-09-19 存储修订：GitHub 保存代码历史，VM 只保留正在使用的运行目录和依赖环境，不按每次提交复制虚拟环境或累计回退包。代码回退从 GitHub 的精确提交重建发布包，校验后更新现役目录；只临时上传本次产物。版本由 runtime-manifest.json 和服务记录标识，旧物理目录名不能单独作为当前版本证据。部署成功后的临时包、废弃资源及旧目录列入精确清理清单，经已有明确授权或人工审核后删除；业务数据库不跟随代码回退。
@@ -207,7 +218,7 @@ sudo journalctl -u nice-weather-r2-sync.service -n 100 --no-pager
 sudo -u nice-weather /opt/nice-weather/.venv/bin/nice-weather collector-status --db /var/lib/nice-weather/weather.sqlite3 --config /etc/nice-weather/collector.toml
 ```
 
-运行 24 小时后确认：三类 API 均有新版本、Weather.gov 页面无持续解析错误、R2 存在 raw/evidence/parquet/manifest、预计日增量不超过 10 MiB。达到 7 GiB 时状态命令输出 `warning=true`，系统不会自动删除数据。
+运行 24 小时后确认：三类 API 均有新版本、Weather.gov 页面无持续解析错误、R2 存在 raw/evidence/parquet/manifest、预计日增量不超过 10 MiB。达到 7 GiB 时状态命令输出 `warning=true`。2026-09-22 起，天气原文按本页顶部规则在 R2 回读核验后自动清理；未核实的对象继续保留。
 
 ## 7. 回滚
 
