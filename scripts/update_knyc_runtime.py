@@ -104,6 +104,12 @@ def main():
         "market_discovery", "market_weather", "signals", "signal_research", "paper_execution",
         "backtest_view", "us_live", "us_live_state", "us_reconcile")})
     allowed.add("deploy/systemd/nice-weather-knyc-live@.service")
+    # R2 retention is installed and scheduled independently; package its merged
+    # runtime files without restarting the collector or running a prune here.
+    allowed.update({"src/nice_weather/r2_archive.py",
+                    "src/nice_weather/trading/r2_retention.py",
+                    "deploy/systemd/nice-weather-knyc-r2.service",
+                    "deploy/systemd/nice-weather-knyc-r2.timer"})
     if any(name not in allowed and not name.startswith("src/nice_weather/terminal_dist/")
            for name in changed):
         raise ValueError("Release changes services outside the terminal update scope")
