@@ -45,16 +45,13 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
   const selection = `${identity}/${outcome}/${side}/${quantity}/${limit}/${tif}/${accountRevision}`;
   const [checkedSelection, setCheckedSelection] = useState("");
   const [poll, setPoll] = useState(0);
-  useEffect(() => {
-    const timer = setInterval(() => setPoll(value => value + 1), 2000);
-    return () => clearInterval(timer);
-  }, []);
   const command = (kind: string, payload: Record<string, unknown>): PaperCommand => ({
     request_id: crypto.randomUUID(), venue: market!.venue, mode: "sandbox", kind, payload,
   });
   useEffect(() => {
     const controller = new AbortController();
     const current = ++generation.current;
+    let refresh: ReturnType<typeof setTimeout> | undefined;
     if (checkedSelection !== selection) setCheck(null);
     if (!market || !token || Number(quantity) <= 0 || Number(limit) <= 0) return;
     const timer = setTimeout(() => {
@@ -64,9 +61,11 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
       }).catch(error => {
         if (!controller.signal.aborted && current === generation.current)
           setCheck({ available: false, reason: String(error) });
+      }).finally(() => {
+        if (!controller.signal.aborted) refresh = setTimeout(() => setPoll(value => value + 1), 2000);
       });
     }, 150);
-    return () => { clearTimeout(timer); controller.abort(); };
+    return () => { clearTimeout(timer); clearTimeout(refresh); controller.abort(); };
   }, [selection, preview, poll]);
   async function execute(kind: string, payload: Record<string, unknown>, retry?: PaperCommand) {
     if (submitting.current || !market) return;
