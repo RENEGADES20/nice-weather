@@ -552,7 +552,9 @@ function App() {
           {(book?.bids ?? []).slice(0,8).map(([p,q],i) => <div className="level bid" key={i}><span>{price(p)}</span><span>{q}</span></div>)}
         </section>
         {mode === "sandbox" ? <PaperTicket market={contract ? {...contract, label:contract.title} : null}
-          accountRevision={JSON.stringify([snapshot.cash, snapshot.available, snapshot.positions, snapshot.orders, snapshot.simulation])} simulation={snapshot.simulation ?? {estimated_fee_rate:.01,slippage_pp:0}}
+          accountRevision={JSON.stringify([snapshot.cash, snapshot.available,
+            snapshot.positions?.map(p => [p.token, p.quantity]),
+            snapshot.orders?.map(o => [o.order_id, o.status, o.filled]), snapshot.simulation])} simulation={snapshot.simulation ?? {estimated_fee_rate:.01,slippage_pp:0}}
           blocked={blocked} preview={preview} send={c => commands.send(c, commands.saved.some(s => s.request_id === c.request_id))} onAccountUpdate={refreshAccount}/>
           : <LiveOrderTicket key={`${venue}/${day}/${token}`} snapshot={liveSnapshot} market={contract?.condition_id ?? ""} pending={blocked} send={(kind,payload) => submit(kind,payload,"live")}/>}
         <section className="weather-panel"><WeatherAnalysis data={weather.weather} quotes={weather.quotes} token={token} loading={weather.loading} error={weather.error} priceReason={weather.priceReason}/></section>
