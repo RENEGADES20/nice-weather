@@ -75,10 +75,14 @@ def test_legacy_weather_export_excludes_market_rows(tmp_path):
         assert b"private" not in gzip.decompress(payload)
         assert b"polymarket_gamma" not in gzip.decompress(payload)
     target = tmp_path / "compact.sqlite3"
-    assert archive["compact_weather"](path, target) == {"raw_snapshots": 1}
+    with sqlite3.connect(path) as con:
+        con.execute("INSERT INTO raw_snapshots VALUES ('new_weather_source','keep')")
+        con.execute("CREATE INDEX raw_source ON raw_snapshots(source)")
+    assert archive["compact_weather"](path, target) == {"raw_snapshots": 2}
     with sqlite3.connect(target) as con:
         assert con.execute("SELECT * FROM paper_orders").fetchall() == []
-        assert con.execute("SELECT * FROM raw_snapshots").fetchall() == [("nws", "weather")]
+        assert set(con.execute("SELECT * FROM raw_snapshots")) == {
+            ("nws", "weather"), ("new_weather_source", "keep")}
         assert con.execute("PRAGMA auto_vacuum").fetchone()[0] == 2
     with sqlite3.connect(path) as con:
         assert con.execute("SELECT * FROM paper_orders").fetchall() == [("private",)]

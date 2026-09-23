@@ -50,7 +50,8 @@ def compact_weather(source, target):
                     continue
                 if not table.replace("_", "").isalnum():
                     raise ValueError("Invalid table name")
-                where = (" WHERE source NOT IN ('polymarket_gamma','polymarket_clob')"
+                where = (" WHERE source IN (SELECT DISTINCT source FROM raw_snapshots "
+                         "WHERE source NOT IN ('polymarket_gamma','polymarket_clob'))"
                          if table == "raw_snapshots" else "")
                 cursor = src.execute(f'SELECT * FROM "{table}"{where}')
                 count = 0
@@ -59,6 +60,7 @@ def compact_weather(source, target):
                     dst.executemany(f'INSERT INTO "{table}" VALUES ({marks})', rows)
                     count += len(rows)
                 counts[table] = count
+                print(json.dumps({"copied_table": table, "rows": count}), flush=True)
             for kind, _, ddl in schema:
                 if kind == "index":
                     dst.execute(ddl)
