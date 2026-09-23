@@ -149,10 +149,12 @@ def weather_history(path, venue, day):
 
     with connect(path, readonly=True) as con:
         # Scan weather facts only. Late reports/revisions and pre-day forecasts must survive.
-        # The (kind,key,seq) index would sort all weather bodies into a disk
-        # temporary table for ORDER BY seq. Walk the append-only rowid instead.
-        for row in con.execute("SELECT key,seq,received,body FROM feed_events NOT INDEXED "
-                               "WHERE kind='weather' ORDER BY seq"):
+        # Select weather seqs with the covering index, then fetch bodies by
+        # primary key in event order. Sorting the bodies spills to disk; a
+        # full rowid scan spends time on every captured book event.
+        for row in con.execute("SELECT key,seq,received,body FROM feed_events "
+                               "WHERE seq IN (SELECT seq FROM feed_events WHERE kind='weather') "
+                               "ORDER BY seq"):
             body = json.loads(row["body"])
             if body.get("station") != "KNYC":
                 continue
