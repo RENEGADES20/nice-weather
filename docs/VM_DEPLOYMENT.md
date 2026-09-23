@@ -1,5 +1,9 @@
 # 当前发布规则（2026-09-19）
 
+## 2026-09-23 任务 6 当前生产版本
+
+`niceweather.trade/` 的 KNYC 终端已原位更新至 `0c3ac70a517acb66a24f37274b64ce38663c8da3`。发布包 SHA-256 为 `4b1d9c36615ab2c86b108345c2466815a5b37f65985065598bcf4bdae702e0f0`，大小 705,892 字节；manifest 86 个文件哈希一致。更新器预览仅改变 `terminal_dist/index.html` 和 `assets/index-CLW0uzcX.js`，只重启 `nice-weather-terminal.service`。旧 `assets/index-DWyKH0wS.js` 留在 `obsolete_pending_review`，尚未删除。VM 可用约 19 GiB，KNYC 采集、HRRR、回测、两 Paper、两 Live 实例均运行；数据目录和现有虚拟环境未改动。前一兼容代码包留本地用于按精确提交回滚，回滚不覆盖业务数据。
+
 ## 2026-09-22：天气原文验证归档后自动清理
 
 用户已批准清理 VM 市场历史、旧账本和模拟数据。天气原文仅在 R2 GET 回读与本地字节、SHA-256、大小和记录身份一致后清空；解析结果、来源时间、实际 received_at、版本、哈希及远端对象索引保留。实盘账户与订单记录不属于本次旧账本清理。
