@@ -577,10 +577,19 @@ function App() {
         </section>
         {mode === "live" ? <div className="positions"><LiveAccountPanel key={venue} snapshot={liveSnapshot} pending={blocked} venue={venue} send={(kind,payload) => submit(kind,payload,"live")}/></div>
           : <section className="positions panel"><div className="section-title"><h2>模拟持仓与订单</h2><span>{paperAccount?.account ?? "账户尚未启动"} · {snapshot.settlement_status ?? "未记录结算状态"}</span></div>
-            <div className="table-wrap"><table><thead><tr><th>合约</th><th>方向</th><th>数量</th><th>价格</th><th>状态 / 来源</th><th>操作</th></tr></thead><tbody>
-              {(snapshot.orders ?? []).map(o => <tr key={o.order_id}><td>{o.token}</td><td>{o.side}</td><td>{o.filled} / {o.quantity}</td><td>{price(o.price)}</td><td>{o.status} · {o.owner}</td><td><button disabled={commands.blocked || o.remaining <= 0} onClick={() => submit("cancel",{order_id:o.order_id},"sandbox")}>撤单</button></td></tr>)}
-              {!snapshot.orders?.length && <tr><td colSpan={6}>尚无订单</td></tr>}
+            <div className="table-wrap"><table aria-label="模拟订单"><thead><tr><th>订单 / 请求 ID</th><th>合约</th><th>方向</th><th>已成交 / 委托数量</th><th>委托限价</th><th>状态 / 来源</th><th>操作</th></tr></thead><tbody>
+              {(snapshot.orders ?? []).map(o => <tr key={o.order_id}><td>{o.order_id}</td><td>{o.token}</td><td>{o.side}</td><td>{o.filled} / {o.quantity}</td><td>{price(o.price)}</td><td>{o.status} · {o.owner}</td><td><button disabled={commands.blocked || o.remaining <= 0} onClick={() => submit("cancel",{order_id:o.order_id},"sandbox")}>撤单</button></td></tr>)}
+              {!snapshot.orders?.length && <tr><td colSpan={7}>尚无订单</td></tr>}
             </tbody></table></div><div className="position-grid">{(snapshot.positions ?? []).map(p => <div key={p.token}><b>{p.bin} · {p.outcome}</b><span>{p.quantity} 份</span><span>成本 {money(p.cost)}</span><span>浮盈亏 {money(p.unrealized_pnl)}</span></div>)}</div>
+            <details open><summary>模拟成交明细（Nautilus 成交记录）</summary>
+              <div className="table-wrap"><table aria-label="模拟成交明细"><thead><tr><th>纽约成交时间</th><th>订单 / 请求 ID</th><th>合约</th><th>方向</th><th>成交数量</th><th>成交价</th><th>成交费用</th></tr></thead><tbody>
+                {(snapshot.fills ?? []).map((f, i) => <tr key={`${f.order_id}/${f.ts}/${i}`}>
+                  <td>{f.ts == null ? "未记录" : new Date(f.ts / 1e6).toLocaleString("zh-CN", {timeZone:"America/New_York",hour12:false})}</td>
+                  <td>{f.order_id}</td><td>{f.token}</td><td>{f.side}</td><td>{f.quantity}</td><td>{price(f.price)}</td><td>{f.fee == null ? "未记录" : `$${f.fee.toFixed(4)}`}</td>
+                </tr>)}
+                {!snapshot.fills?.length && <tr><td colSpan={7}>{snapshot.orders?.some(o => o.filled > 0) ? "已成交订单缺少成交明细，成交价与费用待核验" : "尚无成交"}</td></tr>}
+              </tbody></table></div>
+            </details>
             <div className="receipts">{receipts.filter(r => r.account === paperAccount?.account).slice(0,5).map(r => <div key={r.request_id}>{clock(r.created)} · {r.kind} · {r.status} {r.error}</div>)}</div>
             <details><summary>模拟账户权益曲线</summary><BacktestChart points={curve.run === paperAccount?.run_id ? curve.points : []} label="模拟账户权益" selectionKey={paperAccount?.run_id ?? ""}/><p>{curveError}</p></details>
           </section>}

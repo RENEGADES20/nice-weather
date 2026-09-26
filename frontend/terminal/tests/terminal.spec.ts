@@ -96,6 +96,34 @@ test("weather failure does not suppress market price history",async({page})=>{
   await expect(page.getByRole("region",{name:"天气分析"})).toContainText("45.00%");
 });
 
+test("Paper limit price stays separate from native fills and survives refresh",async({page})=>{
+  await setup(page);
+  const snapshot={cash:99.9597,equity:100,available:99.9597,positions:[],
+    orders:[{order_id:"paper-request-1",token:"poly_us:2026-09-19:0",side:"BUY",quantity:3,filled:3,remaining:0,price:.02,status:"FILLED",owner:"manual"}],
+    fills:[
+      {order_id:"paper-request-1",token:"poly_us:2026-09-19:0",side:"BUY",quantity:2,price:.01,fee:.0001,ts:Date.parse("2026-09-19T18:00:00Z")*1e6},
+      {order_id:"paper-request-1",token:"poly_us:2026-09-19:0",side:"BUY",quantity:1,price:.02,fee:.0002,ts:Date.parse("2026-09-19T18:00:00Z")*1e6},
+    ]};
+  await page.route("**/api/snapshot",r=>r.fulfill({json:{cursor:1,contracts:[],books:{},weather:{},health:{},accounts:[{account:"sandbox-poly_us-knyc",mode:"sandbox",run_id:"paper",snapshot}]}}));
+  await page.goto("/?venue=poly_us&day=2026-09-19");
+  const orders=page.getByRole("table",{name:"模拟订单",exact:true});
+  const fills=page.getByRole("table",{name:"模拟成交明细",exact:true});
+  await expect(orders).toContainText("委托限价");
+  await expect(orders).toContainText("2.0¢");
+  await expect(fills.getByRole("row")).toHaveCount(3);
+  await expect(fills).toContainText("1.0¢");
+  await expect(fills).toContainText("$0.0001");
+  await expect(fills).toContainText("$0.0002");
+  await expect(fills).toContainText("14:00:00");
+  await page.reload();
+  await expect(fills.getByRole("row")).toHaveCount(3);
+  await expect(fills).toContainText("paper-request-1");
+  snapshot.fills=[];
+  await page.reload();
+  await expect(fills).toContainText("已成交订单缺少成交明细，成交价与费用待核验");
+  await expect(fills).not.toContainText("2.0¢");
+});
+
 test("backtest entrypoint replaces the selected result",async({page})=>{
   await setup(page);const run=(id:string)=>({run_id:id,status:"completed",updated:1,config:{venue:"kalshi",start:Date.parse("2026-09-19T05:00:00Z")/1000,end:Date.parse("2026-09-20T05:00:00Z")/1000,strategy:"S3",cash:100},snapshot:{equity:id==="first"?101:102},curve:[],events:[],history_complete:false});
   await page.route("**/api/backtests",r=>r.fulfill({json:[run("first"),run("second")]}));
