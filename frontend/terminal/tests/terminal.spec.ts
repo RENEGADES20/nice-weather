@@ -80,6 +80,77 @@ test("a focused fill cannot crash an empty future market",async({page})=>{
   expect(errors).toEqual([]);
 });
 
+test("nearby fills without market probability remain individually clickable",async({page})=>{
+  await setup(page);const now=Date.now()/1000;let fillCount=4;
+  await page.route("**/api/history?*",r=>r.fulfill({json:{points:[],next_before:null}}));
+  await page.route("**/api/account-events?*",r=>r.fulfill({json:{next:fillCount,more:false,
+    events:Array.from({length:fillCount},(_,i)=>({id:`missing-probability-fill-${i}`,time:now-60+i/10,
+      stage:"fill",strategy:"manual",price:.5,quantity:1,venue:"poly_us",day:"2026-09-22",
+      token:"poly_us:2026-09-22:0"}))}}));
+  await page.goto("/?venue=poly_us&day=2026-09-22");
+  const markers=page.locator(".probability-marker.is-fill");
+  const graph=page.getByRole("img",{name:"市场赔率与策略标记"});
+  for(const {width,height,count} of [{width:1440,height:1100,count:4},{width:390,height:844,count:4},
+    {width:1440,height:1100,count:6},{width:390,height:844,count:6}]) {
+    if(fillCount!==count) { fillCount=count;await page.reload(); }
+    await page.setViewportSize({width,height});
+    await expect(markers).toHaveCount(count);
+    for(let i=0;i<count;i++) {
+      await markers.nth(i).click({timeout:3000});
+      await expect(graph).toHaveAttribute("data-focus",`missing-probability-fill-${i}`);
+      await expect(page.locator(".probability-event")).toContainText("同期市场概率：—");
+      await expect(markers.nth(i)).toHaveAttribute("title",/同期市场概率缺失/);
+    }
+    const layout=await page.evaluate(()=>({
+      boxes:[...document.querySelectorAll(".probability-marker.is-fill")].map(node=>{
+        const {top,bottom}=node.getBoundingClientRect();return {top,bottom};
+      }),
+      chartBottom:document.querySelector(".probability-plot svg")!.getBoundingClientRect().bottom,
+      controlsTop:document.querySelector(".probability-controls")!.getBoundingClientRect().top,
+    }));
+    expect(layout.boxes[0].top).toBeGreaterThan(layout.chartBottom);
+    for(let i=1;i<layout.boxes.length;i++)expect(layout.boxes[i].top).toBeGreaterThan(layout.boxes[i-1].bottom);
+    expect(layout.controlsTop).toBeGreaterThan(layout.boxes.at(-1)!.bottom);
+  }
+});
+
+test("adjacent dense groups without probability open their own original events",async({page})=>{
+  await setup(page);const now=Math.floor(Date.now()/1000), counts=[51,73,107,129];
+  let release!:(events:any[])=>void;
+  const pending=new Promise<any[]>(resolve=>{release=resolve;});
+  await page.route("**/api/history?*",r=>r.fulfill({json:{
+    ...Object.fromEntries(new URL(r.request().url()).searchParams),points:[{seq:1,time:now-7200,
+      received_at:now-7200,probability:null,bids:[],asks:[]}],next_before:null}}));
+  await page.route("**/api/account-events?*",async r=>r.fulfill({json:{next:360,more:false,events:await pending}}));
+  try {
+    await page.goto("/?venue=poly_us&day=2026-09-22");
+    await expect(page.getByLabel("温度档位",{exact:true})).toHaveValue("poly_us:2026-09-22:0");
+    await page.getByRole("button",{name:"All",exact:true}).click();
+    const graph=page.getByRole("img",{name:"市场赔率与策略标记"});
+    await expect(graph).toHaveAttribute("data-start",String(now-7200));
+    const layout=await graph.evaluate(node=>({start:Number(node.getAttribute("data-start")),
+      end:Number(node.getAttribute("data-end")),width:Number(node.getAttribute("viewBox")!.split(" ")[2])}));
+    const columns=Math.floor((layout.width-56)/24), first=Math.floor(columns/3);
+    release(counts.flatMap((count,g)=>Array.from({length:count},(_,i)=>({id:`dense-group-${g}-event-${i}`,
+      time:layout.start+(layout.end-layout.start)*(first+g+.5)/columns,stage:"warning",strategy:"S2",
+      venue:"poly_us",day:"2026-09-22",token:"poly_us:2026-09-22:0"}))));
+    const markers=page.locator(".probability-marker");
+    await expect(markers).toHaveCount(4);
+    const boxes=await markers.evaluateAll(nodes=>nodes.map(node=>{
+      const {left,width}=node.getBoundingClientRect();return {left,width};
+    }));
+    expect(boxes[1].left-boxes[0].left).toBeLessThan(boxes[0].width);
+    for(let g=0;g<counts.length;g++) {
+      const marker=page.locator(`.probability-marker[data-event-count="${counts[g]}"]`);
+      const label=await marker.getAttribute("aria-label");
+      await page.getByRole("button",{name:label!,exact:true}).click({timeout:3000});
+      const group=page.getByRole("region",{name:"图表分组事件",exact:true});
+      await expect(group).toContainText(`共 ${counts[g]} 条，匹配 ${counts[g]} 条`);
+      await expect(group.locator(".event-list button").first()).toHaveAttribute("data-event-id",`dense-group-${g}-event-0`);
+    }
+  } finally { release([]); }
+});
+
 test("account event first page remains visible while later pages wait or fail",async({page})=>{
   await setup(page);const now=Date.now()/1000;
   let release!:()=>void, pending=false;

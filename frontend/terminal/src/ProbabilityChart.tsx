@@ -121,22 +121,33 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
     if (activeFocus && groups.some(g => g.events.length > 1 && g.events.some(e => e.id === activeFocus.id))) {
       drawn.push({ key: `focus/${activeFocus.id}`, events: [activeFocus], focused: true });
     }
-    return drawn.map((g, i) => {
+    const missingLanes: number[][] = [];
+    const nodes = drawn.map((g, i) => {
       const e = g.events[0], last = g.events.at(-1)!;
       const value = sampleAt(samples, e.time)?.value;
       const lane = drawn.slice(Math.max(0, i - 3), i).filter(other => Math.abs(x(other.events[0].time) - x(e.time)) < 26).length;
+      let missingLane = 0;
+      if (value == null) {
+        // Keep the short strategy/count badges separate, including a focused group member.
+        missingLane = missingLanes.findIndex(row => row.every(px => Math.abs(px - x(e.time)) >= 96));
+        if (missingLane < 0) { missingLane = missingLanes.length; missingLanes.push([]); }
+        missingLanes[missingLane].push(x(e.time));
+      }
       const label = `${e.strategy ?? "人工"} · ${stages[e.stage] ?? e.stage}`;
       const caption = g.events.length > 1 ? `${label} · ${g.events.length} 条 · ${markerTime(e.time)}—${markerTime(last.time)}`
         : `${label} ${markerTime(e.time)}`;
       return <button key={g.key} className={`probability-marker ${e.stage === "fill" ? "is-fill" : ""} ${g.focused ? "is-focused" : ""}`}
         data-event-count={g.events.length} data-stage={e.stage} data-focus-marker={g.focused}
-        style={{ left: `${x(e.time) / width * 100}%`, top: `${(value == null ? bottom + 7 : Math.max(top, y(value) - 14 - lane * 16)) / height * 100}%`,
+        // Missing probabilities use separate annotation rows below the time axis.
+        style={{ left: `${x(e.time) / width * 100}%`, top: value == null ? `calc(100% + ${10 + missingLane * 20}px)`
+          : `${Math.max(top, y(value) - 14 - lane * 16) / height * 100}%`,
           color: e.stage === "fill" ? "#09875b" : colors[e.strategy ?? ""] ?? "#766b8e" }}
         aria-label={caption} title={g.events.length > 1 ? caption : `${caption}${value == null ? " · 同期市场概率缺失" : ` · ${percent(value)}`}`}
         onClick={() => g.events.length > 1 ? setExpandedGroup({ scope: markerScope, key: g.key }) : locateEvent(e)}>
         <span aria-hidden="true">{e.stage === "fill" ? "◆" : "●"}</span><small>{e.strategy ?? "人工"}{g.events.length > 1 ? ` ×${g.events.length}` : ""}</small>
       </button>;
     });
+    return { nodes, missingSpace: missingLanes.length ? missingLanes.length * 20 + 8 : 0 };
   }, [groups, activeFocus, samples, start, end, width, right, markerScope, locateEvent]);
   const event = selectedEvent && selected.some(e => e.id === selectedEvent.id) ? selectedEvent : null;
   const source = current?.quote.probability_source;
@@ -148,7 +159,7 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
         <strong>{percent(current?.value ?? null)}</strong></div>
       <span>{cursor == null ? "市场概率" : nyTime(cursor)}</span>
     </div>
-    <div className="probability-plot">
+    <div className="probability-plot" style={{ marginBottom: markerNodes.missingSpace }}>
       <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" role="img"
         aria-label="市场赔率与策略标记" data-focus={activeFocus?.id ?? ""}
         tabIndex={0} aria-describedby={`${clip}-keyboard`}
@@ -181,7 +192,7 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
         {cursor != null && <g><line x1={x(cursor)} x2={x(cursor)} y1={top} y2={bottom} stroke="#a0a8b6" strokeDasharray="3 4" />
           {current?.value != null && <circle cx={x(cursor)} cy={y(current.value)} r={4} fill="#3864ef" />}</g>}
       </svg>
-      {markerNodes}
+      {markerNodes.nodes}
       {!visible.some(p => p.value != null) && <div className="probability-empty" role="status">
         {loading ? "读取所选时间段概率…" : "该时间段尚无已采集市场概率"}</div>}
     </div>
