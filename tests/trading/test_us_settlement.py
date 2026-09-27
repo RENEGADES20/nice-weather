@@ -78,3 +78,108 @@ def test_native_us_settlement_closes_position_once_and_recovers():
         session.dispose()
         if recovered:
             recovered.dispose()
+
+
+@pytest.mark.parametrize("venue", ["poly_us", "kalshi"])
+@pytest.mark.parametrize("open_no_quantity", [0, 3])
+@pytest.mark.parametrize("order_type", ["LIMIT", "MARKET"])
+def test_settlement_after_restoring_flat_position_preserves_native_facts(
+    venue, open_no_quantity, order_type
+):
+    from test_paper_approximation import make_session, order, quote
+
+    from nice_weather.trading.recovery import native_state, restore
+    from nice_weather.trading.us_runtime import feed_event
+
+    session = make_session(venue)
+    sessions = [session]
+
+    def trade(request, side, quantity, token="test-1"):
+        payload = {"token": token, "side": side, "quantity": quantity,
+                   "order_type": order_type, "tif": "IOC"}
+        if order_type == "LIMIT":
+            payload["price"] = 0.5
+        session.apply({"kind": "order", "ts": session.now + 1,
+                       "request_id": request, "data": payload})
+
+    try:
+        quote(session)
+        trade("buy", "BUY", 2)
+        quote(session, bid=0.6, ask=0.7)
+        trade("exit", "SELL", 2)
+        if open_no_quantity:
+            quote(session, token_id="test-1:NO")
+            trade("no-buy", "BUY", open_no_quantity, "test-1:NO")
+        before = session.snapshot()
+        state = native_state(session)
+        assert len(session.engine.cache.positions_closed()) == 1
+        recovered = restore(state)
+        sessions.append(recovered)
+        cache = recovered.engine.cache
+        # A restored FLAT position must stay in history without entering the open index.
+        assert len(cache.positions_closed()) == 1
+        assert len(cache.positions_open()) == bool(open_no_quantity)
+        assert all(position.is_open for position in cache.positions_open())
+        for key in ("cash", "fills", "orders", "positions"):
+            assert recovered.snapshot()[key] == before[key]
+        assert native_state(recovered)["positions"] == state["positions"]
+        assert native_state(recovered)["archived"] == state["archived"]
+
+        # Expiration must also cancel a newly resting order without inventing a fill.
+        order(recovered, "resting", quantity=1, price=0.1, tif="GTC")
+        assert recovered.open_orders()
+        received = recovered.now / 1e9 + 3600
+        if venue == "poly_us":
+            proof = {
+                "market": {"slug": "test-1", "status": "MARKET_STATUS_RESOLVED",
+                           "ep3Status": "EXPIRED", "closed": True,
+                           "outcomes": '["Yes","No"]', "outcomePrices": '[".4",".6"]'},
+                "confirmation": {"slug": "test-1", "settlement": .4},
+            }
+            yes_payout = .4
+        else:
+            proof = {"market": {
+                "ticker": "test-1", "status": "finalized", "result": "no",
+                "settlement_ts": datetime.fromtimestamp(received, UTC).isoformat(),
+                "settlement_value_dollars": "0.0000",
+            }}
+            yes_payout = 0
+        row = {"kind": "settlement", "key": "test-1", "received": received,
+               "data": {"source_payload": proof, "capture_ids": [1]}}
+        for event in feed_event(recovered, row):
+            recovered.apply(event)
+        settled = recovered.snapshot()
+        assert settled["cash"] == pytest.approx(
+            before["cash"] + open_no_quantity * (1 - yes_payout))
+        assert len(settled["fills"]) == len(before["fills"]) + bool(open_no_quantity)
+        assert settled["fees"] == before["fees"]
+        expiration_orders = [order for order in cache.orders()
+                             if str(order.client_order_id).startswith("EXPIRATION-")]
+        assert len(expiration_orders) == bool(open_no_quantity)
+        for expiration in expiration_orders:
+            assert [type(event).__name__ for event in expiration.events] == [
+                "OrderInitialized", "OrderSubmitted", "OrderAccepted", "OrderFilled"]
+            assert expiration.account_id == cache.account_for_venue(recovered.venue).id
+            assert float(expiration.events[-1].commission) == 0
+        for fill in settled["fills"]:
+            if fill["order_id"].startswith("settlement-"):
+                assert fill["ts"] == int(received * 1e9) + 1  # NO follows YES in feed_event.
+                assert fill["price"] == 1 - yes_payout
+        assert not settled["positions"] and not recovered.open_orders()
+        assert settled["reserved"] == 0
+        assert settled["settled"] == {"test-1": yes_payout, "test-1:NO": 1 - yes_payout}
+        assert not cache.positions_open()
+        assert len(cache.positions_closed()) == 1 + bool(open_no_quantity)
+        assert feed_event(recovered, row) == []
+
+        again = restore(native_state(recovered))
+        sessions.append(again)
+        assert not again.engine.cache.positions_open()
+        assert len(again.engine.cache.positions_closed()) == 1 + bool(open_no_quantity)
+        assert feed_event(again, row) == []
+        for key in ("cash", "fills", "orders", "positions", "fees", "settled"):
+            assert again.snapshot()[key] == settled[key]
+        assert len(again.settlements) == 2
+    finally:
+        for current in sessions:
+            current.dispose()

@@ -103,6 +103,8 @@ def restore(state):
                 cache.snapshot_position(position)
             else:
                 cache.add_position(position, OmsType.NETTING)
+                # add_position assumes a new open position; replay may already be flat.
+                cache.update_position(position)
     session.owner, session.outcomes = state["owner"], state["outcomes"]
     session.settlements = state.get("settlements", [])
     for token, value in session.outcomes.items():

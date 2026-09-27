@@ -229,8 +229,7 @@ def main():
         "market_discovery", "market_weather", "signals", "signal_research", "paper_execution",
         "backtest_view", "us_live", "us_live_state", "us_reconcile")})
     allowed.add("deploy/systemd/nice-weather-knyc-live@.service")
-    # R2 retention is installed and scheduled independently; package its merged
-    # runtime files without restarting the collector or running a prune here.
+    # Preserve the archive timer's prior state; never invoke a prune from the updater.
     allowed.update({"src/nice_weather/r2_archive.py",
                     "src/nice_weather/trading/r2_retention.py",
                     "deploy/systemd/nice-weather-knyc-r2.service",
@@ -262,13 +261,22 @@ def main():
                                    commit=manifest["commit"])
     if args.prepare_only:
         return
+    r2_changed = bool(set(changed) & {
+        "src/nice_weather/r2_archive.py", "src/nice_weather/trading/r2_retention.py",
+        "src/nice_weather/trading/storage.py",
+        "deploy/systemd/nice-weather-knyc-r2.service",
+        "deploy/systemd/nice-weather-knyc-r2.timer"})
+    r2_timer = "nice-weather-knyc-r2.timer"
+    r2_was_active = r2_changed and subprocess.run(
+        ["systemctl", "is-active", "--quiet", r2_timer]).returncode == 0
     live = [s for s in services if s.startswith("nice-weather-knyc-live@")]
     for service in live:
         venue = service.split("@", 1)[1].removesuffix(".service")
         if not Path(f"/etc/nice-weather/knyc-live-{venue}.env").is_file():
             raise ValueError(f"Missing Live environment file for {venue}")
     # New Live units are installed below; stop only units already present.
-    installed = [s for s in services if subprocess.run(
+    stop_services = services + ([r2_timer, "nice-weather-knyc-r2.service"] if r2_changed else [])
+    installed = [s for s in stop_services if subprocess.run(
         ["systemctl", "cat", s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     ).returncode == 0]
     if installed:
@@ -294,9 +302,11 @@ def main():
             os.fsync(stream.fileno())
         os.chmod(temporary, 0o644)
         os.replace(temporary, target)
-    unit = "deploy/systemd/nice-weather-knyc-live@.service"
-    if unit in changed:
-        Path("/etc/systemd/system/nice-weather-knyc-live@.service").write_bytes(content[unit])
+    for name in ("nice-weather-knyc-live@.service", "nice-weather-knyc-r2.service",
+                 "nice-weather-knyc-r2.timer"):
+        unit = "deploy/systemd/" + name
+        if unit in changed:
+            (Path("/etc/systemd/system") / name).write_bytes(content[unit])
     for service in services:
         dropin = Path("/etc/systemd/system") / (service + ".d/release.conf")
         dropin.parent.mkdir(parents=True, exist_ok=True)
@@ -308,6 +318,8 @@ def main():
         subprocess.run(["systemctl", "enable", *live], check=True)
     subprocess.run(["systemctl", "start", *services], check=True)
     subprocess.run(["systemctl", "is-active", *services], check=True)
+    if r2_was_active:
+        subprocess.run(["systemctl", "start", r2_timer], check=True)
 
 
 if __name__ == "__main__":

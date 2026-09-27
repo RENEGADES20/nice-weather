@@ -15,10 +15,13 @@ from nice_weather.trading.storage import digest
 if sys.version_info[:2] != (3, 12) or version("nautilus_trader") != ENGINE_VERSION:
     raise RuntimeError("Trading requires isolated Python 3.12 / nautilus_trader==1.231.0")
 
+from nautilus_trader.backtest.config import SimulationModuleConfig
 from nautilus_trader.backtest.engine import BacktestEngine
 from nautilus_trader.backtest.models import FeeModel, FillModel
+from nautilus_trader.backtest.modules import SimulationModule
 from nautilus_trader.config import BacktestEngineConfig, LoggingConfig, StrategyConfig
 from nautilus_trader.core.data import Data
+from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.model.book import OrderBook
 from nautilus_trader.model.currencies import USD, pUSD
 from nautilus_trader.model.data import (
@@ -41,12 +44,73 @@ from nautilus_trader.model.enums import (
     OrderSide,
     TimeInForce,
 )
-from nautilus_trader.model.identifiers import ClientId, ClientOrderId, InstrumentId, Symbol, Venue
+from nautilus_trader.model.events import OrderAccepted, OrderSubmitted
+from nautilus_trader.model.identifiers import (
+    ClientId,
+    ClientOrderId,
+    InstrumentId,
+    Symbol,
+    Venue,
+    VenueOrderId,
+)
 from nautilus_trader.model.instruments import BinaryOption
 from nautilus_trader.model.objects import Money, Price, Quantity
+from nautilus_trader.model.orders import MarketOrder
 from nautilus_trader.trading.strategy import Strategy
 
 VENUE = Venue("POLYMARKET")
+
+
+class SettlementModule(SimulationModule):
+    """Bind native expiration orders to the recorded account, including after restart."""
+
+    def pre_process(self, data):
+        if not isinstance(data, InstrumentClose):
+            return
+        if data.close_type != InstrumentCloseType.CONTRACT_EXPIRED:
+            return
+        # The engine has advanced its shared clock to this received-time event.
+        matching = self.exchange.get_matching_engine(data.instrument_id)
+        for order in matching.get_open_orders():
+            matching.cancel_order(order)
+        for position in self.exchange.cache.positions_open(instrument_id=data.instrument_id):
+            order = MarketOrder(
+                trader_id=position.trader_id, strategy_id=position.strategy_id,
+                instrument_id=position.instrument_id,
+                client_order_id=ClientOrderId(f"EXPIRATION-LEG-{UUID4()}"),
+                order_side=OrderSide.SELL if position.is_long else OrderSide.BUY,
+                quantity=position.quantity, init_id=UUID4(), ts_init=data.ts_init,
+                reduce_only=True, tags=[f"EXPIRATION_{self.exchange.id}_CLOSE"],
+            )
+            self.exchange.cache.add_order(order, position_id=position.id)
+            # Restored positions may have no newly submitted order in this matching engine.
+            # Explicit ownership avoids relying on its transient trader/account mapping.
+            self.exchange.msgbus.send(endpoint="ExecEngine.process", msg=OrderSubmitted(
+                trader_id=order.trader_id, strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id, client_order_id=order.client_order_id,
+                account_id=position.account_id, event_id=UUID4(),
+                ts_event=data.ts_init, ts_init=data.ts_init,
+            ))
+            self.exchange.msgbus.send(endpoint="ExecEngine.process", msg=OrderAccepted(
+                trader_id=order.trader_id, strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id, client_order_id=order.client_order_id,
+                venue_order_id=VenueOrderId(str(UUID4())), account_id=position.account_id,
+                event_id=UUID4(), ts_event=data.ts_init, ts_init=data.ts_init,
+            ))
+            matching.apply_fills(
+                order, [(data.close_price, position.quantity)], LiquiditySide.TAKER,
+                position.id, position,
+            )
+        # InstrumentClose then marks expiration; positions and cancellations are native facts.
+
+    def process(self, ts_now):
+        pass
+
+    def log_diagnostics(self, logger):
+        pass
+
+    def reset(self):
+        pass
 
 
 class MarketPriceFillModel(FillModel):
@@ -202,6 +266,7 @@ class Session:
                         if self.approximate else FillModel(prob_fill_on_limit=0, random_seed=7)),
             fee_model=Fees(self),
             settlement_prices=self.settlement_prices,
+            modules=[SettlementModule(SimulationModuleConfig())],
         )
         self.control = Control(self)
         self.engine.add_strategy(self.control)

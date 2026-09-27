@@ -97,9 +97,37 @@ test("weather failure does not suppress market price history",async({page})=>{
       probability:.45,probability_source:"kalshi_last_trade",bids:[],asks:[[.8,1]]}],next_before:null}});});
   await page.route("**/api/weather-history?*",r=>r.fulfill({status:503,json:{detail:"weather unavailable"}}));
   await page.goto("/?venue=kalshi&day=2026-09-19");
-  await expect(page.getByRole("region",{name:"天气分析"})).toContainText("读取失败 (503)");
+  await expect(page.getByRole("region",{name:"天气分析"})).toContainText("天气数据：Error: weather-history 读取失败 (503)");
+  await expect(page.locator("#market-chart").getByRole("alert")).toHaveCount(0);
   await expect(page.getByRole("region",{name:"天气分析"})).toContainText("45.00%");
   await expect(page.getByTestId("probability-line")).toHaveCount(1);
+});
+
+test("history timeout stays by probability while weather remains available",async({page})=>{
+  await setup(page);
+  await page.addInitScript(()=>{
+    const timeout=AbortSignal.timeout.bind(AbortSignal);
+    AbortSignal.timeout=ms=>timeout(ms===10000?100:ms);
+  });
+  await page.route("**/api/history?*",async r=>{
+    await new Promise(resolve=>setTimeout(resolve,300));
+    await r.fulfill({status:503,json:{detail:"cold history page"}}).catch(()=>{});
+  });
+  await page.route("**/api/weather-history?*",r=>{
+    const q=new URL(r.request().url()).searchParams, start=Date.parse(q.get("day")+"T05:00:00Z")/1000;
+    return r.fulfill({json:{venue:q.get("venue"),day:q.get("day"),start,end:start+86400,
+      as_of:start+3600,window_source:"contract",sources:{hourly_temp:[{time:start,value:70,
+        received_at:start,source:"hourly_temp",version:"h1",issued_at:null}]},missing_sources:[],cli:[]}});
+  });
+  await page.goto("/?venue=kalshi&day=2026-09-19");
+  await expect(page.locator("#market-chart").getByRole("alert"))
+    .toHaveText("行情历史读取超时，请稍后重试。");
+  const weather=page.getByRole("region",{name:"天气分析"});
+  await expect(weather.getByRole("alert")).toHaveCount(0);
+  await expect(weather).not.toContainText("TimeoutError");
+  await expect(weather).not.toContainText("行情历史");
+  await expect(weather).toContainText("已采集官方小时最高温：70.0 °F");
+  await expect(weather.getByLabel("天气与价格交互图").locator("canvas").first()).toBeVisible();
 });
 
 test("probability uses platform values and keeps source timing, extrema and gaps",()=>{
