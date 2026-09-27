@@ -41,11 +41,11 @@ def test_market_capture_keeps_metadata_without_raw_body(tmp_path, monkeypatch, s
         saved = con.execute("SELECT source,received,hash FROM captures WHERE id=?",
                             (capture_id,)).fetchone()
         assert saved == (source, 2, hashlib.sha256(raw).hexdigest())
-        assert con.execute("SELECT length(body) FROM capture_bodies WHERE hash=?",
+        assert con.execute("SELECT count(*) FROM capture_bodies WHERE hash=?",
                            (saved[2],)).fetchone()[0] == 0
 
 
-def test_weather_capture_restores_a_shared_empty_body(tmp_path, monkeypatch):
+def test_weather_capture_stores_body_shared_with_market_metadata(tmp_path, monkeypatch):
     path = tmp_path / "feed.sqlite3"
     monkeypatch.setattr(FeedStore, "require_space", lambda self: None)
     store = FeedStore(path)

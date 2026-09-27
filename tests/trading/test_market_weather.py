@@ -270,7 +270,7 @@ def test_probability_history_warming_is_503_and_recovers_after_prepare(tmp_path)
     feed.capture("poly_us", f'https://gateway.polymarket.us/v1/markets/{c["condition_id"]}/book',
                  received - 1, received, json.dumps(native).encode())
     with connect(feed.path) as con:
-        assert con.execute("SELECT length(body) FROM capture_bodies").fetchone()[0] == 0
+        assert con.execute("SELECT count(*) FROM capture_bodies").fetchone()[0] == 0
         con.execute("UPDATE probability_chart_progress SET capture_id=0")
     client = TestClient(app)
     client.post("/api/login", json={"password": "test"}, headers={"origin": "http://testserver"})

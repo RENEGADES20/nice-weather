@@ -89,14 +89,14 @@ class FeedStore:
     def capture(self, source, url, requested, received, body):
         self.require_space()
         key = hashlib.sha256(body).hexdigest()
-        stored_body = gzip.compress(body) if source in WEATHER_SOURCES else b""
         with connect(self.path) as con:
-            con.execute(
-                "INSERT INTO capture_bodies VALUES (?,?) "
-                "ON CONFLICT(hash) DO UPDATE SET body=excluded.body "
-                "WHERE length(capture_bodies.body)=0 AND length(excluded.body)>0",
-                (key, stored_body),
-            )
+            if source in WEATHER_SOURCES:
+                con.execute(
+                    "INSERT INTO capture_bodies VALUES (?,?) "
+                    "ON CONFLICT(hash) DO UPDATE SET body=excluded.body "
+                    "WHERE length(capture_bodies.body)=0 AND length(excluded.body)>0",
+                    (key, gzip.compress(body)),
+                )
             cursor = con.execute(
                 "INSERT INTO captures VALUES (NULL,?,?,?,?,?)",
                 (source, url, requested, received, key),
