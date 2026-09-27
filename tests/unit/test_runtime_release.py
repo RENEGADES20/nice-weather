@@ -85,7 +85,7 @@ def test_unsafe_or_duplicate_archive_members_rejected(tmp_path, name, duplicate)
 
 
 @pytest.fixture
-def root_metadata(monkeypatch):
+def root_metadata(monkeypatch, tmp_path):
     # The updater targets root-owned Linux paths; tests also run as non-root/on Windows.
     original = os.lstat
     modes = {}
@@ -93,6 +93,8 @@ def root_metadata(monkeypatch):
     def owned(path, *args, **kwargs):
         info = list(original(path, *args, **kwargs))
         info[0], info[4] = modes.get(str(path), info[0] & ~0o022), 0
+        if Path(path) == tmp_path or Path(path) in tmp_path.parents:
+            info[0] |= 0o055  # Model /opt ancestors, not pytest's private Linux temp root.
         return os.stat_result(info)
 
     monkeypatch.setattr(Path, "lstat", owned)
