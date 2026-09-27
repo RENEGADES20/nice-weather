@@ -87,6 +87,63 @@ def feed_event(session, event):
     return []
 
 
+def quiet_quote_state(session):
+    """Cheap, immutable revisions of facts that a quote must never defer."""
+    cache = session.engine.cache
+    if session.enabled or session.open_orders() or cache.positions_open():
+        return None
+    account = cache.account_for_venue(session.venue)
+    return (
+        (account, account.event_count, account.last_event.id) if account else None,
+        frozenset((o.client_order_id, o.event_count, o.last_event.id) for o in cache.orders()),
+        frozenset((p.id, p.event_count, p.last_event.id) for p in cache.positions()),
+        digest([session.rejections, session.signals, session.strategy_state]),
+        session.equity_peak, session.maximum_drawdown,
+    )
+
+
+def apply_feed_page(runner, events):
+    """Apply every source event; coalesce at most 16 financially idle books.
+
+    The pending checkpoint exists only within this page. Never flush on failure:
+    the process must restore the last complete checkpoint and replay its cursor.
+    """
+    session, pending = runner.session, 0
+    for event in events:
+        if event["kind"] != "book" and pending:
+            runner.commit()
+            pending = 0
+        native_events = feed_event(session, event)
+        before = (
+            quiet_quote_state(session) if native_events and event["kind"] == "book" else None
+        )
+        immediate = before is None
+        for native in native_events:
+            snapshot = session.apply(native)
+            if not immediate:
+                after = quiet_quote_state(session)
+                immediate = (
+                    after != before or snapshot is None
+                    or session.now // 60_000_000_000 != runner.last_minute
+                    or (snapshot["equity"] is not None) != runner.last_valid
+                )
+                before = after
+        # A book's YES and NO legs must both succeed before advancing its cursor.
+        session.config["feed_cursor"] = event["seq"]
+        if native_events and immediate:
+            runner.commit(f"feed-{event['seq']}" if event["kind"] == "prediction" else None)
+            pending = 0
+        elif native_events or pending:
+            # Count original feed rows, including foreign books between our quotes.
+            pending += 1
+            if pending == 16:
+                runner.commit()
+                pending = 0
+    if pending:
+        # Complete before heartbeat, queued user commands, once-return or idle sleep.
+        runner.commit()
+
+
 def paper(root, venue, once=False):
     account = f"sandbox-{venue}-knyc"
     results = Results(root / "results.sqlite3")
@@ -141,17 +198,7 @@ def paper(root, venue, once=False):
             while True:
                 cursor = runner.session.config.get("feed_cursor", 0)
                 events = feed.since(cursor)
-                for event in events:
-                    native_events = feed_event(runner.session, event)
-                    for native in native_events:
-                        runner.session.apply(native)
-                    runner.session.config["feed_cursor"] = event["seq"]
-                    if native_events:
-                        # Own-venue state and fills remain immediately durable. Foreign
-                        # events only advance the cursor, saved by the next heartbeat.
-                        runner.commit(
-                            f"feed-{event['seq']}" if event["kind"] == "prediction" else None
-                        )
+                apply_feed_page(runner, events)
                 if time.monotonic() - last_heartbeat >= 1:
                     now = max(time.time_ns(), runner.session.now + 1)
                     runner.apply("clock", {"kind": "clock", "ts": now, "data": {}})

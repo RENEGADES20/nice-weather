@@ -1,5 +1,6 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { EventDetails } from "./backtest/BacktestChart";
+import { EventList } from "./EventHistory";
 import { scopedEvents } from "./backtest/StrategyMarkers";
 import { stages, type StrategyEvent, type Venue } from "./backtest/types";
 import { marketProbability, nyTime, type Quote } from "./market-weather/data";
@@ -9,6 +10,24 @@ const percent = (value: number | null) => value == null ? "—" : `${(value * 10
 const colors: Record<string, string> = { S1: "#8854ce", S2: "#dd8a13", S3: "#2671d8" };
 const top = 20, bottom = 258, height = 310;
 type Sample = { time: number; value: number | null; quote: Quote };
+type MarkerGroup = { key: string; events: StrategyEvent[] };
+const markerClock = new Intl.DateTimeFormat("zh-CN", { timeZone: "America/New_York",
+  month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" });
+const markerTime = (time: number) => markerClock.format(new Date(time * 1000));
+
+export function groupEventMarkers(events: StrategyEvent[], start: number, end: number, columns: number): MarkerGroup[] {
+  const visible = events.filter(e => e.time >= start && e.time <= end);
+  if (visible.length <= columns * 2) return visible.map(e => ({ key: e.id, events: [e] }));
+  const groups = new Map<string, MarkerGroup>();
+  for (const event of visible) {
+    const column = Math.min(columns - 1, Math.floor((event.time - start) / (end - start) * columns));
+    const key = `${column}/${event.strategy ?? ""}/${event.stage}`;
+    const group = groups.get(key);
+    if (group) group.events.push(event); else groups.set(key, { key, events: [event] });
+  }
+  return [...groups.values()];
+}
+
 
 // Keep within-pixel extrema and gaps; plotting every 2-second capture adds no visible detail.
 export function displaySamples(points: Sample[], start: number, end: number, columns = 942) {
@@ -46,6 +65,7 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
   const [range, setRange] = useState<keyof typeof ranges>("1D");
   const [cursor, setCursor] = useState<number | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<StrategyEvent | null>(null);
+  const [expandedGroup, setExpandedGroup] = useState<{ scope: string; key: string } | null>(null);
   const host = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(1000);
   const right = width - 48;
@@ -55,7 +75,8 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
   }, []);
   const clip = useId();
   const identity = `${selection.venue}/${selection.day}/${selection.token}`;
-  useEffect(() => { setSelectedEvent(null); }, [identity]);
+  useEffect(() => { setSelectedEvent(null); setExpandedGroup(null); }, [identity]);
+  useEffect(() => { setExpandedGroup(null); }, [range]);
   useEffect(() => { setCursor(null); }, [identity, range]);
   const samples = useMemo(() => [...new Map(quotes.map(q => {
     const time = Math.max(q.time, q.received_at, q.probability_received_at ?? q.received_at);
@@ -63,7 +84,8 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
   })).values()].sort((a, b) => a.time - b.time), [quotes]);
   const selected = useMemo(() => scopedEvents(events, selection.venue, selection.day, selection.token)
     .filter(e => e.stage !== "diagnostic").sort((a, b) => a.time - b.time), [events, identity]);
-  const activeFocus = focus && selected.some(e => e.id === focus.id) ? focus : null;
+  const activeFocus = useMemo(() => focus && selected.some(e => e.id === focus.id) ? focus : null, [focus, selected]);
+  const locateEvent = useCallback((event: StrategyEvent) => { setSelectedEvent(event); onLocate(event); }, [onLocate]);
   useEffect(() => { if (activeFocus) { setSelectedEvent(activeFocus);
     if (activeFocus.time < start || activeFocus.time > end) setRange("ALL"); } }, [activeFocus]);
   const end = endTime;
@@ -90,7 +112,32 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
   }, [visible, start, end, right]);
   const current = cursor == null ? visible.at(-1) : sampleAt(samples, cursor);
   const latest = visible.at(-1);
-  const markers = selected.filter(e => e.time >= start && e.time <= end);
+  const markerScope = `${identity}/${range}`;
+  const groups = useMemo(() => groupEventMarkers(selected, start, end, Math.max(1, Math.floor((right - 8) / 24))),
+    [selected, start, end, right]);
+  const group = expandedGroup?.scope === markerScope ? groups.find(g => g.key === expandedGroup.key) : undefined;
+  const markerNodes = useMemo(() => {
+    const drawn = groups.map(g => ({ ...g, focused: g.events.length === 1 && g.events[0].id === activeFocus?.id }));
+    if (activeFocus && groups.some(g => g.events.length > 1 && g.events.some(e => e.id === activeFocus.id))) {
+      drawn.push({ key: `focus/${activeFocus.id}`, events: [activeFocus], focused: true });
+    }
+    return drawn.map((g, i) => {
+      const e = g.events[0], last = g.events.at(-1)!;
+      const value = sampleAt(samples, e.time)?.value;
+      const lane = drawn.slice(Math.max(0, i - 3), i).filter(other => Math.abs(x(other.events[0].time) - x(e.time)) < 26).length;
+      const label = `${e.strategy ?? "人工"} · ${stages[e.stage] ?? e.stage}`;
+      const caption = g.events.length > 1 ? `${label} · ${g.events.length} 条 · ${markerTime(e.time)}—${markerTime(last.time)}`
+        : `${label} ${markerTime(e.time)}`;
+      return <button key={g.key} className={`probability-marker ${e.stage === "fill" ? "is-fill" : ""} ${g.focused ? "is-focused" : ""}`}
+        data-event-count={g.events.length} data-stage={e.stage} data-focus-marker={g.focused}
+        style={{ left: `${x(e.time) / width * 100}%`, top: `${(value == null ? bottom + 7 : Math.max(top, y(value) - 14 - lane * 16)) / height * 100}%`,
+          color: e.stage === "fill" ? "#09875b" : colors[e.strategy ?? ""] ?? "#766b8e" }}
+        aria-label={caption} title={g.events.length > 1 ? caption : `${caption}${value == null ? " · 同期市场概率缺失" : ` · ${percent(value)}`}`}
+        onClick={() => g.events.length > 1 ? setExpandedGroup({ scope: markerScope, key: g.key }) : locateEvent(e)}>
+        <span aria-hidden="true">{e.stage === "fill" ? "◆" : "●"}</span><small>{e.strategy ?? "人工"}{g.events.length > 1 ? ` ×${g.events.length}` : ""}</small>
+      </button>;
+    });
+  }, [groups, activeFocus, samples, start, end, width, right, markerScope, locateEvent]);
   const event = selectedEvent && selected.some(e => e.id === selectedEvent.id) ? selectedEvent : null;
   const source = current?.quote.probability_source;
   const tickCount = width < 500 ? 3 : 5;
@@ -134,18 +181,7 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
         {cursor != null && <g><line x1={x(cursor)} x2={x(cursor)} y1={top} y2={bottom} stroke="#a0a8b6" strokeDasharray="3 4" />
           {current?.value != null && <circle cx={x(cursor)} cy={y(current.value)} r={4} fill="#3864ef" />}</g>}
       </svg>
-      {markers.map((e, i) => {
-        const value = sampleAt(samples, e.time)?.value;
-        const lane = markers.slice(Math.max(0, i - 3), i).filter(other => Math.abs(x(other.time) - x(e.time)) < 26).length;
-        const label = `${e.strategy ?? "人工"} · ${stages[e.stage] ?? e.stage}`;
-        return <button key={e.id} className={`probability-marker ${e.stage === "fill" ? "is-fill" : ""}`}
-          style={{ left: `${x(e.time) / width * 100}%`, top: `${(value == null ? bottom + 7 : Math.max(top, y(value) - 14 - lane * 16)) / height * 100}%`,
-            color: e.stage === "fill" ? "#09875b" : colors[e.strategy ?? ""] ?? "#766b8e" }}
-          aria-label={`${label} ${nyTime(e.time)}`} title={`${label} · ${nyTime(e.time)}${value == null ? " · 同期市场概率缺失" : ` · ${percent(value)}`}`}
-          onClick={() => { setSelectedEvent(e); onLocate(e); }}>
-          <span aria-hidden="true">{e.stage === "fill" ? "◆" : "●"}</span><small>{e.strategy ?? "人工"}</small>
-        </button>;
-      })}
+      {markerNodes}
       {!visible.some(p => p.value != null) && <div className="probability-empty" role="status">
         {loading ? "读取所选时间段概率…" : "该时间段尚无已采集市场概率"}</div>}
     </div>
@@ -161,6 +197,12 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
         : "市场概率缺口保留；盘口买卖报价单独显示。"}
       <span>● 策略信号　◆ 实际成交</span>
     </div>
+    {group && <div className="probability-group">
+      <b>{group.events[0].strategy ?? "人工"} · {stages[group.events[0].stage] ?? group.events[0].stage} · {group.events.length} 条</b>
+      <span> · {markerTime(group.events[0].time)}—{markerTime(group.events.at(-1)!.time)}</span>
+      <button onClick={() => setExpandedGroup(null)} aria-label="关闭事件分组">关闭</button>
+      <EventList key={`${markerScope}/${group.key}`} events={group.events} onLocate={locateEvent} label="图表分组事件" />
+    </div>}
     {event && <div className="probability-event" role="status"><b>{event.strategy ?? "人工"} · {stages[event.stage] ?? event.stage}</b>
       <EventDetails event={event} /><span>同期市场概率：{percent(sampleAt(samples, event.time)?.value ?? null)}</span>
       <button onClick={() => setSelectedEvent(null)} aria-label="关闭信号详情">关闭</button></div>}

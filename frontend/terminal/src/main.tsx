@@ -9,7 +9,8 @@ import { PaperTicket, type PaperCommand, type Simulation } from "./PaperTicket";
 import { LiveAccountPanel, type LiveSnapshot } from "./LiveAccountPanel";
 import { LiveOrderTicket } from "./LiveOrderTicket";
 import { BacktestWorkspace } from "./backtest/BacktestWorkspace";
-import { BacktestChart, EventDetails } from "./backtest/BacktestChart";
+import { BacktestChart } from "./backtest/BacktestChart";
+import { EventHistory } from "./EventHistory";
 import { type StrategyEvent, type Venue } from "./backtest/types";
 import "./backtest/backtest.css";
 import "./style.css";
@@ -347,9 +348,9 @@ function App() {
           if (abort.signal.aborted) return;
           result.events.forEach((e: StrategyEvent) => collected.set(e.id, e));
           cursor = result.next; more = result.more;
+          setEvents({key: eventKey, rows: [...collected.values()].sort((a,b) => a.time-b.time)});
+          setEventError("");
         }
-        setEvents({key: eventKey, rows: [...collected.values()].sort((a,b) => a.time-b.time)});
-        setEventError("");
       } catch (e) { if (!abort.signal.aborted) setEventError(String(e)); }
       if (!abort.signal.aborted) timer = setTimeout(poll, 3000);
     }
@@ -378,17 +379,20 @@ function App() {
     }
     void poll(); return () => {abort.abort(); clearTimeout(timer);};
   }, [session, paperAccount?.run_id]);
-  const chartEvents = useMemo(() => events.key === eventKey ? events.rows.filter(e => e.token === token) : [], [events, eventKey, token]);
+  const marketEvents = useMemo(() => events.key === eventKey ? events.rows : [], [events, eventKey]);
+  const visibleEvents = useMemo(() => marketEvents.filter(e => e.stage !== "diagnostic"), [marketEvents]);
+  const lastStrategyEvents = useMemo(() => new Map(marketEvents.map(e => [e.strategy, e])), [marketEvents]);
+  const chartEvents = useMemo(() => visibleEvents.filter(e => e.token === token), [visibleEvents, token]);
   const chartSelection = useMemo(() => ({venue: venue as Venue, day, token}), [venue, day, token]);
   // All bins use the same end of the selected market, so switching bins retains the window.
   const marketEnd = markets.map(c => Date.parse(c.close_time ?? c.observation_end ?? "") / 1000).filter(Number.isFinite);
   const chartEnd = Math.min(now, marketEnd.length ? Math.max(...marketEnd) : now);
   const book = weather.quotes.at(-1);
   const blocked = commands.blocked || commands.pending || commands.saved.length > 0;
-  const locate = (e: StrategyEvent) => {
+  const locate = useCallback((e: StrategyEvent) => {
     if (e.token && markets.some(c => c.yes_token_id === e.token)) setSelection({...selection, token:e.token});
     setFocus(e); document.getElementById("market-chart")?.scrollIntoView({block:"center", behavior:"smooth"});
-  };
+  }, [markets, selection]);
   useEffect(() => {
     api("auth").then((r) => setAuthMode(r.mode)).catch(() => setAuthMode("unavailable"));
     api("session")
@@ -563,7 +567,7 @@ function App() {
           <div className="strategy-grid">{[["S1","相邻两档"],["S2","新高跨档"],["S3","结束后单档"]].map(([id,name]) => {
             const signal = snapshot.signals?.[id];
             const current = signal?.day === day && signal?.venue === venue ? signal : undefined;
-            const last = events.key === eventKey ? events.rows.filter(e => e.strategy === id).at(-1) : undefined;
+            const last = lastStrategyEvents.get(id);
             return <article key={id}><b>{id} <span>{name}</span></b><p>{current?.candidate_reason ?? current?.reason ?? last?.reason ?? "所选市场日尚无信号记录"}</p>
               {current?.p_end != null && <p>结束概率 {(current.p_end*100).toFixed(1)}%</p>}
               {current?.execution_reason && <p>执行状态：{current.execution_reason}</p>}
@@ -571,9 +575,7 @@ function App() {
             </article>;
           })}</div>
           <p className="notice">模拟策略{snapshot.strategy_enabled ? "已启动" : "已停止"}；天气信号持续更新。Live 策略开关在实盘账户中配置。</p>
-          <details><summary>所选市场日信号与交易记录</summary><div className="event-list">
-            {(events.key === eventKey ? events.rows : []).filter(e => e.stage !== "diagnostic").map(e => <button key={e.id} onClick={() => locate(e)}><EventDetails event={e}/></button>)}
-          </div></details>
+          <EventHistory key={eventKey} events={visibleEvents} onLocate={locate} />
         </section>
         {mode === "live" ? <div className="positions"><LiveAccountPanel key={venue} snapshot={liveSnapshot} pending={blocked} venue={venue} send={(kind,payload) => submit(kind,payload,"live")}/></div>
           : <section className="positions panel"><div className="section-title"><h2>模拟持仓与订单</h2><span>{paperAccount?.account ?? "账户尚未启动"} · {snapshot.settlement_status ?? "未记录结算状态"}</span></div>
