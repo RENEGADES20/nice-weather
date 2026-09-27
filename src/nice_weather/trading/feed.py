@@ -15,7 +15,7 @@ from pathlib import Path
 
 import httpx
 
-from nice_weather.trading.storage import connect, encoded
+from nice_weather.trading.storage import WEATHER_SOURCES, connect, encoded
 from nice_weather.trading.us_markets import (
     CLIMATE_ZONE,
     KALSHI,
@@ -90,9 +90,13 @@ class FeedStore:
         self.require_space()
         key = hashlib.sha256(body).hexdigest()
         with connect(self.path) as con:
-            con.execute(
-                "INSERT OR IGNORE INTO capture_bodies VALUES (?,?)", (key, gzip.compress(body))
-            )
+            if source in WEATHER_SOURCES:
+                con.execute(
+                    "INSERT INTO capture_bodies VALUES (?,?) "
+                    "ON CONFLICT(hash) DO UPDATE SET body=excluded.body "
+                    "WHERE length(capture_bodies.body)=0 AND length(excluded.body)>0",
+                    (key, gzip.compress(body)),
+                )
             cursor = con.execute(
                 "INSERT INTO captures VALUES (NULL,?,?,?,?,?)",
                 (source, url, requested, received, key),

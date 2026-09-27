@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import sqlite3
 import time
@@ -112,6 +113,11 @@ def test_legacy_poly_probability_uses_exact_captured_body_and_receipt(tmp_path):
         "lastPriceSample": {"longPx": {"value": 0.31}, "ts": STAMP}}}}
     capture = store.capture("poly_us", url, RECEIVED - 1, RECEIVED,
                             json.dumps(payload).encode())
+    with connect(store.path) as con:
+        # Model a response captured before market body retention was disabled.
+        body_hash = con.execute("SELECT hash FROM captures WHERE id=?", (capture,)).fetchone()[0]
+        con.execute("INSERT INTO capture_bodies VALUES (?,?)",
+                    (body_hash, gzip.compress(json.dumps(payload).encode())))
     payload["marketData"]["stats"]["lastPriceSample"]["longPx"]["value"] = 0.85
     store.capture("poly_us", url.replace(slug, slug + "-other"), RECEIVED - 1, RECEIVED,
                   json.dumps(payload).encode())
@@ -195,6 +201,7 @@ def test_probability_lookup_backfill_resumes_without_skipping_old_captures(tmp_p
     store.capture("poly_us", url, RECEIVED - 1, RECEIVED, payload)
     with connect(store.path) as con:
         body_hash = con.execute("SELECT hash FROM captures WHERE id=1").fetchone()[0]
+        con.execute("INSERT INTO capture_bodies VALUES (?,?)", (body_hash, gzip.compress(payload)))
         con.executemany("INSERT INTO captures VALUES (?, 'poly_us', ?, ?, ?, ?)", [
             (i, url, RECEIVED + i - 1, RECEIVED + i, body_hash) for i in range(2, 2002)])
         con.execute("UPDATE probability_chart_progress SET capture_id=0")

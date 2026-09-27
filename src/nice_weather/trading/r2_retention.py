@@ -11,9 +11,7 @@ import time
 from pathlib import Path
 
 from nice_weather.r2_archive import R2Config
-from nice_weather.trading.storage import connect
-
-WEATHER_SOURCES = ("metar", "nws_observations", "cli_index", "cli", "hrrr_index")
+from nice_weather.trading.storage import WEATHER_SOURCES, connect
 
 
 def sync(path: Path, client, config: R2Config, *, prune=False):

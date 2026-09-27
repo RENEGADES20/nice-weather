@@ -8,6 +8,8 @@ import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
+WEATHER_SOURCES = ("metar", "nws_observations", "cli_index", "cli", "hrrr_index")
+
 
 def encoded(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
