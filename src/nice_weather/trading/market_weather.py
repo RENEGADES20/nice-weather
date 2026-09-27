@@ -191,24 +191,42 @@ def project_weather(con, seq, source, body, received):
 
 
 def prepare_weather_history(path):
-    """Backfill once in short transactions; new captures then maintain the projection."""
+    """Backfill in feed order using the existing small, covering weather index."""
     with connect(path, readonly=True) as con:
+        con.execute("BEGIN")  # Source keys and the upper bound share one snapshot.
         upper = con.execute(
-            "SELECT COALESCE(MAX(seq),0) FROM feed_events WHERE kind='weather'",
+            "SELECT COALESCE(MAX(seq),0) FROM feed_events INDEXED BY feed_history "
+            "WHERE kind='weather'",
         ).fetchone()[0]
         cursor = con.execute("SELECT seq FROM weather_chart_progress WHERE id=1").fetchone()[0]
+        sources = [row[0] for row in con.execute(
+            "SELECT DISTINCT key FROM feed_events INDEXED BY feed_history WHERE kind='weather'")]
     while cursor < upper:
+        with connect(path, readonly=True) as con:
+            con.execute("BEGIN")
+            cursor = con.execute("SELECT seq FROM weather_chart_progress WHERE id=1").fetchone()[0]
+            if cursor >= upper:
+                break
+            # A per-source seek uses (kind,key,seq); merge before fetching any bodies.
+            # Creating a new partial index would scan every large market snapshot.
+            seqs = sorted(row[0] for source in sources for row in con.execute(
+                "SELECT seq FROM feed_events INDEXED BY feed_history "
+                "WHERE kind='weather' AND key=? AND seq>? AND seq<=? ORDER BY seq LIMIT 64",
+                (source, cursor, upper),
+            ))[:64]
+            rows = con.execute(
+                "SELECT seq,key,received,body FROM feed_events WHERE seq IN ("
+                + ",".join("?" for _ in seqs) + ") ORDER BY seq", seqs,
+            ).fetchall() if seqs else []
+        decoded = [(row, json.loads(row["body"])) for row in rows]
         with connect(path) as con:
             con.execute("BEGIN IMMEDIATE")
-            cursor = con.execute("SELECT seq FROM weather_chart_progress WHERE id=1").fetchone()[0]
-            rows = con.execute(
-                "SELECT seq,key,received,body FROM feed_events "
-                "WHERE kind='weather' AND seq>? AND seq<=? ORDER BY seq LIMIT 64",
-                (cursor, upper),
-            ).fetchall()
-            for row in rows:
-                project_weather(con, row["seq"], row["key"], json.loads(row["body"]),
-                                row["received"])
+            current = con.execute("SELECT seq FROM weather_chart_progress WHERE id=1").fetchone()[0]
+            if current != cursor:
+                cursor = current  # Another reader/collector committed while bodies were loaded.
+                continue
+            for row, body in decoded:
+                project_weather(con, row["seq"], row["key"], body, row["received"])
             cursor = rows[-1]["seq"] if rows else max(cursor, upper)
             con.execute("UPDATE weather_chart_progress SET seq=? WHERE id=1", (cursor,))
 

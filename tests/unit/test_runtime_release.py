@@ -2,6 +2,8 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
+import stat
 import subprocess
 import sys
 import tarfile
@@ -82,41 +84,68 @@ def test_unsafe_or_duplicate_archive_members_rejected(tmp_path, name, duplicate)
         UPDATER.read_release(path, checksum)
 
 
-@pytest.mark.parametrize("module,fail", [("feed", False), ("market_weather", False),
-                                        ("api", False), ("feed", True)])
-def test_projection_runs_after_install_before_start(tmp_path, monkeypatch, module, fail):
+@pytest.fixture
+def root_metadata(monkeypatch, tmp_path):
+    # The updater targets root-owned Linux paths; tests also run as non-root/on Windows.
+    original = os.lstat
+    modes = {}
+
+    def owned(path, *args, **kwargs):
+        info = list(original(path, *args, **kwargs))
+        info[0], info[4] = modes.get(str(path), info[0] & ~0o022), 0
+        if Path(path) == tmp_path or Path(path) in tmp_path.parents:
+            info[0] |= 0o055  # Model /opt ancestors, not pytest's private Linux temp root.
+        return os.stat_result(info)
+
+    monkeypatch.setattr(Path, "lstat", owned)
+    return modes
+
+
+@pytest.mark.parametrize("module,fail,prepare_only", [
+    ("feed", None, False), ("market_weather", None, False), ("api", None, False),
+    ("feed", "online", False), ("feed", "final", False), ("feed", None, True)])
+def test_projection_runs_after_install_before_start(
+        tmp_path, monkeypatch, root_metadata, module, fail, prepare_only):
     runtime = tmp_path / "opt/nice-weather/knyc-current"
     name = f"src/nice_weather/trading/{module}.py"
+    original = {key: b"# old runtime" for key in (*UPDATER.PREPARATION_FILES, name)}
+    for key, body in original.items():
+        target = runtime / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(body)
     target = runtime / name
-    target.parent.mkdir(parents=True)
-    target.write_bytes(b"old runtime")
-    old = {"commit": "old", "files": {name: {
-        "sha256": hashlib.sha256(target.read_bytes()).hexdigest(), "bytes": target.stat().st_size}}}
+    content = original | {name: b"# new runtime"}
+    def specs(rows):
+        return {key: {"sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)}
+                for key, body in rows.items()}
+
+    old = {"commit": "old", "files": specs(original)}
+    manifest = {"commit": "new", "files": specs(content)}
     (runtime / "runtime-manifest.json").write_text(json.dumps(old))
-    content = {name: b"new runtime"}
-    manifest = {"commit": "new", "files": {name: {
-        "sha256": hashlib.sha256(content[name]).hexdigest(), "bytes": len(content[name])}}}
     content["runtime-manifest.json"] = json.dumps(manifest).encode()
     monkeypatch.setattr(UPDATER, "read_release", lambda *args: (manifest, content))
     monkeypatch.setattr(UPDATER, "Path", lambda value: tmp_path / str(value).lstrip("/"))
     monkeypatch.setattr(UPDATER.os, "geteuid", lambda: 0, raising=False)
     monkeypatch.setattr(UPDATER.argparse.ArgumentParser, "parse_args", lambda self:
-                        SimpleNamespace(archive=None, archive_sha256=None, apply=True))
+                        SimpleNamespace(archive=None, archive_sha256="a" * 64,
+                                        apply=not prepare_only, prepare_only=prepare_only))
     calls = []
 
     def run(command, **kwargs):
         calls.append(command)
         if command[0] == "runuser":
-            assert target.read_bytes() == content[name]
+            source = kwargs["cwd"]
+            phase = "final" if source == runtime else "online"
+            assert target.read_bytes() == (content[name] if phase == "final" else original[name])
             assert json.loads((runtime / "runtime-manifest.json").read_text())["commit"] == "old"
             assert command[:7] == ["runuser", "-u", "nice-weather", "--", "env",
-                                   "PYTHONPATH=" + str(runtime / "src"), "PYTHONUNBUFFERED=1"]
-            assert command[7] == str(runtime / ".venv/bin/python")
-            assert command[-1] == "/var/lib/nice-weather-knyc/feed.sqlite3"
-            assert kwargs == {"cwd": runtime, "check": True}
-            assert any(c[:2] == ["systemctl", "stop"] for c in calls)
+                                   "PYTHONPATH=" + str(source / "src"), "PYTHONUNBUFFERED=1"]
+            assert command[7:10] == [str(runtime / ".venv/bin/python"), "-B", "-c"]
+            assert command[-2:] == ["/var/lib/nice-weather-knyc/feed.sqlite3", str(source / "src")]
+            assert kwargs["check"] is True
+            assert any(c[:2] == ["systemctl", "stop"] for c in calls) == (phase == "final")
             assert not any(c[:2] == ["systemctl", "start"] for c in calls)
-            if fail:
+            if fail == phase:
                 raise subprocess.CalledProcessError(1, command)
         if command[:2] == ["systemctl", "start"]:
             assert json.loads((runtime / "runtime-manifest.json").read_text())["commit"] == "new"
@@ -128,10 +157,41 @@ def test_projection_runs_after_install_before_start(tmp_path, monkeypatch, modul
             UPDATER.main()
         assert not any(c[:2] == ["systemctl", "start"] for c in calls)
         assert json.loads((runtime / "runtime-manifest.json").read_text()) == old
+        if fail == "online":
+            assert not any(c[0] == "systemctl" for c in calls)
+            assert target.read_bytes() == original[name]
     else:
         UPDATER.main()
-        assert any(c[:2] == ["systemctl", "start"] for c in calls)
-    assert sum(c[0] == "runuser" for c in calls) == (module != "api")
+        if prepare_only:
+            assert not any(c[0] == "systemctl" for c in calls)
+            assert json.loads((runtime / "runtime-manifest.json").read_text()) == old
+            assert all((runtime / key).read_bytes() == body for key, body in original.items())
+        else:
+            assert any(c[:2] == ["systemctl", "start"] for c in calls)
+    expected = 0 if module == "api" else 1 if prepare_only or fail == "online" else 2
+    assert sum(c[0] == "runuser" for c in calls) == expected
+
+
+@pytest.mark.parametrize("pollution", ["bytes", "extra", "symlink", "writable", "unreadable"])
+def test_preparation_rejects_staging_pollution(tmp_path, monkeypatch, root_metadata, pollution):
+    monkeypatch.setattr(UPDATER, "Path", lambda value: tmp_path / str(value).lstrip("/"))
+    content = {name: b"# verified source" for name in UPDATER.PREPARATION_FILES}
+    manifest = {"commit": "verified", "files": {name: {
+        "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)}
+        for name, body in content.items()}}
+    stage = UPDATER.stage_preparation(manifest, content, "b" * 64)
+    assert UPDATER.stage_preparation(manifest, content, "b" * 64) == stage
+    target = stage / "src/nice_weather/trading/feed.py"
+    if pollution == "bytes":
+        target.write_bytes(b"# another release")
+    elif pollution == "extra":
+        (stage / "src/nice_weather/injected.py").write_bytes(b"# unexpected module")
+    else:
+        root_metadata[str(target)] = ((stat.S_IFLNK | 0o777) if pollution == "symlink"
+                                      else (stat.S_IFREG | (0o600 if pollution == "unreadable"
+                                                            else 0o666)))
+    with pytest.raises(ValueError, match="[Pp]reparation"):
+        UPDATER.stage_preparation(manifest, content, "b" * 64)
 
 
 def test_projection_skips_old_runtime_without_prepare(monkeypatch, capsys):
@@ -147,13 +207,77 @@ def test_projection_skips_old_runtime_without_prepare(monkeypatch, capsys):
 
 
 
-def test_projection_initializes_current_runtime_and_reports_counts(tmp_path, monkeypatch, capsys):
-    # Exercise the child program against a real empty SQLite file, without runuser/systemd.
+@pytest.mark.parametrize("probability", ["ready", "absent", "failed"])
+def test_projection_initializes_current_runtime_and_reports_counts(
+        tmp_path, monkeypatch, capsys, probability):
+    from nice_weather.trading import feed, market_weather
+
+    # Exercise the child program against SQLite, including optional preparation order.
     path = tmp_path / "feed.sqlite3"
     path.touch()
-    monkeypatch.setattr(sys, "argv", ["-c", str(path)])
-    exec(UPDATER.WEATHER_PROJECTION, {})
-    report = json.loads(capsys.readouterr().out)
-    assert report["weather_projection"] == "ready"
-    assert report["points"] == report["cli_reports"] == report["through_seq"] == 0
-    assert report["seconds"] >= 0
+    monkeypatch.setattr(sys, "argv", ["-c", str(path),
+                                    str(Path(__file__).resolve().parents[2] / "src")])
+    calls = []
+    store, weather = feed.FeedStore, market_weather.prepare_weather_history
+
+    def initialize(db):
+        calls.append("init")
+        return store(db)
+
+    def prepare_probability(db):
+        assert db == path
+        calls.append("probability")
+        if probability == "failed":
+            raise RuntimeError("probability projection failed")
+
+    def prepare_weather(db):
+        calls.append("weather")
+        return weather(db)
+
+    monkeypatch.setattr(feed, "FeedStore", initialize)
+    monkeypatch.setattr(market_weather, "prepare_weather_history", prepare_weather)
+    if probability == "absent":
+        monkeypatch.delattr(feed, "prepare_probability_history", raising=False)
+    else:
+        monkeypatch.setattr(feed, "prepare_probability_history", prepare_probability, raising=False)
+    if probability == "failed":
+        with pytest.raises(RuntimeError, match="probability projection failed"):
+            exec(UPDATER.WEATHER_PROJECTION, {})
+        assert calls == ["init", "probability"]
+    else:
+        exec(UPDATER.WEATHER_PROJECTION, {})
+        assert calls == (["init", "weather"] if probability == "absent"
+                         else ["init", "probability", "weather"])
+        report = json.loads(capsys.readouterr().out)
+        assert report["weather_projection"] == "ready"
+        assert report["points"] == report["cli_reports"] == report["through_seq"] == 0
+        assert report["seconds"] >= 0
+
+
+
+def test_staging_modes_ignore_umask_without_changing_existing_paths(
+        tmp_path, monkeypatch, root_metadata):
+    monkeypatch.setattr(UPDATER, "Path", lambda value: tmp_path / str(value).lstrip("/"))
+    content = {name: b"# verified source" for name in UPDATER.PREPARATION_FILES}
+    manifest = {"commit": "verified", "files": {name: {
+        "sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)}
+        for name, body in content.items()}}
+    original = os.chmod
+    calls = []
+
+    def chmod(path, mode, *args, **kwargs):
+        assert Path(path).is_relative_to(tmp_path / "opt")
+        calls.append((Path(path), mode))
+        return original(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(UPDATER.os, "chmod", chmod)
+    previous = os.umask(0o077)
+    try:
+        stage = UPDATER.stage_preparation(manifest, content, "c" * 64)
+    finally:
+        os.umask(previous)
+    assert (stage, 0o755) in calls
+    assert (stage / "src/nice_weather/trading/feed.py", 0o644) in calls
+    calls.clear()
+    UPDATER.stage_preparation(manifest, content, "c" * 64)
+    assert calls == []

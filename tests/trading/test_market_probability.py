@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 import time
 from datetime import datetime
 
 import httpx
 import pytest
 
-from nice_weather.trading.feed import FeedStore, capture_book, capture_json
+from nice_weather.trading.feed import (
+    FeedStore,
+    capture_book,
+    capture_json,
+    prepare_probability_history,
+)
 from nice_weather.trading.market_weather import scoped_history
 from nice_weather.trading.storage import connect
 from nice_weather.trading.us_markets import kalshi_trade_probability, normalize_book
@@ -106,6 +112,9 @@ def test_legacy_poly_probability_uses_exact_captured_body_and_receipt(tmp_path):
         "lastPriceSample": {"longPx": {"value": 0.31}, "ts": STAMP}}}}
     capture = store.capture("poly_us", url, RECEIVED - 1, RECEIVED,
                             json.dumps(payload).encode())
+    payload["marketData"]["stats"]["lastPriceSample"]["longPx"]["value"] = 0.85
+    store.capture("poly_us", url.replace(slug, slug + "-other"), RECEIVED - 1, RECEIVED,
+                  json.dumps(payload).encode())
     points = [{"time": RECEIVED, "probability": None},
               {"time": RECEIVED + 1, "probability": None}]
     restored = store.restore_probabilities(points, contract)
@@ -174,3 +183,87 @@ def test_capture_write_does_not_block_event_loop_or_change_http_receipt():
             assert time.time() - received >= 0.15
             assert payload == {"ok": True} and capture == 1
     asyncio.run(run())
+
+
+def test_probability_lookup_backfill_resumes_without_skipping_old_captures(tmp_path):
+    store = FeedStore(tmp_path / "feed.sqlite3")
+    slug = "tc-temp-nychigh-2026-09-27-lt65f"
+    contract = {"venue": "poly_us", "condition_id": slug}
+    url = f"https://gateway.polymarket.us/v1/markets/{slug}/book"
+    payload = json.dumps({"marketData": {"marketSlug": slug, "stats": {
+        "lastPriceSample": {"longPx": {"value": 0.31}, "ts": STAMP}}}}).encode()
+    store.capture("poly_us", url, RECEIVED - 1, RECEIVED, payload)
+    with connect(store.path) as con:
+        body_hash = con.execute("SELECT hash FROM captures WHERE id=1").fetchone()[0]
+        con.executemany("INSERT INTO captures VALUES (?, 'poly_us', ?, ?, ?, ?)", [
+            (i, url, RECEIVED + i - 1, RECEIVED + i, body_hash) for i in range(2, 2002)])
+        con.execute("UPDATE probability_chart_progress SET capture_id=0")
+        con.execute("CREATE TRIGGER stop_probability_backfill "
+                    "BEFORE INSERT ON probability_capture_lookup WHEN NEW.capture_id=2001 "
+                    "BEGIN SELECT RAISE(ABORT, 'interrupted'); END")
+        assert not con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='capture_receipt'").fetchone()
+    # A new capture records its own link without jumping past the unprocessed prefix.
+    store.capture("poly_us", url, RECEIVED + 2001, RECEIVED + 2002, payload)
+    with pytest.raises(ValueError, match="PROBABILITY_HISTORY_WARMING"):
+        store.restore_probabilities([{"time": RECEIVED + 2002}], contract)
+    with pytest.raises(sqlite3.IntegrityError, match="interrupted"):
+        prepare_probability_history(store.path)
+    with connect(store.path) as con:
+        progress = con.execute("SELECT capture_id FROM probability_chart_progress").fetchone()[0]
+        assert progress == 2000
+        con.execute("DROP TRIGGER stop_probability_backfill")
+    prepare_probability_history(store.path)
+    restored = store.restore_probabilities([{"time": RECEIVED + 2001},
+                                           {"time": RECEIVED + 2002}], contract)
+    assert [p["probability"] for p in restored] == [0.31, 0.31]
+    assert [p["probability_capture_id"] for p in restored] == [2001, 2002]
+    assert [p["probability_received_at"] for p in restored] == [RECEIVED + 2001, RECEIVED + 2002]
+    with connect(store.path, readonly=True) as con:
+        progress = con.execute("SELECT capture_id FROM probability_chart_progress").fetchone()[0]
+        assert progress == 2002
+        plan = con.execute("EXPLAIN QUERY PLAN SELECT c.id FROM probability_capture_lookup l "
+                           "JOIN captures c ON c.id=l.capture_id WHERE l.received=? AND c.url=?",
+                           (RECEIVED, url)).fetchall()
+        assert [row[1] for row in con.execute("PRAGMA table_info(probability_capture_lookup)")] == [
+            "capture_id", "received"]
+        assert any("probability_capture_receipt" in row[3] for row in plan)
+        assert any("INTEGER PRIMARY KEY" in row[3] for row in plan)
+
+
+def test_probability_prepare_bounds_online_captures_and_catches_up_next_run(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    store = FeedStore(tmp_path / "feed.sqlite3")
+    url = "https://gateway.polymarket.us/v1/markets/tc-temp-nychigh-2026-09-27-lt65f/book"
+    store.capture("poly_us", url, RECEIVED - 1, RECEIVED, b"{}")
+    with connect(store.path) as con:
+        body_hash = con.execute("SELECT hash FROM captures WHERE id=1").fetchone()[0]
+        con.execute("INSERT INTO captures VALUES (2,'poly_us',?,?,?,?)",
+                    (url, RECEIVED, RECEIVED + 1, body_hash))
+    original_connect = connect
+    appended = []
+
+    @contextmanager
+    def online_connect(path, *, readonly=False):
+        with original_connect(path, readonly=readonly) as con:
+            yield con
+        # Simulate the old collector appending without maintaining the new projection.
+        if readonly:
+            with original_connect(path) as con:
+                cursor = con.execute("INSERT INTO captures VALUES (NULL,'poly_us',?,?,?,?)",
+                                     (url, RECEIVED, RECEIVED + 2 + len(appended), body_hash))
+                appended.append(cursor.lastrowid)
+
+    monkeypatch.setattr("nice_weather.trading.feed.connect", online_connect)
+    prepare_probability_history(store.path)
+    assert 1 <= len(appended) <= 3
+    with original_connect(store.path, readonly=True) as con:
+        progress = con.execute("SELECT capture_id FROM probability_chart_progress").fetchone()[0]
+        assert progress == 2
+        assert con.execute("SELECT MAX(id) FROM captures").fetchone()[0] > progress
+    monkeypatch.setattr("nice_weather.trading.feed.connect", original_connect)
+    prepare_probability_history(store.path)
+    with original_connect(store.path, readonly=True) as con:
+        progress = con.execute("SELECT capture_id FROM probability_chart_progress").fetchone()[0]
+        assert progress == con.execute("SELECT MAX(id) FROM captures").fetchone()[0]

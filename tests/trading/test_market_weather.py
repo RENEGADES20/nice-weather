@@ -201,3 +201,134 @@ def test_weather_projection_keeps_pre_day_forecast_and_first_cli_receipt(tmp_pat
     assert result["sources"]["hrrr"][0]["received_at"] == start - 1800
     assert len(result["cli"]) == 1
     assert result["cli"][0]["received_at"] == start + 2 * 86400
+
+
+
+def test_weather_backfill_uses_covering_index_and_global_order(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    from nice_weather.trading import feed as feed_module
+    from nice_weather.trading import market_weather
+
+    statements, visited, expected = [], [], []
+
+    @contextmanager
+    def traced(*args, **kwargs):
+        with connect(*args, **kwargs) as con:
+            con.set_trace_callback(statements.append)
+            yield con
+
+    monkeypatch.setattr(feed_module, "connect", traced)
+    monkeypatch.setattr(market_weather, "connect", traced)
+    feed = FeedStore(tmp_path / "feed.sqlite3")
+    with connect(feed.path) as con:
+        assert not con.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='weather_event_seq'").fetchone()
+        for i in range(170):
+            # Unrelated large/invalid book bodies must never be scanned or decoded.
+            con.execute("INSERT INTO feed_events VALUES (NULL,'book','bin',?,?)",
+                        (i, 'x' * 65536))
+            row = con.execute("INSERT INTO feed_events VALUES (NULL,'weather',?,?,'{}')",
+                              (("metar", "hrrr", "cli")[i % 3], i))
+            expected.append(row.lastrowid)
+    project = market_weather.project_weather
+
+    def record(con, seq, source, body, received):
+        visited.append(seq)
+        project(con, seq, source, body, received)
+
+    monkeypatch.setattr(market_weather, "project_weather", record)
+    market_weather.prepare_weather_history(feed.path)
+    assert visited == expected  # Three 64-row batches keep global, not source-grouped order.
+    latest = feed.publish("weather", "metar", {}, 999)
+    assert visited == [*expected, latest]
+    with connect(feed.path, readonly=True) as con:
+        progress = con.execute("SELECT seq FROM weather_chart_progress WHERE id=1").fetchone()[0]
+        assert progress == latest
+        for sql in statements:
+            if sql.startswith("SELECT ") and "FROM feed_events" in sql:
+                plan = " ".join(row[3] for row in con.execute("EXPLAIN QUERY PLAN " + sql))
+                if "body" in sql:
+                    assert "USING INTEGER PRIMARY KEY" in plan
+                else:
+                    assert "COVERING INDEX feed_history" in plan
+
+
+def test_probability_history_warming_is_503_and_recovers_after_prepare(tmp_path):
+    import json
+
+    from nice_weather.trading.feed import prepare_probability_history
+
+    app = create_app(tmp_path, password="test", origin="http://testserver")
+    feed = FeedStore(tmp_path / "feed.sqlite3")
+    c = contract("poly_us", "2026-09-27") | {"condition_id": "tc-temp-nychigh-2026-09-27-lt65f"}
+    received = datetime(2026, 9, 27, 5, tzinfo=UTC).timestamp()
+    feed.publish("contracts", "poly_us", [c], received)
+    feed.publish("book", c["yes_token_id"], {"bids": [], "asks": []}, received)
+    native = {"marketData": {"marketSlug": c["condition_id"], "stats": {
+        "lastPriceSample": {"longPx": {"value": "0.2"}, "ts": "2026-09-27T04:59:00Z"}}}}
+    feed.capture("poly_us", f'https://gateway.polymarket.us/v1/markets/{c["condition_id"]}/book',
+                 received - 1, received, json.dumps(native).encode())
+    with connect(feed.path) as con:
+        con.execute("UPDATE probability_chart_progress SET capture_id=0")
+    client = TestClient(app)
+    client.post("/api/login", json={"password": "test"}, headers={"origin": "http://testserver"})
+    params = {"token": c["yes_token_id"], "venue": "poly_us", "day": "2026-09-27"}
+    warming = client.get("/api/history", params=params)
+    assert warming.status_code == 503
+    assert warming.json() == {"detail": "PROBABILITY_HISTORY_WARMING"}
+    invalid = client.get("/api/history", params=params | {"token": "unknown"})
+    assert invalid.status_code == 400
+    prepare_probability_history(feed.path)
+    ready = client.get("/api/history", params=params)
+    assert ready.status_code == 200
+    assert ready.json()["points"][0]["probability"] == 0.2
+
+
+def test_weather_backfill_retries_batch_when_another_writer_advances_cursor(tmp_path, monkeypatch):
+    import json
+    from contextlib import contextmanager
+
+    from nice_weather.trading import market_weather
+
+    feed = FeedStore(tmp_path / "feed.sqlite3")
+    with connect(feed.path) as con:
+        con.executemany("INSERT INTO feed_events VALUES (NULL,'weather','metar',?,'{}')",
+                        [(i,) for i in range(70)])
+        expected = [row[0] for row in con.execute("SELECT seq FROM feed_events ORDER BY seq")]
+    visited = []
+    project = market_weather.project_weather
+
+    def record(con, seq, source, body, received):
+        visited.append(seq)
+        project(con, seq, source, body, received)
+
+    injected = False
+
+    @contextmanager
+    def concurrent(*args, **kwargs):
+        nonlocal injected
+        with connect(*args, **kwargs) as con:
+            statements = []
+            con.set_trace_callback(statements.append)
+            yield con
+            if (kwargs.get("readonly") and not injected and any(
+                    sql.startswith("SELECT seq,key,received,body") for sql in statements)):
+                injected = True
+                # The read snapshot stays open: unrelated writes must still be possible.
+                with connect(feed.path) as writer:
+                    writer.execute("BEGIN IMMEDIATE")
+                    rows = writer.execute("SELECT seq,key,received,body FROM feed_events "
+                                          "ORDER BY seq LIMIT 64").fetchall()
+                    for row in rows:
+                        record(writer, row["seq"], row["key"], json.loads(row["body"]),
+                               row["received"])
+                    writer.execute("UPDATE weather_chart_progress SET seq=?", (rows[-1]["seq"],))
+
+    monkeypatch.setattr(market_weather, "connect", concurrent)
+    monkeypatch.setattr(market_weather, "project_weather", record)
+    market_weather.prepare_weather_history(feed.path)
+    assert injected
+    assert visited == expected  # Discard the stale first batch; never project it twice.
+    with connect(feed.path, readonly=True) as con:
+        assert con.execute("SELECT seq FROM weather_chart_progress").fetchone()[0] == expected[-1]
