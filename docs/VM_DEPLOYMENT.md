@@ -1,6 +1,16 @@
 # 当前发布规则（2026-09-19）
 
-## 2026-09-27：#95 部署与真实历史页验证
+## 2026-09-27：#96 已发布，缺概率组点击通过
+
+PR #96 七项 CI 全部成功（run `36306678635`），已合并并部署为 `200c81ce586622803585dffb99f97accb91df79f`。apply 退出 0，stop 0.924 秒，仅 terminal 重启并 active，Paper 未重启。manifest 86 个文件核验一致，mismatches=[]；`/health` 返回 HTTP 200、耗时 0.006796 秒；两平台 Paper active/running、NRestarts=0。
+
+发布包 712,882 字节，SHA-256 `9800465f2de9f8d8431832f09316ee2b858b5dbeb4e68e84adb4729c79f54769`。
+
+#96 已在正式页面验证相邻真实 S2 天气预警组逐组点击：组计数与首原事件匹配，注释行相隔 20 px，无遮挡。 已知概率顶部遮挡另行修复，尚未发布；当前点击与 Paper 预检边界见 [本轮验收记录](acceptance/probability-paper-20260927.md)。Poly US 当日预检已返回原生参考价，token 阻塞解除；仍须追齐且报价新鲜后再验新市价单。
+
+#95 及此前发布实测保留于下方阶段记录。
+
+## 2026-09-27：#95 阶段记录（#96 发布前）
 
 PR #95 七项 CI 全部成功（run `36305461615`），已合并并部署为 `04f2c4d1248c785810e4fd0b0fdab62cfbe5fcc9`。apply 退出 0，stop 0.239 秒，terminal、backtest 和两平台 Paper 均 active，两 Paper NRestarts=0；health 返回 200、耗时 0.145654 秒。08:25 UTC 以服务账户核验 manifest 86 个文件，mismatches=[]。
 
