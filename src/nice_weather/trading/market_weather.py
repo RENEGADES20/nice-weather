@@ -284,7 +284,7 @@ def scoped_history(feed, venue, day, token, before=None):
             "json_extract(body,'$.bids[0]') AS bid,"
             "json_extract(body,'$.asks[0]') AS ask "
             "FROM feed_events WHERE kind='book' AND key=? AND seq<? "
-            "ORDER BY seq DESC LIMIT 1500", (token, before or 2**63 - 1),
+            "ORDER BY seq DESC LIMIT 300", (token, before or 2**63 - 1),
         ).fetchall()
     points = [{"seq": r["seq"], "time": r["received"],
                         "received_at": r["receipt"],
@@ -298,5 +298,5 @@ def scoped_history(feed, venue, day, token, before=None):
     contract = next(c for c in context["contracts"] if c["yes_token_id"] == token)
     return {"venue": venue, "day": day, "token": token,
             "points": feed.restore_probabilities(points, contract),
-            "next_before": rows[-1]["seq"] if len(rows) == 1500 else None,
+            "next_before": rows[-1]["seq"] if len(rows) == 300 else None,
             "reason": None if rows else "NO_PRICE_HISTORY"}

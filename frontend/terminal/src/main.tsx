@@ -542,6 +542,7 @@ function App() {
             onClick={() => setSelection({...selection, token:c.yes_token_id})}>{c.title}</button>)}</div>
           <ProbabilityChart quotes={weather.quotes} title={contract?.title ?? "未选择档位"} selection={chartSelection}
             endTime={chartEnd} events={chartEvents} focus={focus} onLocate={locate} loading={weather.loading}/>
+          {weather.historyError && <p className="notice" role="alert">{weather.historyError}</p>}
           <p className="notice">{weather.priceReason}{eventError}</p>
         </section>
         <section className="orderbook panel"><div className="section-title"><h2>公开报价 · YES</h2><span>{clock(book?.received_at)}</span></div>
@@ -556,7 +557,7 @@ function App() {
             snapshot.orders?.map(o => [o.order_id, o.status, o.filled]), snapshot.simulation])} simulation={snapshot.simulation ?? {estimated_fee_rate:.01,slippage_pp:0}}
           blocked={blocked} preview={preview} send={c => commands.send(c, commands.saved.some(s => s.request_id === c.request_id))} onAccountUpdate={refreshAccount}/>
           : <LiveOrderTicket key={`${venue}/${day}/${token}`} snapshot={liveSnapshot} market={contract?.condition_id ?? ""} pending={blocked} send={(kind,payload) => submit(kind,payload,"live")}/>}
-        <section className="weather-panel"><WeatherAnalysis data={weather.weather} quotes={weather.quotes} token={token} loading={weather.weatherLoading} error={weather.error} priceReason={weather.priceReason}/></section>
+        <section className="weather-panel"><WeatherAnalysis data={weather.weather} quotes={weather.quotes} token={token} loading={weather.weatherLoading} error={weather.weatherError} priceReason={weather.priceReason}/></section>
         <section className="strategies panel"><div className="section-title"><h2>天气策略信号</h2>
           <button disabled={commands.blocked || !paperAccount || (!snapshot.strategy_enabled && blocked)} onClick={() => submit(snapshot.strategy_enabled ? "stop" : "start", {strategy_id:"S1_S2_S3"}, "sandbox")}>{snapshot.strategy_enabled ? "停止模拟策略" : "启动模拟三策略"}</button></div>
           <div className="strategy-grid">{[["S1","相邻两档"],["S2","新高跨档"],["S3","结束后单档"]].map(([id,name]) => {

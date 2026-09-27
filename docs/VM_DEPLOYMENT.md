@@ -1,5 +1,21 @@
 # 当前发布规则（2026-09-19）
 
+## 2026-09-27：a51 后续恢复与 R2 修正待发布
+
+生产仍运行 `a51f0d69f164505947d5a21b387d74d5fcefb0eb`。Poly US Paper 反复重启至计数 24 后已明确停止，现 inactive/dead；终端 active/running。后续修正版包含恢复持仓索引、原生官方结算生命周期、300 点历史分页和分区错误，以及 R2 有界读取；本地检查通过，尚未部署。受影响 Paper 须随修正版重新启动并验收，R2 timer 保持暂缓至正式核验后显式恢复。
+
+已查明旧 R2 unit 实际导入 `/opt/nice-weather/repo/src`。本次必须同时发布 R2 Python 文件和 unit：`PYTHONPATH=/opt/nice-weather/knyc-current/src`，解释器为现役 runtime `.venv/bin/python`。更新器在 R2 代码、共享 storage 或 unit 改变时读取 timer 原启停状态，停止 timer 和正在运行的 oneshot，再安装代码/unit；主服务启动并检查通过后仅恢复原 active timer，不直接触发 prune。本次原已 paused，将保留 paused；若发布中途失败，重试后须重新核对原 timer 状态，不能据重试成功推定归档已恢复。R2 6 项及发布器 24 项本地回归通过，实际新路径、归档耗时和 timer 恢复待 VM 验证。
+
+## 2026-09-27：PR #91 已发布，正式验收继续
+
+#91 七项 CI 全部通过，合并及运行版本为 `a51f0d69f164505947d5a21b387d74d5fcefb0eb`。发布包 709,551 字节，SHA-256 `c892c2900bc7cbf37e5372bd4c9298041af961f6bf67943ec9874912f2f90b6e`。此次发布退出码 0，八个服务 active，manifest 86 个文件哈希全部匹配；health 返回 200、耗时 0.008735 秒，可用空间约 2.6 GiB。
+
+`prepare-only` 运行 1,089.319 秒，期间旧服务在线。完成时概率采集游标 2,812,761，天气投影 3,304 点、21 个 CLI 记录、seq 3,280,696。后续 `apply` 在线追补 9.712 秒，stop 阶段 90.262 秒，停机后 final 增量 21.359 秒。此前 #90 首次部署因约 16 GB 原库新索引扫描而中断，已先恢复旧代码；本次复用已有索引及独立源码在线预热，保留原始数据。恢复过程中通过 SQLite 正常 TRUNCATE checkpoint 释放 WAL，未手动删除文件。
+
+发布后真实天气接口四次 0.710 / 0.056 / 0.194 / 0.038 秒，1,500 点历史页四次 6.263 / 3.228 / 6.300 / 0.742 秒。Poly US 抽查的 1,500 点均有原生概率，Kalshi 昨日缺概率区段保留缺口；正式网页已加载新 UI。浏览器历史冷页仍偶发 10 秒超时，错误当前落在天气区。`codex/knyc-probability-acceptance` 正在缩短至 300 点分页并分区显示错误，后续修正尚未发布，不能标记本轮完整正式验收通过。
+
+R2 timer 仍暂缓，发布后恢复与核验尚未完成；后续发布前继续复核既有空间门槛。时间范围/bin 连续切换、信号归属和 Paper 完整流程继续按 [本轮验收记录](acceptance/probability-paper-20260927.md) 执行。下方旧版本与恢复记录保留历史范围，当前运行版本以上述 SHA 为准。
+
 ## 2026-09-27：派生查询在线预热
 
 已审核发布包先运行 `sudo python3 scripts/update_knyc_runtime.py <archive> <sha256> --prepare-only`。更新器校验包、清单与现役基线，将固定六个准备模块保留在 `/opt/nice-weather-knyc-prepare/<archive_sha256>/`，以 `nice-weather` 用户、现役虚拟环境和该目录的 `PYTHONPATH` 在线构建概率查询表与天气投影；不停止服务或替换现役代码。每阶段开始/完成输出 JSON，批次游标支持中断后重试。

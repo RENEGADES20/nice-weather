@@ -332,3 +332,41 @@ def test_weather_backfill_retries_batch_when_another_writer_advances_cursor(tmp_
     assert visited == expected  # Discard the stale first batch; never project it twice.
     with connect(feed.path, readonly=True) as con:
         assert con.execute("SELECT seq FROM weather_chart_progress").fetchone()[0] == expected[-1]
+
+
+def test_scoped_history_300_point_pages_are_complete_and_isolated(tmp_path):
+    import json
+
+    feed = FeedStore(tmp_path / "feed.sqlite3")
+    selected = contract("kalshi", "2026-09-27")
+    other = contract("poly_us", "2026-09-27")
+    feed.publish("contracts", "kalshi", [selected], 1)
+    feed.publish("contracts", "poly_us", [other], 1)
+    token = selected["yes_token_id"]
+    records = []
+    for i in range(617):
+        records.append(("book", token, i + 10, json.dumps({"bids": [], "asks": [],
+                        "probability": 0.2, "probability_source": "kalshi_last_trade"})))
+        if i % 7 == 0:
+            records.append(("book", other["yes_token_id"], i + 10,
+                            json.dumps({"probability": 0.9})))
+    with connect(feed.path) as con:
+        con.executemany("INSERT INTO feed_events(kind,key,received,body) VALUES (?,?,?,?)", records)
+    before, points, counts = None, [], []
+    while True:
+        page = scoped_history(feed, "kalshi", "2026-09-27", token, before)
+        assert (page["venue"], page["day"], page["token"]) == ("kalshi", "2026-09-27", token)
+        counts.append(len(page["points"]))
+        points = page["points"] + points
+        if page["next_before"] is None:
+            break
+        assert before is None or page["next_before"] < before
+        before = page["next_before"]
+    assert counts == [300, 300, 17]
+    assert [p["time"] for p in points] == list(range(10, 627))
+    assert len({p["seq"] for p in points}) == 617
+    assert all(p["probability"] == 0.2 for p in points)
+    with pytest.raises(ValueError, match="belong"):
+        scoped_history(feed, "poly_us", "2026-09-27", token)
+    with pytest.raises(ValueError, match="belong"):
+        scoped_history(feed, "kalshi", "2026-09-26", token)

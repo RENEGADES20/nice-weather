@@ -101,13 +101,17 @@ def root_metadata(monkeypatch, tmp_path):
     return modes
 
 
-@pytest.mark.parametrize("module,fail,prepare_only", [
-    ("feed", None, False), ("market_weather", None, False), ("api", None, False),
-    ("feed", "online", False), ("feed", "final", False), ("feed", None, True)])
+@pytest.mark.parametrize("module,fail,prepare_only,timer_active", [
+    ("feed", None, False, False), ("market_weather", None, False, False),
+    ("api", None, False, False), ("feed", "online", False, False),
+    ("feed", "final", False, False), ("feed", None, True, False),
+    ("r2_retention", None, False, False), ("r2_retention", None, False, True),
+    ("deploy/systemd/nice-weather-knyc-r2.service", None, False, True)])
 def test_projection_runs_after_install_before_start(
-        tmp_path, monkeypatch, root_metadata, module, fail, prepare_only):
+        tmp_path, monkeypatch, root_metadata, module, fail, prepare_only, timer_active):
     runtime = tmp_path / "opt/nice-weather/knyc-current"
-    name = f"src/nice_weather/trading/{module}.py"
+    name = module if module.startswith("deploy/") else f"src/nice_weather/trading/{module}.py"
+    (tmp_path / "etc/systemd/system").mkdir(parents=True)
     original = {key: b"# old runtime" for key in (*UPDATER.PREPARATION_FILES, name)}
     for key, body in original.items():
         target = runtime / key
@@ -133,6 +137,8 @@ def test_projection_runs_after_install_before_start(
 
     def run(command, **kwargs):
         calls.append(command)
+        if command[:3] == ["systemctl", "is-active", "--quiet"]:
+            return SimpleNamespace(returncode=0 if timer_active else 3)
         if command[0] == "runuser":
             source = kwargs["cwd"]
             phase = "final" if source == runtime else "online"
@@ -168,8 +174,17 @@ def test_projection_runs_after_install_before_start(
             assert all((runtime / key).read_bytes() == body for key, body in original.items())
         else:
             assert any(c[:2] == ["systemctl", "start"] for c in calls)
-    expected = 0 if module == "api" else 1 if prepare_only or fail == "online" else 2
+    expected = (0 if name not in UPDATER.PROJECTION_MODULES else
+                1 if prepare_only or fail == "online" else 2)
     assert sum(c[0] == "runuser" for c in calls) == expected
+    if "r2" in module:
+        timer = "nice-weather-knyc-r2.timer"
+        assert any(c[:2] == ["systemctl", "stop"] and timer in c for c in calls)
+        assert (["systemctl", "start", timer] in calls) == timer_active
+        assert not any(c[:2] == ["systemctl", "start"] and
+                       "nice-weather-knyc-r2.service" in c for c in calls)
+        if module.startswith("deploy/"):
+            assert (tmp_path / "etc/systemd/system" / Path(name).name).read_bytes() == content[name]
 
 
 @pytest.mark.parametrize("pollution", ["bytes", "extra", "symlink", "writable", "unreadable"])

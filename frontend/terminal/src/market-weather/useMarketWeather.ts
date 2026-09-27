@@ -8,6 +8,10 @@ async function get<T>(path: string, signal: AbortSignal, timeout = 10000): Promi
   if (!response.ok) throw new Error(`${path.split("?")[0]} 读取失败 (${response.status})`);
   return response.json();
 }
+const readError = (source: string, error: unknown) =>
+  error instanceof DOMException && error.name === "TimeoutError"
+    ? `${source}读取超时，请稍后重试。` : `${source}：${String(error)}`;
+
 export function useMarketCatalog(venue: string) {
   const [state, setState] = useState<{ data?: Catalog; loading: boolean; error: string }>({
     loading: true, error: "" });
@@ -76,7 +80,7 @@ export function useMarketWeather(value: Selection, active = false, enabled = tru
         if (weatherCache.current.size > 12) weatherCache.current.delete(weatherCache.current.keys().next().value!);
         setWeather(next);
       } catch (e) {
-        if (valid()) setWeather(old => ({ ...old, loading: false, error: String(e) }));
+        if (valid()) setWeather(old => ({ ...old, loading: false, error: readError("天气数据", e) }));
       } finally {
         if (valid()) timer = setTimeout(read, 60000);
       }
@@ -130,7 +134,7 @@ export function useMarketWeather(value: Selection, active = false, enabled = tru
             priceReason: null }, page.points);
         } while (before != null && valid());
       } catch (e) {
-        if (valid()) update({ loading: false, historyLoading: false, error: String(e) });
+        if (valid()) update({ loading: false, historyLoading: false, error: readError("行情历史", e) });
       }
     }
     void history();
@@ -171,7 +175,8 @@ export function useMarketWeather(value: Selection, active = false, enabled = tru
   const selected = market.key === key ? market : cache.current.get(key) ?? emptyMarket(key);
   const selectedWeather = weather.key === weatherKey ? weather : weatherCache.current.get(weatherKey);
   return { ...selected, weather: selectedWeather?.data, weatherLoading: selectedWeather?.loading ?? true,
-    error: [selected.error, selectedWeather?.error].filter(Boolean).join("；"),
+    historyError: selected.error, weatherError: selectedWeather?.error ?? "",
+    error: selectedWeather?.error ?? "", // Compatibility for the standalone weather preview.
     priceReason: selected.priceReason || (!selected.loading && !selected.quotes.length ? "尚无已采集价格历史" : null),
     acceptBook };
 }

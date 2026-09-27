@@ -1,5 +1,17 @@
 # 决策记录
 
+## D-KNYC-ACCEPTANCE-FOLLOWUP-20260927：恢复持仓索引、原生到期生命周期与有限范围读取
+
+a51 正式验收发现 Poly US Paper 在已平仓历史恢复后的到期事件中遇到 FLAT 索引错误。Nautilus `cache.add_position` 将对象加入 open 索引，恢复完整历史后须调用公开 `cache.update_position` 使索引符合最终持仓状态。进一步回归确认仍有持仓的恢复场景缺少撮合器临时 trader/account 映射，因此仅修索引不足以完成真实到期结算。
+
+采用 Nautilus SimulationModule 在 `InstrumentClose(CONTRACT_EXPIRED)` 原生处理阶段处理实际 open 持仓：先撤销该合约挂单，以持仓已记录账户创建 reduce-only 原生到期 MarketOrder，经本地执行引擎的 Submitted→Accepted 事件完成账户绑定，再调用公开 matching `apply_fills`，使用已验证官方 payout 和实际持仓数量生成原生结算成交。原 InstrumentClose 随后标记到期。该阶段在原生时钟推进到实际接收事件后运行，保留 EXPIRATION 零费用规则、订单/成交/账户事件和再次恢复事实；不重放历史订单，不引入市场行情，不改私有 Cython 状态。官方证据、来源哈希、真实接收时间、结算精度及重复输入检查继续由既有门禁执行。
+
+上述改变修复模拟引擎恢复与官方结算生命周期，`market-price-v1` 的成交近似、费用和滑点口径保持。Kalshi 既有天气规则审计歧义继续 no-trade，本轮不扩大规则审核或放宽保护。双平台控制项和本地样本通过，与正式页面实际订单验收分别记录。
+
+历史查询改为每页 300 点，以既有 seq 游标渐进加载完整历史；天气与历史错误分别显示在其区域。R2 按固定采集上界分页读取元数据并按天气 hash 点取 body，导出限定天气来源，GET 验证后清空前复核并发市场引用。R2 unit 必须一同切到现役 runtime 源码及解释器，发布器保留 timer 原状态、只在主服务启动通过后恢复原 active timer；本次原已暂停的 timer 由交付负责人正式核验后恢复。失败重试仍须明确核对 timer 状态。
+
+当前生产仍为 a51，本节修正尚未部署。本地结算相关 71 项、R2 6 项、发布器 24 项及相关浏览器 14 项通过；完整发布检查与真实故障恢复验收另行补录，见 [本轮验收记录](acceptance/probability-paper-20260927.md)。
+
 ## D-KNYC-CHART-STARTUP-20260927：复用既有索引、分批投影与发布前预热
 
 PR #90 首次 VM 部署暴露启动迁移缺陷：在约 16 GB feed 原库上建立天气 partial index 需要扫描大量无关市场快照，服务已停止而迁移迟迟未结束。该次部署中断，旧代码恢复；原始采集与账目保留。修正版必须重新通过 PR 与检查后发布，不直接修改生产代码绕过发布记录。
