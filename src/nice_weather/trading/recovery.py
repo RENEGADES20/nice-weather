@@ -6,17 +6,29 @@ before accepting a fresh book; it never re-simulates an already committed fill.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 
 from nice_weather.trading.storage import connect, digest, encoded
 
 
-def native_state(session):
+def native_state(session, *, account_cache=None):
     from nautilus_trader.accounting.accounts.cash import CashAccount
 
     cache = session.engine.cache
     account = cache.account_for_venue(next(iter(session.engine.list_venues())))
+    if account_cache is None:
+        account_state = CashAccount.to_dict(account) if account else None
+    else:
+        key = (id(account), account.event_count, account.last_event.id,
+               account.calculate_account_state, account.allow_borrowing) if account else (None,)
+        if account_cache.get("key") != key:
+            account_state = CashAccount.to_dict(account) if account else None
+            # Hold the object as well as its id so a reset cannot reuse an old identity.
+            account_cache.update(key=key, account=account, state=account_state,
+                                 checksum=digest(account_state))
+        account_state = account_cache["state"]
     return {
         "config": session.config,
         "metadata": session.metadata,
@@ -37,7 +49,7 @@ def native_state(session):
         "rejections": session.rejections,
         "peak": session.equity_peak,
         "maximum_drawdown": session.maximum_drawdown,
-        "account": CashAccount.to_dict(account) if account else None,
+        "account": account_state,
         "orders": [[type(e).to_dict(e) for e in o.events] for o in cache.orders()],
         "positions": [[type(e).to_dict(e) for e in p.events] for p in cache.positions()],
         "archived": [[type(e).to_dict(e) for e in p.events] for p in cache.position_snapshots()],
@@ -238,11 +250,13 @@ class PaperRunner:
         self.commit("startup")
 
     def commit(self, input_id=None, archive=None):
-        state = native_state(self.session)
+        # This cache is private to commits; public native_state calls retain fresh dictionaries.
+        self._account_cache = getattr(self, "_account_cache", {})
+        state = native_state(self.session, account_cache=self._account_cache)
         snapshot = self.session.snapshot()
         state_hash = digest(
             {
-                k: state[k]
+                k: self._account_cache["checksum"] if k == "account" else state[k]
                 for k in (
                     "orders",
                     "account",
@@ -265,7 +279,6 @@ class PaperRunner:
             # One bounded latest-price checkpoint, never an additional tick history.
             price_hash = digest(state["market_prices"])
             important |= price_hash != getattr(self, "last_price_hash", None)
-            self.last_price_hash = price_hash
         sample = important or minute != self.last_minute or valid != self.last_valid
         financial_hash = digest(
             [snapshot["fills"], snapshot["settled"], self.session.config.get("funding_events", [])]
@@ -274,6 +287,8 @@ class PaperRunner:
         events = [e for signal in self.session.signals.values() for e in signal.get("events", [])]
         event_hash = digest(events)
         valuation = financial or minute != self.last_minute or valid != self.last_valid
+        state_body = encoded(state) if sample else None
+        state_checksum = hashlib.sha256(state_body.encode()).hexdigest() if sample else None
         with connect(self.results.path) as con:
             if events and event_hash != self.last_signal_events:
                 seq = con.execute(
@@ -293,7 +308,7 @@ class PaperRunner:
                 con.execute(
                     "INSERT INTO paper_state VALUES (?,?,?) ON CONFLICT(run_id) DO UPDATE "
                     "SET body=excluded.body,checksum=excluded.checksum",
-                    (self.run_id, encoded(state), digest(state)),
+                    (self.run_id, state_body, state_checksum),
                 )
             if self.session.approximate and valuation:
                 from nice_weather.trading.paper_execution import save_equity
@@ -303,7 +318,6 @@ class PaperRunner:
                 con.execute(
                     "INSERT OR IGNORE INTO paper_receipts VALUES (?,?)", (self.run_id, input_id)
                 )
-                self.seen.add(input_id)
             if valuation and self.session.now > 0:
                 sample_key = (
                     f"event:{self.session.now}"
@@ -327,6 +341,10 @@ class PaperRunner:
                 "WHERE run_id=?",
                 (encoded(snapshot), encoded(self.session.config), time.time(), self.run_id),
             )
+        if input_id:
+            self.seen.add(input_id)
+        if self.session.approximate:
+            self.last_price_hash = price_hash
         self.last_state_hash, self.last_minute, self.last_valid = state_hash, minute, valid
         self.last_financial_hash = financial_hash
         self.last_signal_events = event_hash
