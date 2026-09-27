@@ -1,4 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
+import { displaySamples, sampleAt } from "../src/ProbabilityChart";
+import { marketProbability, priceMinutes } from "../src/market-weather/data";
 
 async function setup(page:Page) {
   const now=Date.now()/1000;
@@ -90,10 +92,80 @@ test("unknown Paper request retains original ID across reload and retry",async({
 
 test("weather failure does not suppress market price history",async({page})=>{
   await setup(page);
+  await page.route("**/api/history?*",r=>{const q=new URL(r.request().url()).searchParams;const now=Date.now()/1000;
+    return r.fulfill({json:{...Object.fromEntries(q),points:[{seq:1,time:now-60,received_at:now-60,
+      probability:.45,probability_source:"kalshi_last_trade",bids:[],asks:[[.8,1]]}],next_before:null}});});
   await page.route("**/api/weather-history?*",r=>r.fulfill({status:503,json:{detail:"weather unavailable"}}));
   await page.goto("/?venue=kalshi&day=2026-09-19");
   await expect(page.getByRole("region",{name:"天气分析"})).toContainText("读取失败 (503)");
   await expect(page.getByRole("region",{name:"天气分析"})).toContainText("45.00%");
+  await expect(page.getByTestId("probability-line")).toHaveCount(1);
+});
+
+test("probability uses platform values and keeps source timing, extrema and gaps",()=>{
+  const quote={time:100,received_at:100,probability:.27,probability_received_at:180,bids:[],asks:[[.99,1]]};
+  expect(marketProbability(quote)).toBe(.27);
+  expect(marketProbability({...quote,probability:null})).toBeNull();
+  expect(marketProbability({...quote,probability:0})).toBe(0);
+  const minutes=priceMinutes({venue:"kalshi",day:"2026-09-19",start:120,end:400,as_of:400,
+    window_source:"contract",sources:{},missing_sources:[],cli:[]},[quote],"a");
+  expect(minutes[0].value).toBeNull();expect(minutes[1].value).toBe(27);
+  const samples=[.2,.8,.1,.3].map((value,i)=>({time:100+i,value,quote}));
+  expect(displaySamples(samples,0,1000000).map(p=>p.value)).toEqual([.2,.8,.1,.3]);
+  expect(sampleAt(samples,99)).toBeUndefined();expect(sampleAt(samples,704)).toBeUndefined();
+  expect(sampleAt([...samples,{time:104,value:null,quote}],105)?.value).toBeNull();
+});
+
+test("probability ranges retain bins and S1 signal legs stay scoped on the curve",async({page})=>{
+  await setup(page);const now=Date.parse("2026-09-19T19:00:00Z")/1000;let requests=0;
+  await page.route("**/api/markets?*",r=>r.fulfill({json:{venue:"kalshi",days:[{day:"2026-09-19",contracts:[0,1].map(i=>({
+    venue:"kalshi",local_day:"2026-09-19",yes_token_id:`kalshi:2026-09-19:${i}`,title:`档位${i}`,
+    no_token_id:`no${i}`,condition_id:`market${i}`,active:false,tick_size:"0.01",minimum_order_size:1,
+    close_time:"2026-09-19T19:00:00Z"}))}]}}));
+  await page.route("**/api/history?*",async r=>{
+    requests++;const q=new URL(r.request().url()).searchParams;const offset=q.get("token")!.endsWith(":1")?.2:0;
+    return r.fulfill({json:{...Object.fromEntries(q),points:[{seq:0,time:now-7230,received_at:now-7230,
+      probability:.3,probability_source:"kalshi_last_trade",bids:[],asks:[]}, ...[0,1,2].map(i=>({seq:i+1,time:now-120+i*60,
+      received_at:now-120+i*60,probability:.4+offset+i*.01,probability_source:"kalshi_last_trade",
+      probability_time:now-120+i*60,probability_received_at:now-120+i*60,bids:[],asks:[[.99,1]]}))],next_before:null}});
+  });
+  await page.route("**/api/account-events?*",r=>r.fulfill({json:{next:3,more:false,events:[{id:"early-s2",
+    time:now-7200,stage:"candidate",strategy:"S2",reason:"较早信号",venue:"kalshi",day:"2026-09-19",
+    token:"kalshi:2026-09-19:0"}, ...[0,1].map(i=>({
+    id:`s1-leg-${i}`,group_id:"s1-basket",time:now-30,stage:"candidate",strategy:"S1",probability:.95,
+    venue:"kalshi",day:"2026-09-19",token:`kalshi:2026-09-19:${i}`,quantity:1,
+  }))]}}));
+  await page.goto("/?venue=kalshi&day=2026-09-19");
+  const graph=page.getByRole("img",{name:"市场赔率与策略标记"});
+  await expect(page.getByTestId("probability-line")).toHaveCount(2);
+  await expect(page.locator(".probability-summary")).toContainText("42.0%");
+  await page.getByRole("button",{name:"1H",exact:true}).click();
+  await expect(graph).toHaveAttribute("data-start",String(now-3600));
+  await expect(graph).toHaveAttribute("data-end",String(now));
+  expect(requests).toBe(1);
+  await page.locator(".probability-marker").click();
+  await expect(page.locator(".probability-event")).toContainText("同期市场概率：41.0%");
+  await expect(graph).toHaveAttribute("data-range","1H");
+  await page.getByLabel("温度档位",{exact:true}).selectOption("kalshi:2026-09-19:1");
+  await expect(page.locator(".probability-summary")).toContainText("62.0%");
+  await expect(graph).toHaveAttribute("data-start",String(now-3600));
+  await expect(page.locator(".probability-marker")).toHaveCount(1);
+  await page.locator(".probability-marker").click();
+  await expect(page.locator(".probability-event")).toContainText("同期市场概率：61.0%");
+  await page.getByLabel("温度档位",{exact:true}).selectOption("kalshi:2026-09-19:0");
+  await expect(page.locator(".probability-summary")).toContainText("42.0%");
+  expect(requests).toBe(2);
+  await page.getByText("所选市场日信号与交易记录",{exact:true}).click();
+  await page.locator(".event-list button").filter({hasText:"较早信号"}).click();
+  await expect(graph).toHaveAttribute("data-range","ALL");
+  await expect(page.locator(".probability-event")).toContainText("同期市场概率：30.0%");
+  await expect(graph).toHaveAttribute("data-start",String(now-7230));
+  await page.screenshot({path:test.info().outputPath("probability-signals-desktop.png"),fullPage:true});
+  await graph.focus();await graph.press("Home");
+  await expect(page.locator(".probability-summary")).toContainText("30.0%");
+  await page.setViewportSize({width:390,height:844});
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();
+  await page.screenshot({path:test.info().outputPath("probability-signals-mobile.png"),fullPage:true});
 });
 
 test("Paper limit price stays separate from native fills and survives refresh",async({page})=>{

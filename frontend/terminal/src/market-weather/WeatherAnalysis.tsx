@@ -2,24 +2,31 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ColorType, createChart, CrosshairMode, LineSeries, type IChartApi,
   type ISeriesApi, type Time } from "lightweight-charts";
 import { createBidirectionalSync, nonNullSegments, type RawPoint } from "../../../trading-chart/src/difference";
-import { analysis, names, nyTime, observationLine, midpoint, views,
+import { analysis, names, nyTime, observationLine, marketProbability, views,
   type Quote, type WeatherHistory } from "./data";
 import "./market-weather.css";
 
 type Line = { name: string; unit: string; points: RawPoint[]; color: string; axis: string };
 const colors = ["#28765c", "#8b5e00", "#734b98", "#216bb3", "#b14332", "#3730a3"];
-function draw(chart: IChartApi, lines: Line[]) {
+type Drawn = { api: ISeriesApi<"Line">; line: Line };
+function draw(chart: IChartApi, lines: Line[], existing: Map<string, Drawn>) {
   const drawn: { api: ISeriesApi<"Line">; line: Line }[] = [];
+  const retained = new Set<string>();
   for (const line of lines) {
-    for (const segment of nonNullSegments(line.points)) {
-      const api = chart.addSeries(LineSeries, { color: line.color, lineWidth: 2,
+    for (const [index, segment] of nonNullSegments(line.points).entries()) {
+      const key = `${line.name}/${index}`;
+      retained.add(key);
+      const old = existing.get(key);
+      const api = old?.api ?? chart.addSeries(LineSeries, { color: line.color, lineWidth: 2,
         priceScaleId: line.axis, lastValueVisible: false, priceLineVisible: false,
         pointMarkersVisible: segment.length === 1,
         priceFormat: { type: "custom", formatter: (v: number) => `${v.toFixed(2)} ${line.unit}` } });
-      api.setData(segment.map(p => ({ time: p.time as Time, value: p.value! })));
+      if (old?.line.points !== line.points) api.setData(segment.map(p => ({ time: p.time as Time, value: p.value! })));
+      existing.set(key, { api, line });
       drawn.push({ api, line });
     }
   }
+  for (const [key, item] of existing) if (!retained.has(key)) { chart.removeSeries(item.api); existing.delete(key); }
   return drawn;
 }
 
@@ -28,32 +35,35 @@ export function WeatherAnalysis({ data, quotes = [], token, loading = false, err
     loading?: boolean; error?: string; priceReason?: string | null }) {
   const main = useRef<HTMLDivElement>(null), changes = useRef<HTMLDivElement>(null);
   const charts = useRef<IChartApi[]>([]);
+  const series = useRef([new Map<string, Drawn>(), new Map<string, Drawn>()]);
   const rebuilding = useRef(false);
   const viewport = useRef<{ from: Time; to: Time } | null>(null);
   const [enabled, setEnabled] = useState(["metar", "hrrr", "price"]);
   const [forecast, setForecast] = useState("hrrr"), [view, setView] = useState(3);
   const [hover, setHover] = useState("移动十字线查看来源、时间和数值");
   const identity = data ? `${data.venue}/${data.day}` : "";
+  const weatherLines = useMemo(() => data ? Object.entries(data.sources).filter(([source]) => enabled.includes(source))
+      .map(([source, points]) => ({ name: names[source], unit: "°F", axis: "left",
+        color: colors[Object.keys(names).indexOf(source) % colors.length], points: observationLine(points, ["hrrr", "nws_forecast"].includes(source)) })) : [], [data, enabled]);
   const lines = useMemo(() => {
     if (!data) return [[], []] as Line[][];
-    const weather = Object.entries(data.sources).filter(([source]) => enabled.includes(source))
-      .map(([source, points], i) => ({ name: names[source], unit: "°F", axis: "left",
-        color: colors[i % colors.length], points: observationLine(points, ["hrrr", "nws_forecast"].includes(source)) }));
+    const weather = [...weatherLines];
     if (enabled.includes("price")) {
       const sorted = [...new Map(quotes.map(q => [Math.floor(q.time), q])).values()]
         .sort((a, b) => a.time - b.time);
       const points = sorted.flatMap((q, i): RawPoint[] => {
-        const p = { time: Math.floor(q.time), value: midpoint(q), source: "平台公开盘口中间价",
+        const probability = marketProbability(q);
+        const p = { time: Math.floor(q.time), value: probability == null ? null : probability * 100, source: "平台市场概率",
           received_at: new Date(q.received_at * 1000).toISOString(), binId: token };
         return i && q.time - sorted[i - 1].time > 600
           ? [{ time: Math.floor(sorted[i - 1].time) + 600, value: null }, p] : [p];
       });
-      weather.push({ name: "所选 bin 中间价", unit: "%", axis: "right", color: "#3730a3", points });
+      weather.push({ name: "所选 bin 市场概率", unit: "%", axis: "right", color: "#3864ef", points });
     }
     const diff = analysis(data, quotes, token, forecast, view).map((line, i) => ({ ...line,
       axis: line.unit === "°F" ? "left" : "right", color: colors[i + 3] }));
     return [weather, diff];
-  }, [data, quotes, token, enabled, forecast, view]);
+  }, [data, quotes, token, enabled, forecast, view, weatherLines]);
 
   useEffect(() => {
     const create = (node: HTMLDivElement) => createChart(node, { autoSize: true,
@@ -65,6 +75,7 @@ export function WeatherAnalysis({ data, quotes = [], token, loading = false, err
       localization: { timeFormatter: (t: Time) => nyTime(Number(t)) } });
     const first = create(main.current!), second = create(changes.current!);
     charts.current = [first, second];
+    series.current = [new Map(), new Map()];
     viewport.current = null;
     if (data) for (const chart of charts.current) {
       const basis = chart.addSeries(LineSeries, { color: "transparent", priceScaleId: "basis",
@@ -88,7 +99,7 @@ export function WeatherAnalysis({ data, quotes = [], token, loading = false, err
     if (!data || charts.current.length !== 2) return;
     const saved = viewport.current;
     rebuilding.current = true;
-    const drawn = charts.current.map((chart, i) => draw(chart, lines[i]));
+    const drawn = charts.current.map((chart, i) => draw(chart, lines[i], series.current[i]));
     let syncing = false;
     const handlers = charts.current.map((chart, i) => {
       const callback: Parameters<IChartApi["subscribeCrosshairMove"]>[0] = event => {
@@ -118,7 +129,6 @@ export function WeatherAnalysis({ data, quotes = [], token, loading = false, err
     rebuilding.current = false;
     return () => { rebuilding.current = true; charts.current.forEach((chart, i) => {
       chart.unsubscribeCrosshairMove(handlers[i]);
-      for (const item of drawn[i]) chart.removeSeries(item.api);
     }); };
   }, [lines, identity]);
 
@@ -128,9 +138,9 @@ export function WeatherAnalysis({ data, quotes = [], token, loading = false, err
     <h2>KNYC 天气与行情{data ? ` · ${data.venue} · ${data.day}` : ""}</h2>
     {loading && <p role="status">读取所选市场数据…</p>}
     {error && <p role="alert">{error}</p>}
-    <p>最近有效中间价：{quotes.length && midpoint(quotes.at(-1)!) != null
-      ? `${midpoint(quotes.at(-1)!)!.toFixed(2)}% · 收到 ${nyTime(quotes.at(-1)!.received_at)}`
-      : "缺失"}（市场报价，仅用于展示）</p>
+    <p>平台市场概率：{quotes.length && marketProbability(quotes.at(-1)!) != null
+      ? `${(marketProbability(quotes.at(-1)!)! * 100).toFixed(2)}% · 收到 ${nyTime(quotes.at(-1)!.probability_received_at ?? quotes.at(-1)!.received_at)}`
+      : "缺失"}（平台数据，仅用于展示）</p>
     {quotes.length > 0 && <p>Bid：{quotes.at(-1)!.bids[0]?.[0] == null ? "缺失"
       : `${(quotes.at(-1)!.bids[0][0] * 100).toFixed(2)}%`} · Ask：{quotes.at(-1)!.asks[0]?.[0] == null
       ? "缺失" : `${(quotes.at(-1)!.asks[0][0] * 100).toFixed(2)}%`} ·
@@ -138,12 +148,12 @@ export function WeatherAnalysis({ data, quotes = [], token, loading = false, err
     <div className="mw-controls">{[...Object.keys(names), "price"].map(source => <label key={source}>
       <input type="checkbox" checked={enabled.includes(source)} onChange={e => setEnabled(old =>
         e.target.checked ? [...old, source] : old.filter(s => s !== source))} />
-      {names[source] ?? "bin 价格"}</label>)}
+      {names[source] ?? "bin 概率"}</label>)}
       <button onClick={() => { if (data) charts.current[0]?.timeScale().setVisibleRange({
         from: data.start as Time, to: (data.end - 1) as Time }); }}>重置市场日视野</button>
       <button onClick={() => charts.current[0]?.timeScale().fitContent()}>全部已收集时间</button>
     </div>
-    <p>纽约当地时间 · 温度 °F · 价格 %。主图按观测/有效时刻显示已取得的最新版本；分钟分析仅使用当时已收到的数据。</p>
+    <p>纽约当地时间 · 温度 °F · 概率 %。主图按观测/有效时刻显示已取得的最新版本；分钟分析仅使用当时已收到的数据。</p>
     <div className="mw-chart" ref={main} aria-label="天气与价格交互图" />
     <div className="mw-controls">{lines[0].map(line => <span key={line.name} style={{ color: line.color }}>
       {line.name} · {line.unit}</span>)}</div>

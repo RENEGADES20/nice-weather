@@ -221,13 +221,18 @@ def preview(config, metadata, prices, snapshot, payload, now, owner="manual"):
             or token in snapshot.get("settled", {})
         ):
             raise ValueError("Market closed")
-        if side not in {"BUY", "SELL"} or payload.get("tif", "GTC") not in {"GTC", "IOC", "FOK"}:
+        order_type = payload.get("order_type", "LIMIT")
+        if not isinstance(order_type, str) or order_type not in {"LIMIT", "MARKET"}:
+            raise ValueError("Unsupported order type")
+        market = order_type == "MARKET"
+        tif = payload.get("tif", "IOC" if market else "GTC")
+        if side not in {"BUY", "SELL"} or tif not in {"GTC", "IOC", "FOK"}:
             raise ValueError("Unsupported side or time in force")
-        limit, quantity = (
-            decimal(payload["price"], "price"),
-            decimal(payload["quantity"], "quantity"),
-        )
-        if limit >= 1 or limit % Decimal(str(row["tick_size"])):
+        if market and (tif not in {"IOC", "FOK"} or "price" in payload):
+            raise ValueError("Market orders require IOC/FOK and no limit price")
+        quantity = decimal(payload["quantity"], "quantity")
+        limit = None if market else decimal(payload["price"], "price")
+        if limit is not None and (limit >= 1 or limit % Decimal(str(row["tick_size"]))):
             raise ValueError("Illegal price / tick precision")
         if quantity < Decimal(str(row["minimum_order_size"])) or quantity % Decimal(
             str(row.get("quantity_step", "0.000001"))
@@ -236,7 +241,10 @@ def preview(config, metadata, prices, snapshot, payload, now, owner="manual"):
         if payload.get("post_only"):
             raise ValueError("Approximate simulation does not model maker priority")
         selected = select(prices.get(token, {}), side, now, options, row["tick_size"])
-        crosses = (
+        # Market orders use the current execution quote, never a model probability.
+        if market:
+            limit = Decimal(str(selected["price"]))
+        crosses = market or (
             selected["price"] <= float(limit)
             if side == "BUY"
             else selected["price"] >= float(limit)
@@ -294,6 +302,8 @@ def preview(config, metadata, prices, snapshot, payload, now, owner="manual"):
                     raise ValueError("Strategy exposure limit")
         result.update(
             available=True,
+            order_type=order_type,
+            tif=tif,
             selected_price=selected,
             estimated_fee=float(estimate),
             fee_estimated=not row.get("fee_known"),

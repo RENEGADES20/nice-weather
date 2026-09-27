@@ -180,7 +180,8 @@ def test_price_evidence_fallback_and_future_identity_rejection():
         session.dispose()
 
 
-def test_api_preview_queue_account_and_equity(tmp_path):
+@pytest.mark.parametrize("order_type", ["LIMIT", "MARKET"])
+def test_api_preview_queue_account_and_equity(tmp_path, order_type):
     from fastapi.testclient import TestClient
     from paper_browser_app import seed
 
@@ -207,6 +208,9 @@ def test_api_preview_queue_account_and_equity(tmp_path):
             "tif": "IOC",
         },
     }
+    if order_type == "MARKET":
+        command["payload"].pop("price")
+        command["payload"]["order_type"] = order_type
     check = client.post("/api/paper/preview", json=command, headers=headers).json()
     assert check["available"] and check["estimated_fee"] == 0.12
     assert client.post("/api/commands", json=command, headers=headers).status_code == 202
@@ -216,6 +220,7 @@ def test_api_preview_queue_account_and_equity(tmp_path):
     assert client.post("/api/commands", json=command, headers=headers).status_code == 202
     paper(tmp_path, "kalshi", once=True)
     snapshot = client.get("/api/snapshot").json()["accounts"][0]["snapshot"]
+    assert snapshot["orders"][0]["order_type"] == order_type
     assert snapshot["cash"] == 87.88
     assert len(snapshot["fills"]) == 1
     command["payload"]["quantity"] = 31
@@ -364,3 +369,90 @@ def test_existing_paper_upgrade_keeps_native_fills_and_cash(tmp_path):
     assert len(after["fills"]) == 1
     assert after["fills"][0]["price"] == before["fills"][0]["price"]
     assert after["fills"][0]["execution"] is None
+
+
+@pytest.mark.parametrize("venue", ["kalshi", "poly_us"])
+@pytest.mark.parametrize("outcome", ["YES", "NO"])
+@pytest.mark.parametrize("tif", ["IOC", "FOK"])
+def test_market_native_roundtrip_and_recovery(venue, outcome, tif):
+    session = make_session(venue, simulation={"slippage_pp": 2})
+    recovered = None
+    token = "test-1" + (":NO" if outcome == "NO" else "")
+    payload = {"token": token, "side": "BUY", "quantity": 30, "order_type": "MARKET", "tif": tif}
+    try:
+        quote(session, token_id=token)
+        check = preview(session.config, session.metadata, session.market_prices,
+                        session.snapshot(), payload, session.now / 1e9)
+        assert check["available"] and check["order_type"] == "MARKET"
+        assert check["selected_price"]["price"] == 0.42
+        snapshot = session.apply({"kind": "order", "ts": session.now + 1,
+                                  "request_id": "market-buy", "data": payload})
+        assert not snapshot["rejections"]
+        submitted = snapshot["orders"][0]
+        assert (submitted["order_type"], submitted["tif"], submitted["price"]) == (
+            "MARKET", tif, None)
+        assert submitted["status"] == "FILLED"
+        fill = snapshot["fills"][0]
+        assert fill["token"] == token and fill["price"] == check["selected_price"]["price"]
+        assert fill["fee"] == check["estimated_fee"]
+        assert fill["execution"]["price_source"] == "ask"
+        assert snapshot["cash"] == pytest.approx(87.27)
+        assert snapshot["reserved"] == 0
+        recovered = restore(native_state(session))
+        again = recovered.apply({"kind": "order", "ts": recovered.now + 1,
+                                 "request_id": "market-buy", "data": payload})
+        assert again["orders"] == snapshot["orders"] and again["fills"] == snapshot["fills"]
+        quote(recovered, bid=0.6, ask=0.7, token_id=token)
+        sold = recovered.apply({"kind": "order", "ts": recovered.now + 1,
+                                "request_id": "market-sell", "data": payload | {"side": "SELL"}})
+        assert not sold["positions"] and len(sold["fills"]) == 2
+        assert sold["fills"][-1]["price"] == 0.58
+        assert sold["cash"] == pytest.approx(104.49)
+        assert sold["fees"] == pytest.approx(0.31)
+        conflict = recovered.apply({"kind": "order", "ts": recovered.now + 1,
+                                    "request_id": "market-buy",
+                                    "data": payload | {"quantity": 31}})
+        assert "different payload" in conflict["rejections"][-1]["reason"]
+        assert len(conflict["fills"]) == 2
+    finally:
+        session.dispose()
+        if recovered:
+            recovered.dispose()
+
+
+def test_market_validation_rechecks_quote_and_reserved_funds():
+    session = make_session()
+    payload = {"token": "test-1", "side": "BUY", "quantity": 200, "order_type": "MARKET"}
+
+    def check(values):
+        return preview(session.config, session.metadata, session.market_prices,
+                       session.snapshot(), values, session.now / 1e9)
+
+    def submit(request, values):
+        return session.apply({"kind": "order", "ts": session.now + 1,
+                              "request_id": request, "data": values})
+
+    try:
+        assert "NO_MARKET_PRICE" in check(payload)["reason"]
+        quote(session)
+        assert check(payload)["available"] and check(payload)["tif"] == "IOC"
+        for invalid in ({"tif": "GTC"}, {"price": 0.5}, {"order_type": "STOP"},
+                        {"order_type": []}, {"quantity": True}, {"quantity": -1}):
+            assert not check(payload | invalid)["available"]
+        assert "Naked sell" in check(payload | {"side": "SELL"})["reason"]
+        # The earlier affordable preview must not authorize execution after a price change.
+        quote(session, bid=0.5, ask=0.6)
+        snapshot = submit("more-expensive", payload)
+        assert "Insufficient cash" in snapshot["rejections"][-1]["reason"]
+        assert not snapshot["fills"]
+        quote(session)
+        order(session, "resting", quantity=400, price=0.2, tif="GTC")
+        snapshot = submit("reserved", payload | {"quantity": 50})
+        assert "Insufficient cash" in snapshot["rejections"][-1]["reason"]
+        assert not snapshot["fills"] and snapshot["reserved"] == pytest.approx(80.8)
+        # The approved approximation keeps a one-sided quote's actual provenance.
+        quote(session, bid=None, ask=0.4)
+        single_side = check(payload | {"quantity": 1})
+        assert single_side["available"] and single_side["selected_price"]["price_source"] == "ask"
+    finally:
+        session.dispose()

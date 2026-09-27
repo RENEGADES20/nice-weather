@@ -101,7 +101,9 @@ export function minuteChanges(points: RawPoint[], source: string,
     let value: number | null = null;
     if (current.value != null && before?.value != null) {
       if (source === 'forecast') value = current.revisionDelta ?? null;
-      else if (source !== 'price' || (["CLOB mid", "public_book_mid"].includes(current.priceSource ?? "")
+      else if (!["price", "probability"].includes(source) || ((source === "probability"
+        ? ["poly_us_display_price", "poly_us_last_trade", "kalshi_last_trade"]
+        : ["CLOB mid", "public_book_mid"]).includes(current.priceSource ?? "")
         && before.priceSource === current.priceSource && current.binId === before.binId))
         value = current.value - before.value;
     }

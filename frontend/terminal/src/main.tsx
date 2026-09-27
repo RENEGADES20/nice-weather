@@ -3,7 +3,8 @@ import { createRoot } from "react-dom/client";
 import { MarketSelector } from "./market-weather/MarketSelector";
 import { WeatherAnalysis } from "./market-weather/WeatherAnalysis";
 import { useMarketCatalog, useMarketWeather } from "./market-weather/useMarketWeather";
-import { type Selection, midpoint, todayNY } from "./market-weather/data";
+import { type Selection, todayNY } from "./market-weather/data";
+import { ProbabilityChart } from "./ProbabilityChart";
 import { PaperTicket, type PaperCommand, type Simulation } from "./PaperTicket";
 import { LiveAccountPanel, type LiveSnapshot } from "./LiveAccountPanel";
 import { LiveOrderTicket } from "./LiveOrderTicket";
@@ -29,6 +30,8 @@ type Contract = {
   tick_size: string;
   fee_rate: number;
   fee_known: boolean;
+  close_time?: string | null;
+  observation_end?: string | null;
 };
 type Book = {
   bids: number[][];
@@ -377,14 +380,9 @@ function App() {
   }, [session, paperAccount?.run_id]);
   const chartEvents = useMemo(() => events.key === eventKey ? events.rows.filter(e => e.token === token) : [], [events, eventKey, token]);
   const chartSelection = useMemo(() => ({venue: venue as Venue, day, token}), [venue, day, token]);
-  const prices = useMemo(() => {
-    const sorted = [...new Map(weather.quotes.map(q => [q.time, q])).values()].sort((a,b) => a.time-b.time);
-    return sorted.flatMap((q,i) => {
-      const value = midpoint(q);
-      const point = { time: q.time, value: value == null ? null : value/100 };
-      return i && q.time - sorted[i-1].time > 600 ? [{time: sorted[i-1].time+600, value:null}, point] : [point];
-    });
-  }, [weather.quotes]);
+  // All bins use the same end of the selected market, so switching bins retains the window.
+  const marketEnd = markets.map(c => Date.parse(c.close_time ?? c.observation_end ?? "") / 1000).filter(Number.isFinite);
+  const chartEnd = Math.min(now, marketEnd.length ? Math.max(...marketEnd) : now);
   const book = weather.quotes.at(-1);
   const blocked = commands.blocked || commands.pending || commands.saved.length > 0;
   const locate = (e: StrategyEvent) => {
@@ -539,11 +537,12 @@ function App() {
       {mode === "sandbox" && <div className="metrics">{[["现金",snapshot.cash],["可用资金",snapshot.available],["持仓估值",snapshot.market_value],["账户权益",snapshot.equity],["总收益",snapshot.total_pnl],["累计费用",snapshot.fees]].map(([label,value]) =>
         <div key={String(label)}><span>{label}</span><strong>{money(value as number)}</strong></div>)}</div>}
       <main className="workspace integrated">
-        <section className="market panel" id="market-chart"><div className="section-title"><h2>KNYC 每日最高温</h2><span>{day} · {contract?.title ?? "所选日期无合约"} · YES 赔率</span></div>
+        <section className="market panel" id="market-chart"><div className="section-title"><h2>KNYC 每日最高温</h2><span>{day} · {contract?.title ?? "所选日期无合约"} · YES 概率</span></div>
           <div className="bins">{markets.map(c => <button key={c.yes_token_id} aria-pressed={token === c.yes_token_id} className={token === c.yes_token_id ? "selected" : ""}
             onClick={() => setSelection({...selection, token:c.yes_token_id})}>{c.title}</button>)}</div>
-          <BacktestChart points={prices} label="市场赔率与策略标记" selectionKey={`${eventKey}/${token}`} selection={chartSelection} events={chartEvents} focus={focus} onLocate={locate}/>
-          <p className="notice">{weather.loading ? "行情历史加载中…" : weather.priceReason || (!prices.length ? "没有价格历史" : "")}{eventError}</p>
+          <ProbabilityChart quotes={weather.quotes} title={contract?.title ?? "未选择档位"} selection={chartSelection}
+            endTime={chartEnd} events={chartEvents} focus={focus} onLocate={locate} loading={weather.loading}/>
+          <p className="notice">{weather.priceReason}{eventError}</p>
         </section>
         <section className="orderbook panel"><div className="section-title"><h2>公开报价 · YES</h2><span>{clock(book?.received_at)}</span></div>
           <div className="book-head"><span>价格</span><span>份数</span></div>
@@ -557,7 +556,7 @@ function App() {
             snapshot.orders?.map(o => [o.order_id, o.status, o.filled]), snapshot.simulation])} simulation={snapshot.simulation ?? {estimated_fee_rate:.01,slippage_pp:0}}
           blocked={blocked} preview={preview} send={c => commands.send(c, commands.saved.some(s => s.request_id === c.request_id))} onAccountUpdate={refreshAccount}/>
           : <LiveOrderTicket key={`${venue}/${day}/${token}`} snapshot={liveSnapshot} market={contract?.condition_id ?? ""} pending={blocked} send={(kind,payload) => submit(kind,payload,"live")}/>}
-        <section className="weather-panel"><WeatherAnalysis data={weather.weather} quotes={weather.quotes} token={token} loading={weather.loading} error={weather.error} priceReason={weather.priceReason}/></section>
+        <section className="weather-panel"><WeatherAnalysis data={weather.weather} quotes={weather.quotes} token={token} loading={weather.weatherLoading} error={weather.error} priceReason={weather.priceReason}/></section>
         <section className="strategies panel"><div className="section-title"><h2>天气策略信号</h2>
           <button disabled={commands.blocked || !paperAccount || (!snapshot.strategy_enabled && blocked)} onClick={() => submit(snapshot.strategy_enabled ? "stop" : "start", {strategy_id:"S1_S2_S3"}, "sandbox")}>{snapshot.strategy_enabled ? "停止模拟策略" : "启动模拟三策略"}</button></div>
           <div className="strategy-grid">{[["S1","相邻两档"],["S2","新高跨档"],["S3","结束后单档"]].map(([id,name]) => {
@@ -578,7 +577,7 @@ function App() {
         {mode === "live" ? <div className="positions"><LiveAccountPanel key={venue} snapshot={liveSnapshot} pending={blocked} venue={venue} send={(kind,payload) => submit(kind,payload,"live")}/></div>
           : <section className="positions panel"><div className="section-title"><h2>模拟持仓与订单</h2><span>{paperAccount?.account ?? "账户尚未启动"} · {snapshot.settlement_status ?? "未记录结算状态"}</span></div>
             <div className="table-wrap"><table aria-label="模拟订单"><thead><tr><th>订单 / 请求 ID</th><th>合约</th><th>方向</th><th>已成交 / 委托数量</th><th>委托限价</th><th>状态 / 来源</th><th>操作</th></tr></thead><tbody>
-              {(snapshot.orders ?? []).map(o => <tr key={o.order_id}><td>{o.order_id}</td><td>{o.token}</td><td>{o.side}</td><td>{o.filled} / {o.quantity}</td><td>{price(o.price)}</td><td>{o.status} · {o.owner}</td><td><button disabled={commands.blocked || o.remaining <= 0} onClick={() => submit("cancel",{order_id:o.order_id},"sandbox")}>撤单</button></td></tr>)}
+              {(snapshot.orders ?? []).map(o => <tr key={o.order_id}><td>{o.order_id}</td><td>{o.token}</td><td>{o.side}</td><td>{o.filled} / {o.quantity}</td><td>{o.order_type === "MARKET" ? "市价" : price(o.price)}</td><td>{o.status} · {o.owner}</td><td><button disabled={commands.blocked || o.remaining <= 0} onClick={() => submit("cancel",{order_id:o.order_id},"sandbox")}>撤单</button></td></tr>)}
               {!snapshot.orders?.length && <tr><td colSpan={7}>尚无订单</td></tr>}
             </tbody></table></div><div className="position-grid">{(snapshot.positions ?? []).map(p => <div key={p.token}><b>{p.bin} · {p.outcome}</b><span>{p.quantity} 份</span><span>成本 {money(p.cost)}</span><span>浮盈亏 {money(p.unrealized_pnl)}</span></div>)}</div>
             <details open><summary>模拟成交明细（Nautilus 成交记录）</summary>

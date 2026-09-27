@@ -31,6 +31,7 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
   onAccountUpdate, blocked = false }: Props) {
   const [side, setSide] = useState("BUY"), [outcome, setOutcome] = useState("YES");
   const [quantity, setQuantity] = useState("1"), [limit, setLimit] = useState("");
+  const [orderType, setOrderType] = useState("LIMIT");
   const [tif, setTif] = useState("IOC"), [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState(""), [check, setCheck] = useState<Preview | null>(null);
   const [options, setOptions] = useState(simulation);
@@ -42,7 +43,11 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
   useLayoutEffect(() => { setLimit(""); setNotice(""); generation.current++; }, [identity, outcome]);
   useEffect(() => { setOptions(simulation); }, [simulation.estimated_fee_rate, simulation.slippage_pp]);
   const token = outcome === "YES" ? market?.yes_token_id : market?.no_token_id;
-  const selection = `${identity}/${outcome}/${side}/${quantity}/${limit}/${tif}/${accountRevision}`;
+  const marketOrder = orderType === "MARKET";
+  const venueName = market?.venue === "poly_us" ? "Poly US" : market?.venue === "kalshi" ? "Kalshi" : "";
+  const selection = `${identity}/${outcome}/${side}/${quantity}/${orderType}/${limit}/${tif}/${accountRevision}`;
+  const orderPayload = () => ({ token, side, quantity: Number(quantity), order_type: orderType, tif,
+    ...(marketOrder ? {} : { price: Number(limit) }) });
   const [checkedSelection, setCheckedSelection] = useState("");
   const [poll, setPoll] = useState(0);
   const command = (kind: string, payload: Record<string, unknown>): PaperCommand => ({
@@ -53,9 +58,10 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
     const current = ++generation.current;
     let refresh: ReturnType<typeof setTimeout> | undefined;
     if (checkedSelection !== selection) setCheck(null);
-    if (!market || !token || Number(quantity) <= 0 || Number(limit) <= 0) return;
+    if (!market || !token || !Number.isFinite(Number(quantity)) || Number(quantity) <= 0 ||
+      (!marketOrder && (!Number.isFinite(Number(limit)) || Number(limit) <= 0))) return;
     const timer = setTimeout(() => {
-      preview(command("order", { token, side, quantity: Number(quantity), price: Number(limit), tif }),
+      preview(command("order", orderPayload()),
         controller.signal).then(result => {
         if (current === generation.current) { setCheck(result); setCheckedSelection(selection); }
       }).catch(error => {
@@ -87,26 +93,31 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
     options.slippage_pp !== simulation.slippage_pp;
   return <section aria-label="模拟交易票据" className="ticket panel">
     <h2>模拟下单</h2>
-    <p>{market ? `${market.venue} · ${market.local_day} · ${market.label}` : "请选择合约"}</p>
-    <p>市场价格近似成交，不模拟盘口容量及排队。</p>
-    <form onSubmit={e => { e.preventDefault(); void execute("order", {
-      token, side, quantity: Number(quantity), price: Number(limit), tif,
-    }); }}>
+    <p>{market ? `${venueName} · ${market.local_day} · ${market.label}` : "请选择合约"}</p>
+    <p>市场价格近似成交，不模拟盘口容量及排队。缺少买卖报价时可能使用最近成交或报价，来源见预检。</p>
+    <form onSubmit={e => { e.preventDefault();
+      if (check?.available && checkedSelection === selection && !dirty)
+        void execute("order", orderPayload());
+    }}>
+      <label>订单类型<select aria-label="订单类型" value={orderType} onChange={e => {
+        setOrderType(e.target.value); setTif("IOC");
+      }}><option value="MARKET">市价</option><option value="LIMIT">限价</option></select></label>
       <label>方向<select aria-label="方向" value={side} onChange={e => setSide(e.target.value)}>
         <option value="BUY">买入</option><option value="SELL">卖出</option>
       </select></label>
       <label>合约<select aria-label="合约" value={outcome} onChange={e => setOutcome(e.target.value)}>
         <option>YES</option><option>NO</option>
       </select></label>
-      <label>数量<input aria-label="数量" type="number" value={quantity} required
+      <label>数量（份）<input aria-label="数量" type="number" value={quantity} required
         min={market?.minimum_order_size ?? .01} step={market?.quantity_step ?? .01}
         onChange={e => setQuantity(e.target.value)} /></label>
-      <label>限价（美元）<input aria-label="限价" type="number" value={limit} required disabled={!market}
+      {!marketOrder && <label>限价（美元）<input aria-label="限价" type="number" value={limit} required disabled={!market}
         min={market?.tick_size ?? .01} max={.999999} step={market?.tick_size ?? .01}
-        onChange={e => setLimit(e.target.value)} /></label>
+        onChange={e => setLimit(e.target.value)} /></label>}
+      {marketOrder && <p>按提交时的市场参考价模拟成交，价格包含已配置滑点；{venueName} 账户按实际模拟成交及费用扣款。</p>}
       <label>有效方式<select aria-label="有效方式" value={tif} onChange={e => setTif(e.target.value)}>
         <option value="IOC">IOC · 立即成交或取消</option>
-        <option value="GTC">GTC · 等待满足限价</option>
+        {!marketOrder && <option value="GTC">GTC · 等待满足限价</option>}
         <option value="FOK">FOK · 全部成交或取消</option>
       </select></label>
       {check?.selected_price && <p>参考成交价 ${check.selected_price.price.toFixed(4)} ·
@@ -130,7 +141,7 @@ export function PaperTicket({ market, accountRevision, simulation, send, preview
     </details>
     {unresolved && !busy && <button onClick={() =>
       void execute(unresolved.kind, unresolved.payload, unresolved)}>查询或重试原请求</button>}
-    <p role="status">{[notice, check?.reason || (!limit ? "请输入限价" : !check ? "正在读取下单条件…" :
+    <p role="status">{[notice, check?.reason || (!marketOrder && !limit ? "请输入限价" : !check ? "正在读取下单条件…" :
       "成交与资金以服务端订单回执为准")].filter(Boolean).join("；")}</p>
   </section>;
 }

@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from nice_weather.trading.feed import FeedStore
+from nice_weather.trading.feed import FeedStore, capture_book
 from nice_weather.trading.market_weather import (
     catalog,
     epoch,
@@ -26,7 +26,7 @@ from nice_weather.trading.market_weather import (
     weather_history,
 )
 from nice_weather.trading.storage import Requests, connect
-from nice_weather.trading.us_markets import VENUES, book_url, normalize_book
+from nice_weather.trading.us_markets import VENUES
 
 
 class Login(BaseModel):
@@ -233,12 +233,9 @@ def create_app(root: Path, *, password=None, origin=None):
                 return {"venue": venue, "day": day, "token": token, "quote": None,
                         "reason": "MARKET_CLOSED"}
             async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(book_url(contract))
-                received = time.time()
-                response.raise_for_status()
-                quote = normalize_book(venue, response.json(), received)
+                quote = await capture_book(client, feed, contract)
             return {"venue": venue, "day": day, "token": token,
-                    "quote": quote | {"time": received, "source": "public_book"},
+                    "quote": quote | {"source": "public_book"},
                     "reason": None}
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -257,9 +254,12 @@ def create_app(root: Path, *, password=None, origin=None):
                 return scoped_history(feed, venue, day, token, before)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
-        # History draws the midpoint only; preserve full depth in the capture store.
+        # Keep display probabilities and their provenance; full depth stays in the store.
         return [
             {"seq": row["seq"], "time": row["time"],
+             **{key: row.get(key) for key in ("received_at", "exchange_time", "probability",
+                 "probability_source", "probability_time", "probability_received_at",
+                 "probability_capture_id", "capture_id") if key in row},
              "bids": row.get("bids", [])[:1], "asks": row.get("asks", [])[:1]}
             for row in feed.history(token, before, limit=200)
         ]

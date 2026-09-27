@@ -524,7 +524,8 @@ class Session:
         if self.approximate:
             from nice_weather.trading.paper_execution import fee
 
-            limit = order.price.as_decimal()
+            limit = (order.price.as_decimal() if hasattr(order, "price") else
+                     Decimal(str(self.execution_evidence[str(order.client_order_id)]["price"])))
             reserve = max(fee(order.leaves_qty.as_decimal(), p, row,
                               self.config.get("simulation"), "BUY")
                           for p in (limit, min(limit, Decimal("0.5"))))
@@ -1062,11 +1063,15 @@ class Session:
             "fee_estimated": check["fee_estimated"], "simulation": dict(self.config["simulation"]),
             "signal_id": payload.get("signal_id"), "owner": owner,
         }
-        order = self.control.order_factory.limit(
+        factory = (self.control.order_factory.market if check["order_type"] == "MARKET"
+                   else self.control.order_factory.limit)
+        order = factory(
             instrument_id=ins.id, order_side=OrderSide[payload["side"]],
-            quantity=ins.make_qty(payload["quantity"]), price=ins.make_price(payload["price"]),
-            time_in_force=TimeInForce[payload.get("tif", "GTC")],
-            client_order_id=ClientOrderId(request_id), tags=[owner])
+            quantity=ins.make_qty(payload["quantity"]),
+            time_in_force=TimeInForce[check["tif"]],
+            client_order_id=ClientOrderId(request_id), tags=[owner],
+            **({} if check["order_type"] == "MARKET" else
+               {"price": ins.make_price(payload["price"])}))
         self.control.submit_order(order)
         self._run(CustomData(DataType(Input), Input({"kind": "clock", "ts": self.now})),
                   custom=True)
@@ -1147,6 +1152,8 @@ class Session:
                     "filled": float(order.filled_qty),
                     "remaining": float(order.leaves_qty),
                     "price": float(order.price) if hasattr(order, "price") else None,
+                    "order_type": order.order_type.name,
+                    "tif": order.time_in_force.name,
                     "owner": self.owner.get(order_id, "settlement"),
                     "venue_order_id": str(order.venue_order_id) if order.venue_order_id else None,
                 }
