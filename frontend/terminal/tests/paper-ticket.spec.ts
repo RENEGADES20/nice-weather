@@ -50,3 +50,59 @@ test("paper ticket ignores a previous platform preview and shows a concrete refu
   expect(requests).toHaveLength(2);
   expect(requests[0]).toBe(requests[1]);
 });
+
+for (const venue of ["kalshi", "poly_us"]) {
+  test(`${venue} Paper market order omits limit price and keeps outcome and side`, async ({ page }) => {
+    const contract = { venue, local_day: "2026-09-22", yes_token_id: `${venue}-sample`,
+      no_token_id: `${venue}-sample:NO`, label: "开发样例", tick_size: ".01",
+      quantity_step: ".01", minimum_order_size: .01 };
+    await page.route("**/api/login", route => route.fulfill({ json: { csrf: "test" } }));
+    await page.route("**/api/snapshot", route => route.fulfill({ json: { contracts: [contract],
+      accounts: [{ account: `sandbox-${venue}-knyc`, snapshot: {
+        account_revision: venue, cash: 100, equity: 100, fees: 0, total_pnl: 0,
+        simulation: { estimated_fee_rate: .01, slippage_pp: 0 },
+      } }],
+    } }));
+    const previews: any[] = [], submitted: any[] = [];
+    await page.route("**/api/paper/preview", route => {
+      previews.push(route.request().postDataJSON());
+      return route.fulfill({ json: { available: true, selected_price: { price: .4,
+        price_source: "ask", age_seconds: 10 }, estimated_fee: .01, expected_status: "FILLED" } });
+    });
+    await page.route("**/api/commands", route => {
+      submitted.push(route.request().postDataJSON());
+      return route.fulfill({ json: { status: "queued" } });
+    });
+    await page.route("**/api/requests/*", route => route.fulfill({ json: { status: "accepted" } }));
+    await page.goto("/tests/paper-ticket.html");
+    await page.getByLabel("平台", { exact: true }).selectOption(venue);
+    await page.getByLabel("限价", { exact: true }).fill(".5");
+    await page.getByLabel("有效方式", { exact: true }).selectOption("GTC");
+    await page.getByLabel("订单类型", { exact: true }).selectOption("MARKET");
+    await expect(page.getByLabel("限价", { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel("有效方式", { exact: true })).toHaveValue("IOC");
+    await expect(page.getByLabel("有效方式", { exact: true }).locator("option")).toHaveText([
+      "IOC · 立即成交或取消", "FOK · 全部成交或取消"]);
+    const buy = page.getByRole("button", { name: "模拟买入", exact: true });
+    await expect(buy).toBeEnabled();
+    expect(previews.at(-1).payload).toEqual({ token: `${venue}-sample`, side: "BUY",
+      quantity: 1, order_type: "MARKET", tif: "IOC" });
+    await buy.click();
+    await expect.poll(() => submitted.length).toBe(1);
+    expect(submitted[0].venue).toBe(venue);
+    expect(submitted[0].payload).toEqual(previews.at(-1).payload);
+    await expect(page.getByRole("status")).toContainText("已处理 order");
+    await page.getByLabel("方向", { exact: true }).selectOption("SELL");
+    await page.getByLabel("合约", { exact: true }).selectOption("NO");
+    await page.getByLabel("有效方式", { exact: true }).selectOption("FOK");
+    const sell = page.getByRole("button", { name: "模拟卖出", exact: true });
+    await expect(sell).toBeEnabled();
+    await sell.click();
+    await expect.poll(() => submitted.length).toBe(2);
+    expect(submitted[1].payload).toEqual({ token: `${venue}-sample:NO`, side: "SELL",
+      quantity: 1, order_type: "MARKET", tif: "FOK" });
+    await page.getByLabel("订单类型", { exact: true }).selectOption("LIMIT");
+    await expect(page.getByLabel("限价", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "模拟卖出", exact: true })).toBeDisabled();
+  });
+}

@@ -247,6 +247,39 @@ def final_value(contract, evidence, received):
     return value
 
 
+def probability_fields(value=None, source=None, source_time=None, received_at=None):
+    """Display-only venue probability, with distinct source and actual receipt times."""
+    missing = {"probability": None, "probability_source": None,
+               "probability_time": None, "probability_received_at": None}
+    try:
+        if isinstance(value, bool) or source_time is None or received_at is None:
+            return missing
+        value = float(value)
+        stamp = datetime.fromisoformat(source_time.replace("Z", "+00:00"))
+        if (not math.isfinite(value) or not 0 <= value <= 1 or stamp.tzinfo is None
+                or not 0 < stamp.timestamp() <= received_at):
+            return missing
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return missing
+    return {"probability": value, "probability_source": source,
+            "probability_time": stamp.timestamp(), "probability_received_at": received_at}
+
+
+def kalshi_trade_probability(payload, received_at, ticker):
+    trades = payload.get("trades") or []
+    if not trades:
+        return probability_fields()
+    trade = trades[0]
+    try:
+        quantity = float(trade.get("count_fp", 0))
+        if trade.get("ticker") != ticker or not math.isfinite(quantity) or quantity <= 0:
+            return probability_fields()
+    except (ValueError, TypeError):
+        return probability_fields()
+    return probability_fields(trade.get("yes_price_dollars"), "kalshi_last_trade",
+                              trade.get("created_time"), received_at)
+
+
 def normalize_book(venue, payload, received_at):
     def levels(rows):
         output = []
@@ -258,6 +291,7 @@ def normalize_book(venue, payload, received_at):
                 output.append([p, q])
         return output
 
+    probability = probability_fields()
     if venue == "kalshi":
         book = payload["orderbook_fp"]
         bids = levels(book.get("yes_dollars") or [])
@@ -268,6 +302,14 @@ def normalize_book(venue, payload, received_at):
         bids = levels([(r["px"]["value"], r["qty"]) for r in book.get("bids", [])])
         asks = levels([(r["px"]["value"], r["qty"]) for r in book.get("offers", [])])
         exchange_time = book.get("transactTime")
+        stats = book.get("stats") or {}
+        sample = stats.get("lastPriceSample") or {}
+        probability = probability_fields((sample.get("longPx") or {}).get("value"),
+                                         "poly_us_display_price", sample.get("ts"), received_at)
+        if probability["probability"] is None:
+            probability = probability_fields((stats.get("lastTradePx") or {}).get("value"),
+                                             "poly_us_last_trade", stats.get("lastTradeSetTime"),
+                                             received_at)
     if bids and asks and max(p for p, _ in bids) >= min(p for p, _ in asks):
         raise ValueError("Crossed or locked book")
     return {
@@ -276,4 +318,5 @@ def normalize_book(venue, payload, received_at):
         "received_at": received_at,
         "exchange_time": exchange_time,
         "complete": True,
+        **probability,
     }

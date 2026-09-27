@@ -141,3 +141,63 @@ def test_observation_reversion_keeps_later_receipt(tmp_path):
     points = weather_history(feed.path, "kalshi", day)["sources"]["metar"]
     assert [p["received_at"] for p in points] == [start + 60, start + 120, start + 180]
     assert [p["value"] for p in points] == pytest.approx([68, 69.8, 68])
+
+
+def test_weather_projection_backfills_repeated_snapshots_and_late_revisions(tmp_path):
+    import json
+
+    from nice_weather.trading.market_weather import prepare_weather_history
+
+    feed = FeedStore(tmp_path / "feed.sqlite3")
+    day = "2026-09-19"
+    c = contract("kalshi", day)
+    feed.publish("contracts", "kalshi", [c])
+    start = datetime(2026, 9, 19, 5, tzinfo=UTC).timestamp()
+
+    def observation(value, version):
+        return {"station": "KNYC", "data": [{"icaoId": "KNYC", "obsTime": start,
+                "temp": value, "revision_id": version, "first_received_at": start + 60}]}
+
+    # Simulate an old database with more than two migration pages, plus late knowledge.
+    with connect(feed.path) as con:
+        con.executemany("INSERT INTO feed_events VALUES (NULL,'weather','metar',?,?)", [
+            (start + 60 + i, json.dumps(observation(20, "a"))) for i in range(140)])
+    feed.publish("weather", "metar", observation(21, "b"), start + 2 * 86400)
+    feed.publish("weather", "metar", observation(20, "a"), start + 3 * 86400)
+    # Publishing while the legacy cursor is behind must not skip A -> B -> A.
+    prepare_weather_history(feed.path)
+    points = weather_history(feed.path, "kalshi", day)["sources"]["metar"]
+    assert [p["value"] for p in points] == pytest.approx([68, 69.8, 68])
+    assert [p["received_at"] for p in points] == [start + 60, start + 2 * 86400,
+                                                start + 3 * 86400]
+    with connect(feed.path) as con:
+        assert con.execute("SELECT COUNT(*) FROM weather_chart_points").fetchone()[0] == 3
+        # A warm query reads compact facts, never the original repetitive bodies.
+        con.execute("UPDATE feed_events SET body='not JSON' WHERE kind='weather'")
+    assert weather_history(feed.path, "kalshi", day)["sources"]["metar"] == points
+    # A new late correction is maintained in the same transaction as its source event.
+    feed.publish("weather", "metar", observation(22, "c"), start + 4 * 86400)
+    result = weather_history(feed.path, "kalshi", day)
+    assert result["sources"]["metar"][-1]["received_at"] == start + 4 * 86400
+    assert len(result["sources"]["metar"]) == 4
+    assert weather_history(feed.path, "kalshi", "2026-09-20")["sources"]["metar"] == []
+
+
+def test_weather_projection_keeps_pre_day_forecast_and_first_cli_receipt(tmp_path):
+    feed = FeedStore(tmp_path / "feed.sqlite3")
+    day = "2026-09-19"
+    feed.publish("contracts", "kalshi", [contract("kalshi", day)])
+    start = datetime(2026, 9, 19, 5, tzinfo=UTC).timestamp()
+    forecast = {"station": "KNYC", "cycle": start - 3600,
+                "points": [{"valid_at": start + 3600, "temperature_f": 72}]}
+    feed.publish("weather", "hrrr", forecast, start - 1800)
+    feed.publish("weather", "hrrr", forecast, start - 1200)
+    report = {"station": "KNYC", "issued_at": "2026-09-20T10:00:00Z",
+              "text": "THE CENTRAL PARK NY CLIMATE SUMMARY FOR SEPTEMBER 19 2026"}
+    feed.publish("weather", "cli", report, start + 2 * 86400)
+    feed.publish("weather", "cli", report, start + 3 * 86400)
+    result = weather_history(feed.path, "kalshi", day)
+    assert len(result["sources"]["hrrr"]) == 1
+    assert result["sources"]["hrrr"][0]["received_at"] == start - 1800
+    assert len(result["cli"]) == 1
+    assert result["cli"][0]["received_at"] == start + 2 * 86400

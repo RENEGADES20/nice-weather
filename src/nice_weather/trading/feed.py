@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import time
+import zlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from nice_weather.trading.us_markets import (
     VENUES,
     book_url,
     event_url,
+    kalshi_trade_probability,
     normalize,
     normalize_book,
 )
@@ -37,12 +39,30 @@ class FeedStore:
                     seq INTEGER PRIMARY KEY, kind TEXT NOT NULL, key TEXT NOT NULL,
                     received REAL NOT NULL, body TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS feed_history ON feed_events(kind,key,seq);
+                CREATE INDEX IF NOT EXISTS weather_event_seq ON feed_events(seq)
+                    WHERE kind='weather';
+                CREATE TABLE IF NOT EXISTS weather_chart_progress (
+                    id INTEGER PRIMARY KEY CHECK(id=1), seq INTEGER NOT NULL);
+                INSERT OR IGNORE INTO weather_chart_progress VALUES (1,0);
+                CREATE TABLE IF NOT EXISTS weather_chart_points (
+                    seq INTEGER NOT NULL, item INTEGER NOT NULL, source TEXT NOT NULL,
+                    object_time REAL NOT NULL, forecast_key TEXT UNIQUE, body TEXT NOT NULL,
+                    PRIMARY KEY(seq,item));
+                CREATE INDEX IF NOT EXISTS weather_chart_window
+                    ON weather_chart_points(object_time,seq,item);
+                CREATE INDEX IF NOT EXISTS weather_chart_observation
+                    ON weather_chart_points(source,object_time,seq DESC,item DESC);
+                CREATE TABLE IF NOT EXISTS weather_chart_cli (
+                    version TEXT PRIMARY KEY, day TEXT NOT NULL, seq INTEGER NOT NULL,
+                    body TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS weather_chart_cli_day ON weather_chart_cli(day,seq);
                 CREATE TABLE IF NOT EXISTS feed_latest (
                     kind TEXT NOT NULL, key TEXT NOT NULL, seq INTEGER NOT NULL,
                     received REAL NOT NULL, body TEXT NOT NULL, PRIMARY KEY(kind,key));
                 CREATE TABLE IF NOT EXISTS captures (
                     id INTEGER PRIMARY KEY, source TEXT NOT NULL, url TEXT NOT NULL,
                     requested REAL NOT NULL, received REAL NOT NULL, hash TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS capture_receipt ON captures(received);
                 CREATE TABLE IF NOT EXISTS observation_receipts (
                     station TEXT NOT NULL, observed REAL NOT NULL, received REAL NOT NULL,
                     PRIMARY KEY(station,observed));
@@ -93,6 +113,20 @@ class FeedStore:
                     "ON CONFLICT(venue,day) DO UPDATE SET contracts=excluded.contracts",
                     (key, body[0]["local_day"], text),
                 )
+            if kind == "weather":
+                # Only append after earlier captures have been projected in sequence.
+                # An existing database is backfilled separately in bounded transactions.
+                progress = con.execute(
+                    "SELECT seq FROM weather_chart_progress WHERE id=1").fetchone()[0]
+                previous = con.execute(
+                    "SELECT COALESCE(MAX(seq),0) FROM feed_events "
+                    "WHERE kind='weather' AND seq<?", (cursor.lastrowid,)).fetchone()[0]
+                if progress >= previous:
+                    from nice_weather.trading.market_weather import project_weather
+
+                    project_weather(con, cursor.lastrowid, key, body, received)
+                    con.execute("UPDATE weather_chart_progress SET seq=? WHERE id=1",
+                                (cursor.lastrowid,))
             return cursor.lastrowid
 
     def snapshot(self):
@@ -118,6 +152,37 @@ class FeedStore:
                 group = "books" if row["kind"] == "book" else row["kind"]
                 output[group][row["key"]] = body
         return output
+
+    def restore_probabilities(self, points, contract):
+        """Read old native fields only from the exact original response/receipt."""
+        if contract["venue"] != "poly_us" or not contract.get("condition_id"):
+            return points
+        missing = {p["time"]: p for p in points if p.get("capture_id") is None
+                   and p.get("probability") is None}
+        if not missing:
+            return points
+        placeholders = ",".join("?" for _ in missing)
+        with connect(self.path, readonly=True) as con:
+            captures = con.execute(
+                "SELECT c.id,c.received,b.body FROM captures c "
+                "JOIN capture_bodies b ON b.hash=c.hash "
+                f"WHERE c.received IN ({placeholders}) AND c.source=? AND c.url=? "
+                "AND length(b.body)>0 ORDER BY c.id",
+                (*missing, contract["venue"], book_url(contract)),
+            ).fetchall()
+        for capture in captures:
+            try:
+                payload = json.loads(gzip.decompress(capture["body"]))
+                if payload.get("marketData", {}).get("marketSlug") != contract["condition_id"]:
+                    continue
+                quote = normalize_book("poly_us", payload, capture["received"])
+            except (OSError, EOFError, ValueError, KeyError, TypeError, zlib.error):
+                continue
+            point = missing[capture["received"]]
+            point.update({key: value for key, value in quote.items()
+                          if key.startswith("probability")})
+            point.update(capture_id=capture["id"], probability_capture_id=capture["id"])
+        return points
 
     def observation_receipts(self, rows, received):
         """First knowledge is durable; repeated polling cannot renew a cross-bin event."""
@@ -175,9 +240,37 @@ async def capture_json(client, store, source, url):
     started = time.time()
     response = await client.get(url)
     received = time.time()
-    capture_id = store.capture(source, url, started, received, response.content)
+    capture_id = await asyncio.to_thread(
+        store.capture, source, url, started, received, response.content)
     response.raise_for_status()
     return response.json(), received, capture_id
+
+
+async def capture_book(client, store, contract):
+    """Capture executable book and venue chart value without deriving a midpoint."""
+    venue = contract["venue"]
+    requests = [capture_json(client, store, venue, book_url(contract))]
+    if venue == "kalshi":
+        # Display-only trades must not consume the book/API's full 10-second budget.
+        requests.append(asyncio.wait_for(capture_json(
+            client, store, venue + "-trades",
+            f'{KALSHI}/markets/trades?ticker={contract["condition_id"]}&limit=1'), timeout=1))
+    results = await asyncio.gather(*requests, return_exceptions=True)
+    if isinstance(results[0], BaseException):
+        raise results[0]
+    payload, received, capture_id = results[0]
+    book = normalize_book(venue, payload, received) | {"capture_id": capture_id, "time": received}
+    if venue == "poly_us":
+        book["probability_capture_id"] = capture_id
+    elif not isinstance(results[1], BaseException):
+        try:
+            trades, trade_received, trade_capture = results[1]
+            book.update(kalshi_trade_probability(trades, trade_received, contract["condition_id"]))
+            book.update(time=max(received, trade_received), probability_capture_id=trade_capture)
+        except (ValueError, KeyError, TypeError):
+            # A chart-data outage must not discard an independently received order book.
+            pass
+    return book
 
 
 async def settlement_feed(store, stop):
@@ -277,11 +370,8 @@ async def market_feed(store, venue, stop, interval=2):
                             refresh_directory(client, store, venue, current, series))
 
                 async def fetch_book(contract):
-                    payload, received, _ = await capture_json(
-                        client, store, venue, book_url(contract)
-                    )
-                    book = normalize_book(venue, payload, received)
-                    store.publish("book", contract["yes_token_id"], book, received)
+                    book = await capture_book(client, store, contract)
+                    store.publish("book", contract["yes_token_id"], book, book["time"])
 
                 results = await asyncio.gather(
                     *(fetch_book(c) for c in contracts), return_exceptions=True

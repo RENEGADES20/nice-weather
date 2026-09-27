@@ -17,8 +17,8 @@ test("minute changes compare the same valid time, preserve gaps and percentage p
   const data = weather(), start = data.start;
   data.as_of = start + 900;
   const lines = analysis(data, [
-    { time: start, received_at: start, bids: [[.39, 1]], asks: [[.41, 1]] },
-    { time: start + 60, received_at: start + 60, bids: [[.44, 1]], asks: [[.46, 1]] },
+    { time: start, received_at: start, probability: .4, probability_source: "kalshi_last_trade", bids: [[.39, 1]], asks: [[.41, 1]] },
+    { time: start + 60, received_at: start + 60, probability: .45, probability_source: "kalshi_last_trade", bids: [[.44, 1]], asks: [[.46, 1]] },
   ], "bin", "hrrr", 3);
   expect(lines[0].points[1].value).toBeCloseTo(5);
   expect(lines[1].points[1].value).toBe(2);
@@ -81,4 +81,78 @@ test("standalone components switch days, bins, sources and reject delayed respon
   await page.mouse.up();
   await page.getByRole("button", { name: "重置市场日视野" }).click();
   expect(errors).toEqual([]);
+});
+
+
+test("history merge keeps newer probability facts and deduplicates captures", async () => {
+  const { mergeQuotes } = await import("../src/market-weather/useMarketWeather");
+  const base = { received_at: 10, bids: [], asks: [], probability_source: "native_last_trade" };
+  const live = { ...base, time: 30, probability: .7, probability_received_at: 30 };
+  const history = { ...base, seq: 2, time: 20, probability: .4, probability_received_at: 20 };
+  expect(mergeQuotes([history, live], [history, { ...base, seq: 1, time: 10, probability: .2 }]))
+    .toEqual([{ ...base, seq: 1, time: 10, probability: .2 }, history, live]);
+});
+
+test("bin switches share an in-flight weather read and pages preserve live probability", async ({ page }) => {
+  const day = "2026-09-19", venue = "kalshi", start = weather().start;
+  const token = (i: number) => `${venue}:${day}:${i}`;
+  let releaseWeather!: () => void, releaseHistory!: () => void, releaseQuote!: () => void;
+  const weatherGate = new Promise<void>(resolve => { releaseWeather = resolve; });
+  const historyGate = new Promise<void>(resolve => { releaseHistory = resolve; });
+  const quoteGate = new Promise<void>(resolve => { releaseQuote = resolve; });
+  let weatherReads = 0, oldPages = 0, firstPages = 0, quotes = 0;
+  const point = (value: number, time: number, seq?: number) => ({ time, received_at: time,
+    bids: [], asks: [], probability: value, probability_source: "native_last_trade",
+    probability_time: time, probability_received_at: time, seq });
+  await page.route("**/api/markets?*", route => route.fulfill({ json: { venue, days: [{
+    day, has_prices: true, contracts: [0, 1].map(i => ({ venue, local_day: day,
+      yes_token_id: token(i), lower: i ? 70 : null, title: i ? "70–71°F" : "69°F 以下",
+      active: true, close_time: day + "T23:00:00Z" })) }] } }));
+  await page.route("**/api/weather-history?*", async route => {
+    weatherReads++;
+    expect(new URL(route.request().url()).searchParams.has("token")).toBe(false);
+    await weatherGate;
+    await route.fulfill({ json: weather(day, venue) }).catch(() => {});
+  });
+  await page.route("**/api/history?*", async route => {
+    const params = new URL(route.request().url()).searchParams;
+    const selection = { venue, day, token: params.get("token") };
+    if (selection.token === token(1)) {
+      await route.fulfill({ json: { ...selection, points: [point(.6, start + 90, 30)], next_before: null } });
+    } else if (params.has("before")) {
+      oldPages++;
+      await historyGate;
+      await route.fulfill({ json: { ...selection, points: [point(.2, start, 10)], next_before: null } });
+    } else {
+      firstPages++;
+      if (firstPages > 1) await weatherGate; // Returning to a bin must show its cached values now.
+      await route.fulfill({ json: { ...selection, points: [point(.3, start + 60, 20)], next_before: 20 } });
+    }
+  });
+  await page.route("**/api/market-quote?*", async route => {
+    const params = new URL(route.request().url()).searchParams;
+    const selected = params.get("token");
+    quotes++;
+    if (quotes > 1) await weatherGate; else await quoteGate;
+    await route.fulfill({ json: { venue, day, token: selected,
+      quote: point(selected === token(0) ? .7 : .6, start + 120), reason: null } }).catch(() => {});
+  });
+  await page.goto(`/market-weather.html?venue=${venue}&day=${day}&token=${token(0)}`);
+  await expect(page.getByText(/平台市场概率：30.00%/)).toBeVisible();
+  await expect.poll(() => oldPages).toBe(1);
+  expect(weatherReads).toBe(1);
+  releaseQuote();
+  await expect(page.getByText(/平台市场概率：70.00%/)).toBeVisible();
+  const older = page.waitForResponse(response => response.url().includes("before=20"));
+  releaseHistory(); await older;
+  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+  await expect(page.getByText(/平台市场概率：70.00%/)).toBeVisible();
+  await page.getByLabel("温度档位", { exact: true }).selectOption(token(1));
+  await expect(page.getByText(/平台市场概率：60.00%/)).toBeVisible();
+  await page.getByLabel("温度档位", { exact: true }).selectOption(token(0));
+  await expect(page.getByText(/平台市场概率：70.00%/)).toBeVisible();
+  expect(weatherReads).toBe(1);
+  releaseWeather();
+  await expect(page.getByRole("heading", { level: 2 })).toContainText(day);
+  expect(weatherReads).toBe(1);
 });

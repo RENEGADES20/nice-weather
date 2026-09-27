@@ -1,8 +1,8 @@
 """Apply a verified terminal release to the existing VM runtime; no version copies.
 
-Rollback uses an exact GitHub commit rebuilt by build_runtime_release.py. Business
-databases are never opened by this updater. Existing obsolete files are listed for
-approved cleanup, never deleted implicitly.
+Rollback uses an exact GitHub commit rebuilt by build_runtime_release.py. Weather
+projections are prepared in place as the service user before restart.
+Existing obsolete files are listed for approved cleanup, never deleted implicitly.
 """
 
 import argparse
@@ -16,7 +16,8 @@ from pathlib import Path, PurePosixPath
 
 def affected_services(changed):
     services = ["nice-weather-terminal.service"]
-    if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/storage.py"}
+    if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/storage.py",
+                    "src/nice_weather/trading/market_weather.py"}
            for name in changed):
         services += ["nice-weather-knyc-feed.service", "nice-weather-knyc-hrrr.service"]
     elif any(name in {"src/nice_weather/trading/knyc_model.py", "config/knyc-strategy-model.json",
@@ -24,7 +25,9 @@ def affected_services(changed):
                      "src/nice_weather/trading/market_discovery.py"}
              for name in changed):
         services += ["nice-weather-knyc-feed.service"]
-    if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/us_runtime.py",
+    if any(name in {"src/nice_weather/trading/feed.py",
+                    "src/nice_weather/trading/market_weather.py",
+                    "src/nice_weather/trading/us_runtime.py",
                     "src/nice_weather/trading/us_fees.py", "src/nice_weather/trading/us_markets.py",
                     "src/nice_weather/trading/engine.py", "src/nice_weather/trading/signals.py",
                     "src/nice_weather/trading/signals_v2.py",
@@ -46,6 +49,45 @@ def affected_services(changed):
                      "nice-weather-knyc-live@poly_us.service"]
     services = list(dict.fromkeys(services))
     return services
+
+
+WEATHER_PROJECTION = """
+import json
+import sys
+import time
+from pathlib import Path
+from nice_weather.trading import market_weather
+
+prepare = getattr(market_weather, "prepare_weather_history", None)
+if prepare is None:
+    print(json.dumps({"weather_projection": "skipped", "reason": "legacy runtime"}), flush=True)
+else:
+    from nice_weather.trading.feed import FeedStore
+    from nice_weather.trading.storage import connect
+
+    path = Path(sys.argv[1])
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    started = time.monotonic()
+    FeedStore(path)
+    prepare(path)
+    with connect(path, readonly=True) as con:
+        points = con.execute("SELECT COUNT(*) FROM weather_chart_points").fetchone()[0]
+        reports = con.execute("SELECT COUNT(*) FROM weather_chart_cli").fetchone()[0]
+        seq = con.execute("SELECT seq FROM weather_chart_progress WHERE id=1").fetchone()[0]
+    print(json.dumps({"weather_projection": "ready",
+                      "seconds": round(time.monotonic() - started, 3), "points": points,
+                      "cli_reports": reports, "through_seq": seq}), flush=True)
+"""
+
+
+def prepare_weather_projection(runtime, changed):
+    if any(name in {"src/nice_weather/trading/feed.py",
+                    "src/nice_weather/trading/market_weather.py"} for name in changed):
+        subprocess.run(["runuser", "-u", "nice-weather", "--", "env",
+                        "PYTHONPATH=" + str(runtime / "src"), "PYTHONUNBUFFERED=1",
+                        str(runtime / ".venv/bin/python"), "-c", WEATHER_PROJECTION,
+                        "/var/lib/nice-weather-knyc/feed.sqlite3"], cwd=runtime, check=True)
 
 
 def read_release(archive_path, expected_hash):
@@ -143,6 +185,9 @@ def main():
     if installed:
         subprocess.run(["systemctl", "stop", *installed], check=True)
     for name in changed + ["runtime-manifest.json"]:
+        if name == "runtime-manifest.json":
+            # Commit the manifest only after preparation succeeds, so failures can retry.
+            prepare_weather_projection(runtime, changed)
         target = runtime / name
         if not target.resolve().is_relative_to(runtime):
             raise ValueError("Target escapes runtime")
