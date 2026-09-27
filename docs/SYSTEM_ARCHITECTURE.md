@@ -71,6 +71,7 @@ Dashboard Lightweight Charts <- BroadcastChannel 数据泵 -----+
 
 - Collector 写 `poll_attempts` 和内容变化后的 `source_captures`；天气原文只在该表压缩保存，
   `raw_snapshots` 仅保留迁移前天气记录及市场兼容记录。各来源失败独立记录。
+- KNYC `FeedStore` 保留 Kalshi/Poly 来源、URL、请求/接收时间与内容哈希，不持久化市场响应 body；天气来源原文按既有 R2 回读校验流程清空。市场行情继续走现有规范化事件表。
 - Runner 只从 Repository 获取天气，所有 as-of 查询强制 `received_at <= decision_time`。
 - 阶段 A 使用 NWS 预报与 Weather.gov 官方已实现 Tmax 下界；高频观测只提供诊断和趋势特征。
 - CLOB 只对概率门槛候选、持仓和未完成 Paper order请求；生产只保存有限 `execution_quotes`。

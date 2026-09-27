@@ -270,6 +270,7 @@ def test_probability_history_warming_is_503_and_recovers_after_prepare(tmp_path)
     feed.capture("poly_us", f'https://gateway.polymarket.us/v1/markets/{c["condition_id"]}/book',
                  received - 1, received, json.dumps(native).encode())
     with connect(feed.path) as con:
+        assert con.execute("SELECT length(body) FROM capture_bodies").fetchone()[0] == 0
         con.execute("UPDATE probability_chart_progress SET capture_id=0")
     client = TestClient(app)
     client.post("/api/login", json={"password": "test"}, headers={"origin": "http://testserver"})
@@ -282,7 +283,7 @@ def test_probability_history_warming_is_503_and_recovers_after_prepare(tmp_path)
     prepare_probability_history(feed.path)
     ready = client.get("/api/history", params=params)
     assert ready.status_code == 200
-    assert ready.json()["points"][0]["probability"] == 0.2
+    assert ready.json()["points"][0]["probability"] is None
 
 
 def test_weather_backfill_retries_batch_when_another_writer_advances_cursor(tmp_path, monkeypatch):

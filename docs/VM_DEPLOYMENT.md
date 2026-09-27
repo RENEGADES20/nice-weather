@@ -84,6 +84,7 @@ R2 timer 仍暂缓，发布后恢复与核验尚未完成；后续发布前继�
 
 - 旧 KLGA：`nice-weather-r2-sync.service` 的 `verified-retention.conf` 设置 `R2_PRUNE_VERIFIED_RAW=true`，沿用 15 分钟 timer。首次积压允许长时间执行；失败保留未验证原文。
 - KNYC：`nice-weather-knyc-r2.timer` 在上次任务结束 15 分钟后调用 `nice_weather.trading.r2_retention --db /var/lib/nice-weather-knyc/feed.sqlite3 --prune`。使用同一服务器 R2 环境文件，原始对象位于 `knyc/v1/weather-raw/`。
+- KNYC 市场采集只保留来源、URL、请求/接收时间及哈希；Kalshi/Poly body 不写盘，也不进入天气 R2。存量市场 body 的一次性清理只清空原文字段并保留 `captures`、规范化行情与订单/账本记录。
 - 旧混合库退役：`scripts/archive_legacy_weather.py` 只归档天气表，逐对象回读校验后写远端 manifest；移除原库前再次核验文件大小/修改时间、占用、WAL 与远端 manifest。不能用上传台账代替真实回读。
 - 首次通过保留天气的副本压缩，设置 SQLite `auto_vacuum=INCREMENTAL`；以后清空原文字段后回收空闲页。逻辑字节清空和磁盘容量回收分别记录。
 - 旧 Poly Intl 市场、runner、sandbox、backtest 服务停用，保留 KNYC 服务及 KLGA 天气采集。回滚代码不能恢复清理前的旧数据库覆盖新记录。

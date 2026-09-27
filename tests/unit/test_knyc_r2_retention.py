@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from nice_weather.r2_archive import R2Config
+from nice_weather.trading.feed import FeedStore
 from nice_weather.trading.r2_retention import sync
 
 
@@ -27,7 +28,38 @@ class S3:
         return {"Body": io.BytesIO(b"corrupt" if self.corrupt else self.objects[kw["Key"]])}
 
 
-def test_verified_eviction_preserves_metadata_and_market_bytes(tmp_path):
+@pytest.mark.parametrize("source", [
+    "kalshi", "kalshi-trades", "kalshi_settlement", "poly_us", "poly_us_settlement",
+])
+def test_market_capture_keeps_metadata_without_raw_body(tmp_path, monkeypatch, source):
+    path = tmp_path / "feed.sqlite3"
+    monkeypatch.setattr(FeedStore, "require_space", lambda self: None)
+    store = FeedStore(path)
+    raw = source.encode()
+    capture_id = store.capture(source, "https://example.test/market", 1, 2, raw)
+    with sqlite3.connect(path) as con:
+        saved = con.execute("SELECT source,received,hash FROM captures WHERE id=?",
+                            (capture_id,)).fetchone()
+        assert saved == (source, 2, hashlib.sha256(raw).hexdigest())
+        assert con.execute("SELECT length(body) FROM capture_bodies WHERE hash=?",
+                           (saved[2],)).fetchone()[0] == 0
+
+
+def test_weather_capture_restores_a_shared_empty_body(tmp_path, monkeypatch):
+    path = tmp_path / "feed.sqlite3"
+    monkeypatch.setattr(FeedStore, "require_space", lambda self: None)
+    store = FeedStore(path)
+    raw = b"same bytes"
+    market_id = store.capture("kalshi", "https://example.test/market", 1, 2, raw)
+    weather_id = store.capture("metar", "https://example.test/weather", 3, 4, raw)
+    with sqlite3.connect(path) as con:
+        assert con.execute("SELECT count(*) FROM captures").fetchone()[0] == 2
+        assert con.execute("SELECT length(body)>0 FROM capture_bodies WHERE hash=?",
+                           (hashlib.sha256(raw).hexdigest(),)).fetchone()[0]
+        assert market_id != weather_id
+
+
+def test_weather_r2_eviction_preserves_metadata_and_does_not_archive_legacy_market_body(tmp_path):
     path = tmp_path / "feed.sqlite3"
     with sqlite3.connect(path) as con:
         con.executescript("""
@@ -35,6 +67,7 @@ def test_verified_eviction_preserves_metadata_and_market_bytes(tmp_path):
             CREATE TABLE captures(id INTEGER PRIMARY KEY,source TEXT,url TEXT,
                 requested REAL,received REAL,hash TEXT);
         """)
+        # Model a pre-policy market body; weather R2 must never receive it.
         for i, source in enumerate(("metar", "kalshi", "nws_observations")):
             body = source.encode()
             digest = hashlib.sha256(body).hexdigest()
