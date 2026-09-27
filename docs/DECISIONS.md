@@ -1,16 +1,26 @@
 # 决策记录
 
+## D-KNYC-R2-ENVIRONMENT-20260927：归档依赖环境与现役源码分别指定
+
+#92 已将 R2 归档代码与 unit 一同指向现役 runtime，但正式 oneshot 暴露该终端虚拟环境缺少 boto3，启动退出 1，未执行归档或 prune。VM 只读验证既有 `/opt/nice-weather/.venv/bin/python` 已具备 boto3，显式 `PYTHONPATH=/opt/nice-weather/knyc-current/src` 可使模块 `__file__` 指向当前发布源码。
+
+R2 unit 因此复用既有归档解释器和依赖环境，同时保留现役源码路径；不安装新依赖，也不回退到旧 `/opt/nice-weather/repo/src`。此条更新上一轮将 R2 解释器一同绑定终端 runtime 的选择，有界读取、来源过滤、远端 GET 验证及清空前并发引用复核保持。PR #93 已于 07:25:50 UTC 部署为 `bdda89139e19644bfd5be558084316e64b4a7972`，仅一个 unit 变化、Paper 未重启。07:11:43 失败属于旧周期；07:26:52 UTC 新周期已开始，当前仍 running、无新错误，正式归档成功仍待周期退出证明。
+
+## 2026-09-27 Paper 追补性能跟进（本地通过，准备 PR）
+
+实际八个 book 事件 profile 为 3.037 秒，apply 0.818 秒、内存提交 2.216 秒，其中重复 JSON 处理 1.757 秒。最小实现直接读取原生账户现金，以原生事件身份作为内部账户序列化缓存的失效依据；每个 checkpoint 只编码一次，持久化正文与 SHA 使用同一编码内容；回执和价格提交标记在事务提交成功后更新，失败时保留恢复/重试依据。继续逐事件 commit，原生持仓、订单、成交和账户历史保持，不跳过事件或清理账目。定向 54 项在 29.11 秒通过，覆盖 2,000 合成事件、原生总额相同的锁定变化、账户切换和事务失败恢复，Ruff 通过、两位审查者无阻塞。当前准备 PR，VM 尚未部署该优化，正式追齐、手工 Paper 与真实信号继续保留未完成。
+
 ## D-KNYC-ACCEPTANCE-FOLLOWUP-20260927：恢复持仓索引、原生到期生命周期与有限范围读取
 
 a51 正式验收发现 Poly US Paper 在已平仓历史恢复后的到期事件中遇到 FLAT 索引错误。Nautilus `cache.add_position` 将对象加入 open 索引，恢复完整历史后须调用公开 `cache.update_position` 使索引符合最终持仓状态。进一步回归确认仍有持仓的恢复场景缺少撮合器临时 trader/account 映射，因此仅修索引不足以完成真实到期结算。
 
 采用 Nautilus SimulationModule 在 `InstrumentClose(CONTRACT_EXPIRED)` 原生处理阶段处理实际 open 持仓：先撤销该合约挂单，以持仓已记录账户创建 reduce-only 原生到期 MarketOrder，经本地执行引擎的 Submitted→Accepted 事件完成账户绑定，再调用公开 matching `apply_fills`，使用已验证官方 payout 和实际持仓数量生成原生结算成交。原 InstrumentClose 随后标记到期。该阶段在原生时钟推进到实际接收事件后运行，保留 EXPIRATION 零费用规则、订单/成交/账户事件和再次恢复事实；不重放历史订单，不引入市场行情，不改私有 Cython 状态。官方证据、来源哈希、真实接收时间、结算精度及重复输入检查继续由既有门禁执行。
 
-上述改变修复模拟引擎恢复与官方结算生命周期，`market-price-v1` 的成交近似、费用和滑点口径保持。Kalshi 既有天气规则审计歧义继续 no-trade，本轮不扩大规则审核或放宽保护。双平台控制项和本地样本通过，与正式页面实际订单验收分别记录。
+上述改变修复模拟引擎恢复与官方结算生命周期，`market-price-v1` 的成交近似、费用和滑点口径保持。Kalshi 既有天气规则审计歧义继续 no-trade，本轮不扩大规则审核或放宽保护。双平台控制项和本地样本通过，与正式页面实际订单验收分别记录。07:28 UTC 正式多 bin/范围和单边盘口样本已验证原生概率展示：Bid 缺失时仍显示 `poly_us_display_price`；实际信号与 Paper 新订单仍未验收完成。
 
 历史查询改为每页 300 点，以既有 seq 游标渐进加载完整历史；天气与历史错误分别显示在其区域。R2 按固定采集上界分页读取元数据并按天气 hash 点取 body，导出限定天气来源，GET 验证后清空前复核并发市场引用。R2 unit 必须一同切到现役 runtime 源码及解释器，发布器保留 timer 原状态、只在主服务启动通过后恢复原 active timer；本次原已暂停的 timer 由交付负责人正式核验后恢复。失败重试仍须明确核对 timer 状态。
 
-当前生产仍为 a51，本节修正尚未部署。本地结算相关 71 项、R2 6 项、发布器 24 项及相关浏览器 14 项通过；完整发布检查与真实故障恢复验收另行补录，见 [本轮验收记录](acceptance/probability-paper-20260927.md)。
+本节修正已随 #92 部署为 `7d974d4d7fad759652e261e1132ee4458e41b398`，两平台 Paper 稳定运行，Poly US 仍在追补积压；R2 首个周期依赖环境失败见上节。本地结算相关 71 项、R2 6 项、发布器 24 项及相关浏览器 14 项通过，#92 七项 CI 通过；实际 Paper、R2 和信号验收继续，见 [本轮验收记录](acceptance/probability-paper-20260927.md)。
 
 ## D-KNYC-CHART-STARTUP-20260927：复用既有索引、分批投影与发布前预热
 

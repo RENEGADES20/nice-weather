@@ -821,7 +821,8 @@ class Session:
             {"filled": float(o.filled_qty), "status": o.status.name} if o is not None
             else {"status": "UNKNOWN"} for o in pending
         ])
-        snapshot = self.snapshot()
+        account = self.engine.cache.account_for_venue(self.venue)
+        cash = float(account.balance_total(self.currency)) if account else self.cash_start
         positions = self.engine.cache.positions_open()
         open_buys = [o for o in self.open_orders() if o.side == OrderSide.BUY]
         bins = {}
@@ -834,7 +835,7 @@ class Session:
             bins[c["yes_token_id"]] = max(0, self.config.get("max_bin_notional", 5) - exposure)
             day_exposure += exposure
         risk = {
-            "cash": max(0, snapshot["cash"] - sum(self.buy_reserve(o) for o in open_buys)),
+            "cash": max(0, cash - sum(self.buy_reserve(o) for o in open_buys)),
             "budget": self.config.get("strategy_budget", 5),
             "day_remaining": max(0, self.config.get("max_day_notional", 20) - day_exposure),
             "loss_remaining": max(0, self.config.get("max_day_notional", 20) - day_exposure),
