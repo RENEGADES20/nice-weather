@@ -1,7 +1,7 @@
 """Apply a verified terminal release to the existing VM runtime; no version copies.
 
 Rollback uses an exact GitHub commit rebuilt by build_runtime_release.py. Weather
-projections are prepared in place as the service user before restart.
+projections are prepared online from retained verified source, then caught up before restart.
 Existing obsolete files are listed for approved cleanup, never deleted implicitly.
 """
 
@@ -9,8 +9,10 @@ import argparse
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import tarfile
+import time
 from pathlib import Path, PurePosixPath
 
 
@@ -62,14 +64,25 @@ prepare = getattr(market_weather, "prepare_weather_history", None)
 if prepare is None:
     print(json.dumps({"weather_projection": "skipped", "reason": "legacy runtime"}), flush=True)
 else:
-    from nice_weather.trading.feed import FeedStore
+    import importlib
+    from nice_weather.trading import feed
     from nice_weather.trading.storage import connect
 
+    source = Path(sys.argv[2]).resolve()
+    for name in ("nice_weather", "nice_weather.trading", "nice_weather.trading.feed",
+                 "nice_weather.trading.market_weather", "nice_weather.trading.storage",
+                 "nice_weather.trading.us_markets"):
+        module = importlib.import_module(name)
+        if not Path(module.__file__).resolve().is_relative_to(source):
+            raise ValueError("Preparation imported a different release: " + name)
     path = Path(sys.argv[1])
     if not path.is_file():
         raise FileNotFoundError(path)
     started = time.monotonic()
-    FeedStore(path)
+    feed.FeedStore(path)
+    prepare_probability = getattr(feed, "prepare_probability_history", None)
+    if prepare_probability is not None:
+        prepare_probability(path)
     prepare(path)
     with connect(path, readonly=True) as con:
         points = con.execute("SELECT COUNT(*) FROM weather_chart_points").fetchone()[0]
@@ -81,13 +94,81 @@ else:
 """
 
 
-def prepare_weather_projection(runtime, changed):
-    if any(name in {"src/nice_weather/trading/feed.py",
-                    "src/nice_weather/trading/market_weather.py"} for name in changed):
+PROJECTION_MODULES = {"src/nice_weather/trading/feed.py",
+                      "src/nice_weather/trading/market_weather.py"}
+PREPARATION_FILES = ("src/nice_weather/__init__.py", "src/nice_weather/trading/__init__.py",
+                     "src/nice_weather/trading/feed.py",
+                     "src/nice_weather/trading/market_weather.py",
+                     "src/nice_weather/trading/storage.py",
+                     "src/nice_weather/trading/us_markets.py")
+
+
+def trusted_staging_path(path, *, directory=False):
+    info = path.lstat()
+    correct_type = stat.S_ISDIR(info.st_mode) if directory else stat.S_ISREG(info.st_mode)
+    readable = 0o005 if directory else 0o004
+    if (not correct_type or info.st_uid != 0 or info.st_mode & 0o022
+            or info.st_mode & readable != readable):
+        raise ValueError("Untrusted preparation path: " + str(path))
+
+
+def staging_directory(path):
+    if path.parent != path:
+        staging_directory(path.parent)
+    if not path.exists() and not path.is_symlink():
+        path.mkdir(mode=0o755)
+        path.chmod(0o755)  # Only newly created staging directories; ignore root umask.
+    trusted_staging_path(path, directory=True)
+
+
+def stage_preparation(manifest, content, archive_hash):
+    if len(archive_hash) != 64 or any(c not in "0123456789abcdef" for c in archive_hash):
+        raise ValueError("Invalid preparation archive hash")
+    root = Path("/opt/nice-weather-knyc-prepare") / archive_hash
+    staging_directory(root)
+    if any(name not in manifest["files"] or name not in content for name in PREPARATION_FILES):
+        raise ValueError("Release lacks preparation modules")
+    files = {name: content[name] for name in PREPARATION_FILES}
+    identity = {"commit": manifest["commit"], "archive_sha256": archive_hash,
+                "files": {name: manifest["files"][name] for name in PREPARATION_FILES}}
+    files["preparation-manifest.json"] = json.dumps(identity, sort_keys=True).encode()
+    directories = {parent.as_posix() for name in files for parent in PurePosixPath(name).parents
+                   if parent != PurePosixPath(".")}
+    # Reuse only this exact verified source set; stale or injected code fails closed.
+    for path in root.rglob("*"):
+        name = path.relative_to(root).as_posix()
+        if name not in files and name not in directories:
+            raise ValueError("Unexpected preparation file: " + name)
+        trusted_staging_path(path, directory=name in directories)
+    for name, body in files.items():
+        target = root / name
+        staging_directory(target.parent)
+        if target.exists() or target.is_symlink():
+            trusted_staging_path(target)
+            if target.read_bytes() != body:
+                raise ValueError("Preparation content differs: " + name)
+        else:
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            target.chmod(0o644)  # Publish only this newly created, complete source file.
+            trusted_staging_path(target)
+    return root
+
+
+def prepare_weather_projection(runtime, changed, *, source=None, phase="final", commit=None):
+    if PROJECTION_MODULES.intersection(changed):
+        source = source or runtime
+        print(json.dumps({"prepare": phase, "state": "started", "commit": commit,
+                          "source": str(source)}), flush=True)
         subprocess.run(["runuser", "-u", "nice-weather", "--", "env",
-                        "PYTHONPATH=" + str(runtime / "src"), "PYTHONUNBUFFERED=1",
-                        str(runtime / ".venv/bin/python"), "-c", WEATHER_PROJECTION,
-                        "/var/lib/nice-weather-knyc/feed.sqlite3"], cwd=runtime, check=True)
+                        "PYTHONPATH=" + str(source / "src"), "PYTHONUNBUFFERED=1",
+                        str(runtime / ".venv/bin/python"), "-B", "-c", WEATHER_PROJECTION,
+                        "/var/lib/nice-weather-knyc/feed.sqlite3", str(source / "src")],
+                       cwd=source, check=True)
+        print(json.dumps({"prepare": phase, "state": "completed", "commit": commit}), flush=True)
 
 
 def read_release(archive_path, expected_hash):
@@ -118,7 +199,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("archive", type=Path)
     parser.add_argument("archive_sha256")
-    parser.add_argument("--apply", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--prepare-only", action="store_true")
     args = parser.parse_args()
     manifest, content = read_release(args.archive, args.archive_sha256)
     runtime = Path("/opt/nice-weather/knyc-current").resolve(strict=True)
@@ -160,7 +243,7 @@ def main():
     print(json.dumps({"previous": old["commit"], "commit": manifest["commit"],
                       "changed": changed, "restart": services,
                       "obsolete_pending_review": obsolete}))
-    if not args.apply:
+    if not (args.apply or args.prepare_only):
         return
     if os.geteuid() != 0:
         raise PermissionError("Run with sudo")
@@ -173,6 +256,12 @@ def main():
             raise ValueError("Deployed base differs: " + name)
     py = str(runtime / ".venv/bin/python")
     subprocess.run([py, "-c", "import jwt, cryptography, nautilus_trader"], check=True)
+    if PROJECTION_MODULES.intersection(changed):
+        source = stage_preparation(manifest, content, args.archive_sha256)
+        prepare_weather_projection(runtime, changed, source=source, phase="online",
+                                   commit=manifest["commit"])
+    if args.prepare_only:
+        return
     live = [s for s in services if s.startswith("nice-weather-knyc-live@")]
     for service in live:
         venue = service.split("@", 1)[1].removesuffix(".service")
@@ -183,11 +272,15 @@ def main():
         ["systemctl", "cat", s], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
     ).returncode == 0]
     if installed:
+        started = time.monotonic()
+        print(json.dumps({"stop": "started", "services": installed}), flush=True)
         subprocess.run(["systemctl", "stop", *installed], check=True)
+        print(json.dumps({"stop": "completed", "seconds": round(time.monotonic() - started, 3)}),
+              flush=True)
     for name in changed + ["runtime-manifest.json"]:
         if name == "runtime-manifest.json":
             # Commit the manifest only after preparation succeeds, so failures can retry.
-            prepare_weather_projection(runtime, changed)
+            prepare_weather_projection(runtime, changed, commit=manifest["commit"])
         target = runtime / name
         if not target.resolve().is_relative_to(runtime):
             raise ValueError("Target escapes runtime")

@@ -19,6 +19,7 @@ from nice_weather.trading.storage import connect, encoded
 from nice_weather.trading.us_markets import (
     CLIMATE_ZONE,
     KALSHI,
+    POLY_US,
     VENUES,
     book_url,
     event_url,
@@ -39,8 +40,6 @@ class FeedStore:
                     seq INTEGER PRIMARY KEY, kind TEXT NOT NULL, key TEXT NOT NULL,
                     received REAL NOT NULL, body TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS feed_history ON feed_events(kind,key,seq);
-                CREATE INDEX IF NOT EXISTS weather_event_seq ON feed_events(seq)
-                    WHERE kind='weather';
                 CREATE TABLE IF NOT EXISTS weather_chart_progress (
                     id INTEGER PRIMARY KEY CHECK(id=1), seq INTEGER NOT NULL);
                 INSERT OR IGNORE INTO weather_chart_progress VALUES (1,0);
@@ -62,7 +61,13 @@ class FeedStore:
                 CREATE TABLE IF NOT EXISTS captures (
                     id INTEGER PRIMARY KEY, source TEXT NOT NULL, url TEXT NOT NULL,
                     requested REAL NOT NULL, received REAL NOT NULL, hash TEXT NOT NULL);
-                CREATE INDEX IF NOT EXISTS capture_receipt ON captures(received);
+                CREATE TABLE IF NOT EXISTS probability_capture_lookup (
+                    capture_id INTEGER PRIMARY KEY, received REAL NOT NULL);
+                CREATE INDEX IF NOT EXISTS probability_capture_receipt
+                    ON probability_capture_lookup(received);
+                CREATE TABLE IF NOT EXISTS probability_chart_progress (
+                    id INTEGER PRIMARY KEY CHECK(id=1), capture_id INTEGER NOT NULL);
+                INSERT OR IGNORE INTO probability_chart_progress VALUES (1,0);
                 CREATE TABLE IF NOT EXISTS observation_receipts (
                     station TEXT NOT NULL, observed REAL NOT NULL, received REAL NOT NULL,
                     PRIMARY KEY(station,observed));
@@ -92,7 +97,19 @@ class FeedStore:
                 "INSERT INTO captures VALUES (NULL,?,?,?,?,?)",
                 (source, url, requested, received, key),
             )
-            return cursor.lastrowid
+            capture_id = cursor.lastrowid
+            if (source == "poly_us" and url.startswith(POLY_US + "/markets/")
+                    and url.endswith("/book")):
+                con.execute("INSERT INTO probability_capture_lookup VALUES (?,?)",
+                            (capture_id, received))
+            progress = con.execute(
+                "SELECT capture_id FROM probability_chart_progress WHERE id=1").fetchone()[0]
+            previous = con.execute(
+                "SELECT COALESCE(MAX(id),0) FROM captures WHERE id<?", (capture_id,)).fetchone()[0]
+            if progress >= previous:
+                con.execute("UPDATE probability_chart_progress SET capture_id=? WHERE id=1",
+                            (capture_id,))
+            return capture_id
 
     def publish(self, kind, key, body, received=None):
         if kind != "health":
@@ -119,7 +136,7 @@ class FeedStore:
                 progress = con.execute(
                     "SELECT seq FROM weather_chart_progress WHERE id=1").fetchone()[0]
                 previous = con.execute(
-                    "SELECT COALESCE(MAX(seq),0) FROM feed_events "
+                    "SELECT COALESCE(MAX(seq),0) FROM feed_events INDEXED BY feed_history "
                     "WHERE kind='weather' AND seq<?", (cursor.lastrowid,)).fetchone()[0]
                 if progress >= previous:
                     from nice_weather.trading.market_weather import project_weather
@@ -163,12 +180,18 @@ class FeedStore:
             return points
         placeholders = ",".join("?" for _ in missing)
         with connect(self.path, readonly=True) as con:
+            con.execute("BEGIN")
+            progress = con.execute(
+                "SELECT capture_id FROM probability_chart_progress WHERE id=1").fetchone()[0]
+            latest = con.execute("SELECT COALESCE(MAX(id),0) FROM captures").fetchone()[0]
+            if progress < latest:
+                raise ValueError("PROBABILITY_HISTORY_WARMING")
             captures = con.execute(
-                "SELECT c.id,c.received,b.body FROM captures c "
-                "JOIN capture_bodies b ON b.hash=c.hash "
-                f"WHERE c.received IN ({placeholders}) AND c.source=? AND c.url=? "
-                "AND length(b.body)>0 ORDER BY c.id",
-                (*missing, contract["venue"], book_url(contract)),
+                "SELECT c.id,c.received,b.body FROM probability_capture_lookup l "
+                "JOIN captures c ON c.id=l.capture_id JOIN capture_bodies b ON b.hash=c.hash "
+                f"WHERE l.received IN ({placeholders}) AND c.url=? AND c.source=? "
+                "AND c.received=l.received AND length(b.body)>0 ORDER BY c.id",
+                (*missing, book_url(contract), contract["venue"]),
             ).fetchall()
         for capture in captures:
             try:
@@ -234,6 +257,36 @@ class FeedStore:
             {"seq": r["seq"], "time": r["received"], **json.loads(r["body"])}
             for r in reversed(rows)
         ]
+
+
+def prepare_probability_history(path):
+    """Prepare a fixed captured prefix; online writes are caught up again before cutover."""
+    with connect(path, readonly=True) as con:
+        upper = con.execute("SELECT COALESCE(MAX(id),0) FROM captures").fetchone()[0]
+    while True:
+        with connect(path, readonly=True) as con:
+            cursor = con.execute(
+                "SELECT capture_id FROM probability_chart_progress WHERE id=1").fetchone()[0]
+            if cursor >= upper:
+                return
+            rows = con.execute(
+                "SELECT id,source,url,received FROM captures "
+                "WHERE id>? AND id<=? ORDER BY id LIMIT 2000", (cursor, upper),
+            ).fetchall()
+        if not rows:
+            return
+        links = [(row["id"], row["received"]) for row in rows
+                 if row["source"] == "poly_us" and row["url"].startswith(POLY_US + "/markets/")
+                 and row["url"].endswith("/book")]
+        with connect(path) as con:
+            con.execute("BEGIN IMMEDIATE")
+            current = con.execute(
+                "SELECT capture_id FROM probability_chart_progress WHERE id=1").fetchone()[0]
+            if current != cursor:
+                continue
+            con.executemany("INSERT OR IGNORE INTO probability_capture_lookup VALUES (?,?)", links)
+            con.execute("UPDATE probability_chart_progress SET capture_id=? WHERE id=1",
+                        (rows[-1]["id"],))
 
 
 async def capture_json(client, store, source, url):

@@ -253,7 +253,8 @@ def create_app(root: Path, *, password=None, origin=None):
             try:
                 return scoped_history(feed, venue, day, token, before)
             except ValueError as exc:
-                raise HTTPException(400, str(exc)) from exc
+                status = 503 if str(exc) == "PROBABILITY_HISTORY_WARMING" else 400
+                raise HTTPException(status, str(exc)) from exc
         # Keep display probabilities and their provenance; full depth stays in the store.
         return [
             {"seq": row["seq"], "time": row["time"],
