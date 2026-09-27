@@ -72,7 +72,7 @@ test("a focused fill cannot crash an empty future market",async({page})=>{
   await page.route("**/api/market-quote?*",r=>r.fulfill({json:{quote:null,reason:"NO_MARKET_PRICE"}}));
   await page.goto("/?venue=poly_us&day=2026-09-22");
   await page.getByText("所选市场日信号与交易记录",{exact:true}).click();
-  await page.getByRole("button",{name:/manual · 成交/}).click();
+  await page.locator('[data-event-id="realistic-fill"]').click();
   await expect(page.getByRole("img",{name:"市场赔率与策略标记"})).toHaveAttribute("data-focus","realistic-fill");
   await page.getByLabel("已挂牌日期").selectOption("2026-09-23");
   await expect(page.getByLabel("市场日",{exact:true})).toHaveValue("2026-09-23");
@@ -149,6 +149,75 @@ test("adjacent dense groups without probability open their own original events",
       await expect(group.locator(".event-list button").first()).toHaveAttribute("data-event-id",`dense-group-${g}-event-0`);
     }
   } finally { release([]); }
+});
+
+test("high probability groups remain clickable across strategies and adjacent repeated stages",async({page})=>{
+  await setup(page);
+  const specs=[{strategy:"S1",stage:"trigger",count:31,column:0},
+    {strategy:"S1",stage:"rejection",count:37,column:0},{strategy:"S2",stage:"warning",count:41,column:0},
+    {strategy:"S3",stage:"trigger",count:43,column:0},{strategy:"S3",stage:"rejection",count:47,column:0},
+    {strategy:"S2",stage:"warning",count:53,column:1}];
+  let release!:(data:{events:any[];points:any[]})=>void;
+  let pending:Promise<{events:any[];points:any[]}>;
+  await page.route("**/api/history?*",async r=>r.fulfill({json:{
+    ...Object.fromEntries(new URL(r.request().url()).searchParams),points:(await pending).points,next_before:null}}));
+  await page.route("**/api/account-events?*",async r=>r.fulfill({json:{next:253,more:false,events:(await pending).events}}));
+  for(const viewport of [{width:1440,height:1100},{width:390,height:844}]) {
+    pending=new Promise(resolve=>{release=resolve;});
+    try {
+      await page.setViewportSize(viewport);
+      await page.goto("/?venue=poly_us&day=2026-09-22");
+      await expect(page.getByLabel("温度档位",{exact:true})).toHaveValue("poly_us:2026-09-22:0");
+      await page.getByRole("button",{name:"1H",exact:true}).click();
+      const graph=page.getByRole("img",{name:"市场赔率与策略标记"});
+      const layout=await graph.evaluate(node=>({start:Number(node.getAttribute("data-start")),
+        end:Number(node.getAttribute("data-end")),width:Number(node.getAttribute("viewBox")!.split(" ")[2])}));
+      const columns=Math.floor((layout.width-56)/24), first=Math.floor(columns/2);
+      const stamp=(column:number)=>layout.start+(layout.end-layout.start)*(first+column+.5)/columns;
+      const events=specs.flatMap((spec,g)=>Array.from({length:spec.count},(_,i)=>({
+        id:`high-group-${g}-event-${i}`,time:stamp(spec.column)+i/1000,stage:spec.stage,strategy:spec.strategy,
+        venue:"poly_us",day:"2026-09-22",token:"poly_us:2026-09-22:0"})));
+      events.push({id:"shared-missing-fill",time:stamp(0)+1,stage:"fill",strategy:"manual",
+        venue:"poly_us",day:"2026-09-22",token:"poly_us:2026-09-22:0"});
+      release({events,points:[{time:layout.start,probability:.99},{time:stamp(0),probability:.99},
+        {time:stamp(0)+1,probability:null},{time:stamp(1),probability:.99}].map((p,i)=>({
+          ...p,seq:i+1,received_at:p.time,bids:[],asks:[]}))});
+      await expect(page.locator(".probability-marker")).toHaveCount(7);
+      for(let g=0;g<specs.length;g++) {
+        const marker=page.locator(`.probability-marker[data-event-count="${specs[g].count}"]`);
+        const label=await marker.getAttribute("aria-label");
+        await page.getByRole("button",{name:label!,exact:true}).click({timeout:3000});
+        const group=page.getByRole("region",{name:"图表分组事件",exact:true});
+        await expect(group).toContainText(`共 ${specs[g].count} 条，匹配 ${specs[g].count} 条`);
+        await group.locator(`[data-event-id="high-group-${g}-event-0"]`).click();
+        await expect(graph).toHaveAttribute("data-focus",`high-group-${g}-event-0`);
+        await expect(page.locator(".probability-event")).toContainText("同期市场概率：99.0%");
+      }
+      const geometry=await graph.evaluate((node,times)=>{
+        const chart=node.closest(".probability-chart")!;
+        const grid=[...node.querySelectorAll(".probability-grid")];
+        const zero=Number(grid[0].getAttribute("y1")),one=Number(grid.at(-1)!.getAttribute("y1"));
+        const left=Number(grid[0].getAttribute("x1")),right=Number(grid[0].getAttribute("x2"));
+        const start=Number(node.getAttribute("data-start")),end=Number(node.getAttribute("data-end"));
+        return {anchors:[...node.querySelectorAll(".probability-marker-anchor")].map(anchor=>({
+          id:anchor.getAttribute("data-event-id"),
+          dx:Number(anchor.getAttribute("cx"))-(left+(times[anchor.getAttribute("data-event-id")!]-start)/(end-start)*(right-left)),
+          dy:Number(anchor.getAttribute("cy"))-(zero-.99*(zero-one))})),
+          guideErrors:[...chart.querySelectorAll(".probability-marker-guide")].map(guide=>{
+            const line=guide.getBoundingClientRect(),label=guide.nextElementSibling!.getBoundingClientRect();
+            return Math.abs(line.bottom-(label.top+label.height/2));
+          }),clearance:chart.querySelector(".probability-controls")!.getBoundingClientRect().top-
+            Math.max(...[...chart.querySelectorAll(".probability-marker")].map(marker=>marker.getBoundingClientRect().bottom))};
+      },Object.fromEntries(events.map(event=>[event.id,event.time])));
+      expect(geometry.anchors.length).toBeGreaterThan(0);
+      expect(geometry.anchors.every(anchor=>anchor.id!=="shared-missing-fill"&&Math.abs(anchor.dx)<.01&&Math.abs(anchor.dy)<.01)).toBe(true);
+      expect(geometry.guideErrors.every(error=>error<1)).toBe(true);
+      expect(geometry.clearance).toBeGreaterThan(0);
+      await page.locator(".probability-marker.is-fill").click({timeout:3000});
+      await expect(graph).toHaveAttribute("data-focus","shared-missing-fill");
+      await expect(page.locator(".probability-event")).toContainText("同期市场概率：—");
+    } finally { release({events:[],points:[]}); }
+  }
 });
 
 test("account event first page remains visible while later pages wait or fail",async({page})=>{
