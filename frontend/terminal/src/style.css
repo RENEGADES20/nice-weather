@@ -658,3 +658,10 @@ summary { cursor: pointer; }
 }
 @media (max-width: 900px) { .metrics { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 680px) { .metrics { grid-template-columns: repeat(2, 1fr); } }
+
+.event-navigation { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; padding-top: 10px; }
+.event-navigation label { display: inline-flex; align-items: center; gap: 5px; }
+.event-navigation input[type="number"] { width: 65px; }
+.event-record-id { display: block; color: #77818f; overflow-wrap: anywhere; }
+.probability-marker.is-focused { z-index: 3; box-shadow: 0 0 0 2px #3864ef; }
+.probability-group { margin-top: 12px; padding: 12px; background: #f6f8fc; border-radius: 6px; }

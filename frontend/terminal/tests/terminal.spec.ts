@@ -80,6 +80,146 @@ test("a focused fill cannot crash an empty future market",async({page})=>{
   expect(errors).toEqual([]);
 });
 
+test("account event first page remains visible while later pages wait or fail",async({page})=>{
+  await setup(page);const now=Date.now()/1000;
+  let release!:()=>void, pending=false;
+  const later=new Promise<void>(resolve=>{release=resolve;});
+  await page.route("**/api/account-events?*",async r=>{
+    const after=new URL(r.request().url()).searchParams.get("after");
+    if(after==="0")return r.fulfill({json:{next:1000,more:true,events:[
+      {id:"first-fill",time:now-20,stage:"fill",strategy:"manual",price:.5,quantity:1,
+        venue:"poly_us",day:"2026-09-22",token:"poly_us:2026-09-22:0"},
+      {id:"first-candidate",time:now-30,stage:"candidate",strategy:"S3",reason:"首页候选",
+        venue:"poly_us",day:"2026-09-22",token:"poly_us:2026-09-22:0"},
+    ]}});
+    pending=true;await later;
+    await r.fulfill({status:503,json:{detail:"later history unavailable"}}).catch(()=>{});
+  });
+  try {
+    await page.goto("/?venue=poly_us&day=2026-09-22");
+    await expect.poll(()=>pending).toBe(true);
+    const fill=page.locator(".probability-marker.is-fill");
+    const candidate=page.locator(".probability-marker").filter({hasText:"S3"});
+    await expect(fill).toBeVisible();await expect(candidate).toBeVisible();
+    await fill.click();
+    await expect(page.getByRole("img",{name:"市场赔率与策略标记"})).toHaveAttribute("data-focus","first-fill");
+    release();
+    await expect(page.locator("#market-chart")).toContainText("信号记录读取失败 (503)");
+    await expect(fill).toBeVisible();await expect(candidate).toBeVisible();
+  } finally { release(); }
+});
+
+test("a late account event page cannot replace the newly selected market",async({page})=>{
+  await setup(page);const now=Date.now()/1000;
+  let release!:()=>void, pending=false, finished=false;
+  const later=new Promise<void>(resolve=>{release=resolve;});
+  await page.route("**/api/account-events?*",async r=>{
+    const query=new URL(r.request().url()).searchParams, venue=query.get("venue")!;
+    if(venue==="poly_us" && query.get("after")==="1000") {
+      pending=true;await later;
+      await r.fulfill({json:{next:2000,more:false,events:[{id:"late-old-fill",time:now-10,
+        stage:"fill",strategy:"manual",venue,day:"2026-09-22",token:`${venue}:2026-09-22:0`}]}}).catch(()=>{});
+      finished=true;return;
+    }
+    return r.fulfill({json:{next:1000,more:venue==="poly_us",events:[{id:`${venue}-candidate`,
+      time:now-30,stage:"candidate",strategy:venue==="poly_us"?"S1":"S2",
+      venue,day:"2026-09-22",token:`${venue}:2026-09-22:0`}]}});
+  });
+  try {
+    await page.goto("/?venue=poly_us&day=2026-09-22");
+    await expect.poll(()=>pending).toBe(true);
+    await expect(page.locator(".probability-marker")).toHaveText(/S1/);
+    await page.getByLabel("平台",{exact:true}).selectOption("kalshi");
+    await expect(page.getByLabel("温度档位",{exact:true})).toHaveValue("kalshi:2026-09-22:0");
+    await expect(page.locator(".probability-marker")).toHaveText(/S2/);
+    release();await expect.poll(()=>finished).toBe(true);
+    await page.evaluate(()=>new Promise<void>(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve()))));
+    await expect(page.locator(".probability-marker")).toHaveCount(1);
+    await expect(page.locator(".probability-marker")).toHaveText(/S2/);
+    await expect(page.locator(".probability-marker.is-fill")).toHaveCount(0);
+  } finally { release(); }
+});
+
+test("large event history mounts only the open page and locates first and last originals",async({page})=>{
+  await setup(page);const now=Date.now()/1000;
+  const events=Array.from({length:10000},(_,i)=>({id:`history-event-${String(i).padStart(5,"0")}`,
+    time:now-20000+i,stage:i===0?"fill":"rejection",strategy:i===0?"manual":"S1",
+    venue:"poly_us",day:"2026-09-22",token:i===0||i===9999?"poly_us:2026-09-22:0":null,
+    price:.5,quantity:1,order_id:`order-${i}`}));
+  await page.route("**/api/account-events?*",r=>r.fulfill({json:{next:10000,more:false,events}}));
+  await page.goto("/?venue=poly_us&day=2026-09-22");
+  const summary=page.getByText("所选市场日信号与交易记录",{exact:true});
+  await expect(summary.locator("..")).toContainText("10000 条");
+  await expect(page.locator(".event-list button")).toHaveCount(0);
+  await expect(page.locator(".probability-marker")).toHaveCount(2);
+  await summary.click();
+  const history=page.getByRole("region",{name:"历史信号与交易记录",exact:true});
+  await expect(history.locator(".event-list button")).toHaveCount(50);
+  await history.locator('[data-event-id="history-event-00000"]').click();
+  const graph=page.getByRole("img",{name:"市场赔率与策略标记"});
+  await expect(graph).toHaveAttribute("data-focus","history-event-00000");
+  await history.getByLabel("事件页码",{exact:true}).fill("200");
+  await expect(history.locator(".event-list button")).toHaveCount(50);
+  await history.locator('[data-event-id="history-event-09999"]').click();
+  await expect(graph).toHaveAttribute("data-focus","history-event-09999");
+  await history.getByLabel("按事件或订单 ID 检索",{exact:true}).fill("order-0");
+  await expect(history.locator(".event-list button")).toHaveCount(1);
+  await history.locator('[data-event-id="history-event-00000"]').click();
+  await expect(graph).toHaveAttribute("data-focus","history-event-00000");
+  await summary.click();
+  await expect(page.locator(".event-list button")).toHaveCount(0);
+});
+
+test("dense marker groups keep original fills and both strategy legs accessible",async({page})=>{
+  await setup(page);const now=Date.now()/1000;
+  const common={venue:"poly_us",day:"2026-09-22",token:"poly_us:2026-09-22:0"};
+  const events=[...Array.from({length:10000},(_,i)=>({...common,id:`warning-${i}`,time:now-120+i/1000,
+    stage:"warning",strategy:"S2",reason:"天气证据"})),
+    ...Array.from({length:51},(_,i)=>({...common,id:`native-fill-${i}`,time:now-110+i/1000,
+      stage:"fill",strategy:"manual",price:.8,quantity:1})),
+    ...[0,1].map(i=>({...common,id:`basket-leg-${i}`,group_id:"basket-original",time:now-110,
+      token:`poly_us:2026-09-22:${i}`,stage:"candidate",strategy:"S1",probability:.95,quantity:1}))];
+  await page.route("**/api/account-events?*",r=>{
+    const q=new URL(r.request().url()).searchParams;
+    return r.fulfill({json:{next:10053,more:false,events:q.get("day")==="2026-09-22"?events:[]}});
+  });
+  await page.route("**/api/history?*",r=>{const q=new URL(r.request().url()).searchParams;
+    return r.fulfill({json:{...Object.fromEntries(q),points:[{seq:1,time:now-150,received_at:now-150,
+      probability:.42,probability_source:"poly_us",bids:[],asks:[]}],next_before:null}});});
+  await page.goto("/?venue=poly_us&day=2026-09-22");
+  const markers=page.locator(".probability-marker");
+  await expect(page.locator('.probability-marker[data-event-count="10000"]')).toBeVisible();
+  expect(await markers.count()).toBeLessThan(100);
+  expect(await markers.evaluateAll(nodes=>nodes.reduce((sum,node)=>sum+Number(node.getAttribute("data-event-count")),0))).toBe(10052);
+  await page.locator('.probability-marker.is-fill[data-event-count="51"]').click();
+  const group=page.getByRole("region",{name:"图表分组事件",exact:true});
+  await expect(group.locator(".event-list button")).toHaveCount(50);
+  await group.getByRole("button",{name:"下一页",exact:true}).click();
+  await expect(group.locator(".event-list button")).toHaveCount(1);
+  await group.locator('[data-event-id="native-fill-50"]').click();
+  const graph=page.getByRole("img",{name:"市场赔率与策略标记"});
+  await expect(graph).toHaveAttribute("data-focus","native-fill-50");
+  await expect(page.locator(".probability-event")).toContainText("同期市场概率：42.0%");
+  await expect(page.locator(".probability-event")).toContainText("价格 US$0.80");
+  await expect(page.locator(".probability-marker.is-focused")).toHaveCount(1);
+  await page.getByText("所选市场日信号与交易记录",{exact:true}).click();
+  const history=page.getByRole("region",{name:"历史信号与交易记录",exact:true});
+  await history.getByLabel("按事件或订单 ID 检索",{exact:true}).fill("basket-original");
+  await expect(history.locator(".event-list button")).toHaveCount(2);
+  await history.locator('[data-event-id="basket-leg-0"]').click();
+  await expect(graph).toHaveAttribute("data-focus","basket-leg-0");
+  await history.locator('[data-event-id="basket-leg-1"]').click();
+  await expect(page.getByLabel("温度档位",{exact:true})).toHaveValue("poly_us:2026-09-22:1");
+  await expect(graph).toHaveAttribute("data-focus","basket-leg-1");
+  await expect(page.locator(".probability-group")).toHaveCount(0);
+  await expect(markers).toHaveCount(1);
+  await page.getByLabel("已挂牌日期").selectOption("2026-09-23");
+  await expect(page.getByLabel("市场日",{exact:true})).toHaveValue("2026-09-23");
+  await expect(graph).toHaveAttribute("data-focus","");
+  await expect(page.locator(".event-list button")).toHaveCount(0);
+  await expect(markers).toHaveCount(0);
+});
+
 test("unknown Paper request retains original ID across reload and retry",async({page})=>{
   await setup(page);let visible=false;const bodies:any[]=[];
   await page.route("**/api/requests/*",r=>visible?r.fulfill({json:{account:"sandbox-kalshi-knyc",kind:"order",status:"accepted"}}):r.fulfill({status:404,json:{detail:"not found"}}));
@@ -106,8 +246,14 @@ test("weather failure does not suppress market price history",async({page})=>{
 test("history timeout stays by probability while weather remains available",async({page})=>{
   await setup(page);
   await page.addInitScript(()=>{
-    const timeout=AbortSignal.timeout.bind(AbortSignal);
-    AbortSignal.timeout=ms=>timeout(ms===10000?100:ms);
+    const fetch=window.fetch.bind(window);
+    window.fetch=(input,init)=>{
+      const url=new URL(input instanceof Request?input.url:String(input),location.href);
+      if(url.pathname!=="/api/history")return fetch(input,init);
+      const signals=[AbortSignal.timeout(100)];
+      if(init?.signal)signals.push(init.signal);
+      return fetch(input,{...init,signal:AbortSignal.any(signals)});
+    };
   });
   await page.route("**/api/history?*",async r=>{
     await new Promise(resolve=>setTimeout(resolve,300));
