@@ -144,7 +144,7 @@ def captured_database(tmp_path, records):
 
 
 @pytest.mark.parametrize("prune", [False, True])
-def test_sparse_weather_uses_metadata_pages_and_body_point_lookups(tmp_path, monkeypatch, prune):
+def test_sparse_weather_scans_body_pages_and_index_seeks_metadata(tmp_path, monkeypatch, prune):
     from nice_weather.trading import r2_retention
 
     selected = {2: ("metar", b"repeated weather"), 2002: ("metar", b"repeated weather"),
@@ -172,7 +172,7 @@ def test_sparse_weather_uses_metadata_pages_and_body_point_lookups(tmp_path, mon
     expected = {hashlib.sha256(raw).hexdigest() for raw in
                 (b"repeated weather", b"report", b"observation")}
     assert {record["hash"] for record in archived} == expected
-    assert len(client.uploads) == 3  # Repeated weather spans pages, including without pruning.
+    assert len(client.uploads) == 1  # One bounded page deduplicates repeated capture hashes.
     assert all(row["source"] != "kalshi" for record in archived for row in record["captures"])
     repeated = next(record for record in archived if len(record["captures"]) == 2)
     assert repeated["hash"] == hashlib.sha256(b"repeated weather").hexdigest()
@@ -183,12 +183,17 @@ def test_sparse_weather_uses_metadata_pages_and_body_point_lookups(tmp_path, mon
         assert pruned == (3 if prune else 0)
         assert con.execute("SELECT length(body)>0 FROM capture_bodies WHERE hash=?",
                            (hashlib.sha256(b"shared with market").hexdigest(),)).fetchone()[0] == 1
-        # Exercise the actual body queries: the large table must receive equality seeks only.
-        body_reads = [q for q in queries if q.startswith("SELECT") and "FROM capture_bodies b" in q]
+        # R2 pages stored bodies and looks up source metadata through captures_hash;
+        # it must not walk every capture row on each timer run.
+        body_reads = [q for q in queries
+                      if q.startswith("SELECT b.hash,b.body FROM capture_bodies b")]
         assert body_reads
         for query in body_reads:
             plan = [row[-1] for row in con.execute("EXPLAIN QUERY PLAN " + query)]
-            assert any("SEARCH b " in step and "(hash=?)" in step for step in plan)
+            assert any("SEARCH b" in step and "hash>?" in step and "hash<?" in step
+                       for step in plan)
+            assert sum("SEARCH c USING INDEX captures_hash" in step for step in plan) == 2
+        assert not any("FROM captures WHERE id>?" in query for query in queries)
     if prune:
         before = len(client.uploads)
         assert sync(path, client, config, prune=True) == 0
