@@ -237,10 +237,6 @@ def paper(root, venue, once=False):
 def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
            cash=100, simulation=None):
     """Replay original receipts, not final labels or reconstructed receipt times."""
-    from nice_weather.trading.backtest_view import ReplayView
-    from nice_weather.trading.engine import Session
-    from nice_weather.trading.storage import connect
-
     if venue not in VENUES or not 0 <= start < end <= time.time():
         raise ValueError("Invalid received-time replay interval")
     simulation = settings(simulation)
@@ -252,6 +248,20 @@ def replay(root, venue, start, end, strategy="S1_S2_S3", request_id=None, *,
             results.status(identifier, "failed", "Interrupted replay; create a new request")
             return results.run(run_id=identifier)
         return existing
+    with connect(root / "feed.sqlite3", readonly=True) as con:
+        has_retention = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='market_history_progress'").fetchone()
+        if has_retention:
+            boundary = con.execute(
+                "SELECT evicted_before FROM market_history_progress WHERE id=1"
+            ).fetchone()
+            if boundary and start < boundary[0]:
+                raise ValueError("Market receipt history was evicted; "
+                                 "as-received replay is unavailable for this interval")
+    from nice_weather.trading.backtest_view import ReplayView
+    from nice_weather.trading.engine import Session
+
     config = run_config("backtest-" + venue, "backtest", strategy, cash=cash) | {
         "venue": venue,
         "station_id": "KNYC",

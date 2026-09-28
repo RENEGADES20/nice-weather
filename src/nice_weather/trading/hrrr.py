@@ -41,7 +41,7 @@ def point(body, cycle, hour):
         eccodes.codes_release(handle)
 
 
-def collect(store, cycle):
+def collect(cycle):
     output = []
     with httpx.Client(timeout=30) as client:
         for hour in range(1, 19):
@@ -49,10 +49,7 @@ def collect(store, cycle):
                 f"https://noaa-hrrr-bdp-pds.s3.amazonaws.com/hrrr.{cycle:%Y%m%d}/conus/"
                 f"hrrr.t{cycle:%H}z.wrfsfcf{hour:02}.grib2"
             )
-            started = time.time()
             index = client.get(url + ".idx")
-            stamp = time.time()
-            capture = store.capture("hrrr_index", url + ".idx", started, stamp, index.content)
             index.raise_for_status()
             lines = index.text.splitlines()
             selected = [i for i, line in enumerate(lines) if ":TMP:2 m above ground:" in line]
@@ -87,7 +84,6 @@ def collect(store, cycle):
                     "url": url,
                     "byte_range": [start, end],
                     "sha256": hashlib.sha256(body).hexdigest(),
-                    "index_capture": capture,
                 }
             )
     return {
@@ -106,7 +102,7 @@ async def worker(store, stop):
         cycle = (datetime.now(UTC) - timedelta(hours=2)).replace(minute=0, second=0, microsecond=0)
         if cycle != last_cycle:
             try:
-                data = await asyncio.to_thread(collect, store, cycle)
+                data = await asyncio.to_thread(collect, cycle)
                 store.publish("weather", "hrrr", data, data["received_at"])
                 store.publish("health", "hrrr", {"status": "connected", "received_at": time.time()})
                 last_cycle = cycle

@@ -21,7 +21,7 @@ def affected_services(changed):
     if any(name in {"src/nice_weather/trading/feed.py", "src/nice_weather/trading/storage.py",
                     "src/nice_weather/trading/market_weather.py"}
            for name in changed):
-        services += ["nice-weather-knyc-feed.service", "nice-weather-knyc-hrrr.service"]
+        services += ["nice-weather-knyc-feed.service"]
     elif any(name in {"src/nice_weather/trading/knyc_model.py", "config/knyc-strategy-model.json",
                      "src/nice_weather/trading/us_markets.py",
                      "src/nice_weather/trading/market_discovery.py"}
@@ -213,7 +213,8 @@ def main():
     # Other changes need a separately reviewed service-impact plan.
     allowed = {"pyproject.toml", "README.md", "src/nice_weather/trading/api.py",
                "src/nice_weather/trading/access.py", "src/nice_weather/trading/feed.py",
-               "src/nice_weather/trading/us_runtime.py", "src/nice_weather/trading/engine.py",
+               "src/nice_weather/trading/us_runtime.py", "src/nice_weather/trading/hrrr.py",
+               "src/nice_weather/trading/engine.py",
                "src/nice_weather/trading/signals_v2.py", "src/nice_weather/trading/recovery.py",
                "src/nice_weather/trading/credentials.py", "src/nice_weather/trading/live_budget.py",
                "src/nice_weather/trading/us_transport.py", "src/nice_weather/trading/knyc_model.py",

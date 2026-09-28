@@ -1,5 +1,21 @@
 # 当前发布规则（2026-09-19）
 
+## 2026-09-28：人工清理完成后的发布安排
+
+用户已完成旧 KNYC feed 整库删除、新库及 Paper 游标重置，并接受根盘当前约 19.10 GB（63.5%）可用的结果。16:52 UTC KNYC feed、两 Paper、两 Live、终端与 R2 timer 已恢复 active，KLGA collector/R2 timer 继续 active；HRRR/backtest 待本轮保留策略和旧历史门禁发布后恢复。新库 feed 1,042 条，Paper 游标 1,034/1,039；不再以三分之二空间作为本轮发布前置条件。发布后验证 R2 天气正文 GET 回读后清空、市场原文为空、HRRR 不写索引/GRIB 原文、两 Paper 推进、超过 24 小时且已消费的市场/HRRR 事件回收、根盘容量趋势和两服务健康。若 Paper 停滞导致回收暂停，仍须按 1 GiB 空间保护处理故障；不能声称硬上限。
+
+## 2026-09-28：KNYC feed 人工整库重建与持续留存
+
+用户决定亲自删除 `/var/lib/nice-weather-knyc/feed.sqlite3`、`feed.sqlite3-wal`、`feed.sqlite3-shm`，要求根盘至少三分之二可用。此操作会丢失 KNYC 旧 feed 的天气解析、采集元数据、规范化行情和本地 R2 索引；保留 R2 对象、`results.sqlite3`、请求库、实盘账户/订单/成交和 KLGA。批量文件删除只能在列出这三个精确目标并由用户人工审核后执行。不能用整库删除代替天气 R2 核验。
+
+1. 停止 `nice-weather-terminal.service`、`nice-weather-knyc-r2.timer`/service、KNYC feed、backtest、两 Paper、两 Live；确认所有 KNYC 清理脚本已退出。执行 `sudo systemctl disable --now nice-weather-knyc-hrrr.service`。KLGA 的 `nice-weather-collector.service` 和 `nice-weather-r2-sync.timer` 保持 active。
+2. 用 `sudo systemctl reset-failed nice-weather-knyc-r2.service` 清除此前人为中止留下的 failed 状态，再运行 `sudo systemctl start nice-weather-knyc-r2.service`。要求 `systemctl show ... -p Result -p ExecMainStatus` 返回 `success` 和 `0`。归档器逐批上传天气正文，GET 回读比对原文字节及 SHA，核验成功才清空 VM 正文。只读查询所有天气来源的 `capture_bodies`，如仍有非空 body，停止整库删除并排查归档；不能仅凭 R2 中存在同名对象判断成功。
+3. 确认步骤 2 后由用户人工审核并删除上述三个精确文件。新库由 `nice-weather` 账户创建，在建表前设置 `PRAGMA auto_vacuum=INCREMENTAL` 并 `VACUUM`；创建 `market_history_progress(id,seq,evicted_before)`，以真实重建时间插入 `(1,0,time.time())`，再启动 KNYC feed 初始化其余表。新版本回测据此拒绝已清除时段。不要删除其他 SQLite 文件或 KLGA 文件。
+4. 在恢复两 Paper 前，将 `results.sqlite3` 中 `sandbox-kalshi-knyc`、`sandbox-poly_us-knyc` 的 `runs.config.feed_cursor` 和对应 `paper_state.body.config.feed_cursor` 同时设为 0，按 `json.dumps(...,sort_keys=True,separators=(",", ":"),allow_nan=False)` 对修改后的完整 state 重新计算 SHA-256，写入 `paper_state.checksum`。只修改这两个游标与校验值，保留其余账户、订单、成交和检查点内容。缺任一账户或检查点应回滚该事务并保持 Paper 停止；旧游标超过新库序号会导致 Paper 长期跳过新事件。
+5. 依次恢复 feed、两 Paper、两 Live、terminal、KNYC R2 timer；现役回测 worker 尚未包含历史删除门禁，待本轮 PR 部署后再启动，HRRR 不恢复。检查所有服务状态、R2 后续周期、新天气正文核验后清空、两个 Paper 游标推进、根盘 `df -B1 /`。30,083,776,512 字节根盘的验收线为至少 20,055,851,008 可用字节。发布器不再因 feed/storage 改动重启 HRRR；现役策略模型需要 HRRR 特征，停止采集后预测为 `unavailable`，保持 no-trade，不能替换成未经验证的数据。未来市场原文和无用截图不持久化，旧 `book`/`market_price` 事件在两 Paper 检查点越过后按 24 小时有界回收。
+
+逐步命令与校验门槛见 [KNYC feed 人工重建操作单](acceptance/knyc-feed-manual-reset-20260928.md)；具体删除、容量和恢复结果以 `CURRENT_STATE.md` 的最新实测为准。整库删除尚未由用户回报完成。
+
 ## 2026-09-27：#96 已发布，缺概率组点击通过
 
 PR #96 七项 CI 全部成功（run `36306678635`），已合并并部署为 `200c81ce586622803585dffb99f97accb91df79f`。apply 退出 0，stop 0.924 秒，仅 terminal 重启并 active，Paper 未重启。manifest 86 个文件核验一致，mismatches=[]；`/health` 返回 HTTP 200、耗时 0.006796 秒；两平台 Paper active/running、NRestarts=0。

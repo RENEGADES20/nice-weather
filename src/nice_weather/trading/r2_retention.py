@@ -107,6 +107,83 @@ def sync(path: Path, client, config: R2Config, *, prune=False):
     return count
 
 
+def prune_market_history(path: Path, results_path: Path, *, now=None, max_pages=64):
+    """Bound old quotes and transient HRRR after both Paper checkpoints."""
+    if not results_path.is_file():
+        return 0
+    accounts = ("sandbox-kalshi-knyc", "sandbox-poly_us-knyc")
+    with connect(results_path, readonly=True) as con:
+        rows = con.execute(
+            "SELECT account,config FROM runs WHERE account IN (?,?) AND mode='sandbox'",
+            accounts,
+        ).fetchall()
+    if {row["account"] for row in rows} != set(accounts):
+        return 0
+    try:
+        cursors = [json.loads(row["config"])["feed_cursor"] for row in rows]
+    except (TypeError, ValueError, KeyError):
+        return 0
+    if any(type(cursor) is not int or cursor < 1 for cursor in cursors):
+        return 0
+    cutoff = (time.time() if now is None else now) - 86400
+    with connect(path, readonly=True) as con:
+        # Keep the high-water row so SQLite cannot reuse its sequence number.
+        ceiling = min(min(cursors), con.execute(
+            "SELECT COALESCE(MAX(seq),0)-1 FROM feed_events").fetchone()[0])
+    if ceiling < 1:
+        return 0
+    with connect(path) as con:
+        con.execute("CREATE TABLE IF NOT EXISTS market_history_progress ("
+                    "id INTEGER PRIMARY KEY CHECK(id=1), seq INTEGER NOT NULL, "
+                    "evicted_before REAL NOT NULL)")
+        con.execute("INSERT OR IGNORE INTO market_history_progress VALUES (1,0,0)")
+    deleted = 0
+    for _ in range(max_pages):
+        with connect(path) as con:
+            progress = con.execute(
+                "SELECT seq FROM market_history_progress WHERE id=1").fetchone()[0]
+            page = con.execute(
+                "SELECT seq,received FROM feed_events WHERE seq>? AND seq<=? "
+                "ORDER BY seq LIMIT 1000", (progress, ceiling),
+            ).fetchall()
+            prefix = []
+            for row in page:
+                if row["received"] >= cutoff:
+                    break
+                prefix.append(row)
+            if not prefix:
+                break
+            end = prefix[-1]["seq"]
+            con.execute(
+                "DELETE FROM weather_chart_points WHERE source='hrrr' "
+                "AND seq>? AND seq<=?",
+                (progress, end),
+            )
+            changed = con.execute(
+                "DELETE FROM feed_events WHERE seq>? AND seq<=? "
+                "AND (kind IN ('book','market_price') OR "
+                "(kind='weather' AND key='hrrr')) AND received<?",
+                (progress, end, cutoff),
+            ).rowcount
+            deleted += changed
+            con.execute(
+                "UPDATE market_history_progress SET seq=?, "
+                "evicted_before=CASE WHEN ?>0 THEN MAX(evicted_before,?) "
+                "ELSE evicted_before END WHERE id=1", (end, changed, cutoff),
+            )
+        checkpoint = _checkpoint_wal(path)
+        if checkpoint["busy"] and checkpoint["wal_bytes"] > 128 * 1024**2:
+            break
+        if len(prefix) < len(page):
+            break
+    if deleted:
+        with connect(path) as con:
+            con.execute("PRAGMA incremental_vacuum(4096)").fetchall()
+        print(json.dumps({"transient_events_pruned": deleted,
+                          "wal_checkpoint": _checkpoint_wal(path)}), flush=True)
+    return deleted
+
+
 def main():
     import boto3
 
@@ -121,6 +198,8 @@ def main():
                           aws_access_key_id=config.access_key_id,
                           aws_secret_access_key=config.secret_access_key, region_name="auto")
     sync(args.db, client, config, prune=args.prune)
+    if args.prune:
+        prune_market_history(args.db, args.db.with_name("results.sqlite3"))
 
 
 if __name__ == "__main__":
