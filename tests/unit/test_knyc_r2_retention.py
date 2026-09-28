@@ -11,7 +11,8 @@ import pytest
 
 from nice_weather.r2_archive import R2Config
 from nice_weather.trading.feed import FeedStore
-from nice_weather.trading.r2_retention import sync
+from nice_weather.trading.r2_retention import prune_market_history, sync
+from nice_weather.trading.storage import Results
 
 
 class S3:
@@ -26,6 +27,67 @@ class S3:
 
     def get_object(self, **kw):
         return {"Body": io.BytesIO(b"corrupt" if self.corrupt else self.objects[kw["Key"]])}
+
+
+def test_market_history_waits_for_both_paper_cursors_and_keeps_weather_and_head(tmp_path):
+    feed_path = tmp_path / "feed.sqlite3"
+    results_path = tmp_path / "results.sqlite3"
+    FeedStore(feed_path)
+    results = Results(results_path)
+    for account in ("sandbox-kalshi-knyc", "sandbox-poly_us-knyc"):
+        results.create(account, account, "sandbox", {})
+    with sqlite3.connect(feed_path) as con:
+        con.executemany("INSERT INTO feed_events VALUES (?,?,?,?,?)", [
+            (1, "book", "old", 1000, "{}"),
+            (2, "weather", "metar", 1001, "{}"),
+            (3, "book", "recent", 99999, "{}"),
+            (4, "market_price", "backfill", 1002, "{}"),
+            (5, "book", "head", 1003, "{}"),
+        ])
+        con.execute("INSERT INTO feed_latest VALUES ('book','head',5,1003,'{}')")
+    with sqlite3.connect(results_path) as con:
+        con.execute("UPDATE runs SET config=? WHERE account='sandbox-kalshi-knyc'",
+                    (json.dumps({"feed_cursor": 5}),))
+        con.execute("UPDATE runs SET config=? WHERE account='sandbox-poly_us-knyc'",
+                    (json.dumps({"feed_cursor": 0}),))
+    assert prune_market_history(feed_path, results_path, now=100000) == 0
+    with sqlite3.connect(results_path) as con:
+        con.execute("UPDATE runs SET config=? WHERE account='sandbox-poly_us-knyc'",
+                    (json.dumps({"feed_cursor": 5}),))
+    assert prune_market_history(feed_path, results_path, now=100000) == 1
+    with sqlite3.connect(feed_path) as con:
+        retained = [r[0] for r in con.execute("SELECT seq FROM feed_events ORDER BY seq")]
+        assert retained == [2, 3, 4, 5]
+    assert prune_market_history(feed_path, results_path, now=200000) == 2
+    with sqlite3.connect(feed_path) as con:
+        assert [r[0] for r in con.execute("SELECT seq FROM feed_events ORDER BY seq")] == [2, 5]
+        assert con.execute("SELECT seq FROM feed_latest WHERE key='head'").fetchone()[0] == 5
+    from nice_weather.trading.us_runtime import replay
+
+    with pytest.raises(ValueError, match="history was evicted"):
+        replay(tmp_path, "kalshi", 1000, 2000)
+
+
+def test_hrrr_history_is_bounded_after_paper_consumption(tmp_path):
+    feed_path = tmp_path / "feed.sqlite3"
+    results_path = tmp_path / "results.sqlite3"
+    FeedStore(feed_path)
+    results = Results(results_path)
+    for account in ("sandbox-kalshi-knyc", "sandbox-poly_us-knyc"):
+        results.create(account, account, "sandbox", {"feed_cursor": 3})
+    with sqlite3.connect(feed_path) as con:
+        con.executemany("INSERT INTO feed_events VALUES (?,?,?,?,?)", [
+            (1, "weather", "hrrr", 1000, "{}"),
+            (2, "weather", "metar", 1001, "{}"),
+            (3, "health", "hrrr", 1002, "{}"),
+        ])
+        con.execute("INSERT INTO feed_latest VALUES ('weather','hrrr',1,1000,'{}')")
+        con.execute("INSERT INTO weather_chart_points VALUES (1,1,'hrrr',2000,'old','{}')")
+    assert prune_market_history(feed_path, results_path, now=100000) == 1
+    with sqlite3.connect(feed_path) as con:
+        assert [r[0] for r in con.execute("SELECT seq FROM feed_events ORDER BY seq")] == [2, 3]
+        assert con.execute("SELECT COUNT(*) FROM weather_chart_points").fetchone()[0] == 0
+        assert con.execute("SELECT seq FROM feed_latest WHERE key='hrrr'").fetchone()[0] == 1
 
 
 @pytest.mark.parametrize("source", [

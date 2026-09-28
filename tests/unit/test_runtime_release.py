@@ -24,7 +24,8 @@ def test_service_impact_preserves_legacy_processes():
         "nice-weather-terminal.service"
     ]
     services = UPDATER.affected_services(["src/nice_weather/trading/feed.py"])
-    assert len(services) == 6
+    assert len(services) == 5
+    assert "nice-weather-knyc-hrrr.service" not in services
     assert UPDATER.affected_services(["src/nice_weather/trading/market_weather.py"]) == services
     assert "nice-weather-knyc-paper@kalshi.service" in services
     assert "nice-weather-collector.service" not in services
@@ -103,7 +104,8 @@ def root_metadata(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("module,fail,prepare_only,timer_active", [
     ("feed", None, False, False), ("market_weather", None, False, False),
-    ("api", None, False, False), ("feed", "online", False, False),
+    ("api", None, False, False), ("hrrr", None, False, False),
+    ("feed", "online", False, False),
     ("feed", "final", False, False), ("feed", None, True, False),
     ("r2_retention", None, False, False), ("r2_retention", None, False, True),
     ("deploy/systemd/nice-weather-knyc-r2.service", None, False, True)])
