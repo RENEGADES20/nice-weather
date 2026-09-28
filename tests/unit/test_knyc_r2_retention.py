@@ -200,6 +200,53 @@ def test_sparse_weather_scans_body_pages_and_index_seeks_metadata(tmp_path, monk
         assert len(client.uploads) == before
 
 
+def test_wal_checkpoint_is_nonblocking_and_truncates_after_reader_closes(tmp_path):
+    from nice_weather.trading.r2_retention import _checkpoint_wal
+
+    path = tmp_path / "feed.sqlite3"
+    with sqlite3.connect(path) as con:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("CREATE TABLE values_(value INTEGER)")
+        con.execute("INSERT INTO values_ VALUES (1)")
+    reader = sqlite3.connect(path)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM values_").fetchone()
+    try:
+        with sqlite3.connect(path) as con:
+            con.execute("INSERT INTO values_ VALUES (2)")
+        pending = _checkpoint_wal(path)
+        assert pending["busy"] is True
+        assert pending["wal_bytes"] > 0
+    finally:
+        reader.close()
+    complete = _checkpoint_wal(path)
+    assert complete["busy"] is False
+    assert complete["wal_bytes"] == 0
+
+
+def test_prune_checkpoints_each_uploaded_body_page(tmp_path, monkeypatch):
+    from nice_weather.trading import r2_retention
+
+    path = captured_database(tmp_path, [
+        ("metar", f"weather {i}".encode()) for i in range(51)
+    ])
+    client = S3()
+    client.corrupt = False
+    config = R2Config("https://example.test", "weather", "test", "test")
+    checkpoints = []
+    checkpoint = r2_retention._checkpoint_wal
+
+    def traced(path):
+        result = checkpoint(path)
+        checkpoints.append(result)
+        return result
+
+    monkeypatch.setattr(r2_retention, "_checkpoint_wal", traced)
+    assert sync(path, client, config, prune=True) == 51
+    assert len(client.uploads) == 2
+    assert len(checkpoints) == 4  # setup, each uploaded page, and final vacuum
+
+
 @pytest.mark.parametrize("when", ["metadata", "upload"])
 def test_new_market_reference_never_exports_market_metadata_or_prunes(tmp_path, monkeypatch, when):
     from nice_weather.trading import r2_retention

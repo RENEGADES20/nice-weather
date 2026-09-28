@@ -7,11 +7,26 @@ import base64
 import gzip
 import hashlib
 import json
+import sqlite3
 import time
 from pathlib import Path
 
 from nice_weather.r2_archive import R2Config
 from nice_weather.trading.storage import WEATHER_SOURCES, connect
+
+
+def _checkpoint_wal(path: Path):
+    """Try to checkpoint and release the WAL without waiting on active readers."""
+    with sqlite3.connect(path, timeout=0) as con:
+        busy, log_frames, checkpointed_frames = con.execute(
+            "PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    wal = Path(str(path) + "-wal")
+    try:
+        wal_bytes = wal.stat().st_size
+    except FileNotFoundError:
+        wal_bytes = 0
+    return {"busy": bool(busy), "log_frames": log_frames,
+            "checkpointed_frames": checkpointed_frames, "wal_bytes": wal_bytes}
 
 
 def sync(path: Path, client, config: R2Config, *, prune=False):
@@ -22,6 +37,7 @@ def sync(path: Path, client, config: R2Config, *, prune=False):
         con.execute("""CREATE TABLE IF NOT EXISTS weather_raw_archives (
             hash TEXT PRIMARY KEY, object_key TEXT NOT NULL, sha256 TEXT NOT NULL,
             size_bytes INTEGER NOT NULL, verified_at REAL NOT NULL)""")
+    _checkpoint_wal(path)
     count = 0
     with connect(path, readonly=True) as con:
         upper = con.execute("SELECT COALESCE(MAX(hash),'') FROM capture_bodies").fetchone()[0]
@@ -81,10 +97,13 @@ def sync(path: Path, client, config: R2Config, *, prune=False):
                         f"AND c.source NOT IN ({placeholders}))",
                         (row["hash"], row["body"], *WEATHER_SOURCES),
                     ).rowcount
-        print(json.dumps({"object_key": key, "verified": True, "pruned": count}), flush=True)
+        checkpoint = _checkpoint_wal(path) if prune else None
+        print(json.dumps({"object_key": key, "verified": True, "pruned": count,
+                          "wal_checkpoint": checkpoint}), flush=True)
     if prune:
         with connect(path) as con:
             con.execute("PRAGMA incremental_vacuum(4096)").fetchall()
+        print(json.dumps({"wal_checkpoint_final": _checkpoint_wal(path)}), flush=True)
     return count
 
 
