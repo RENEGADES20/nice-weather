@@ -1,5 +1,11 @@
 # 当前发布规则（2026-09-19）
 
+## 2026-09-28：#101 有界留存部署及验收
+
+PR [#101](https://github.com/RENEGADES20/nice-weather/pull/101) 七项检查通过并合并为 `37209f7537a8672914d2e50c4dd9633aa239e437`。从此合并提交构建的运行包为 713,984 字节，SHA-256 `d27fd36cfa147036307ba40281bd8a49036788bb6434f7994ed6d783542b5a3c`，包含 86 个运行文件。VM 上传包哈希一致；发布器预演、准备和应用均退出 0，停止阶段用时 0.185 秒，运行 manifest 指向该合并提交，86 个文件逐一计算哈希后 `mismatches=[]`。terminal、backtest、两路 Paper 发布后 active；另行执行 `systemctl enable --now nice-weather-knyc-hrrr.service`，HRRR active/enabled，ExecMainStatus=0。
+
+发布后手动触发 KNYC R2 服务一次，17:25:55–17:26:00 UTC 完成 R2 GET 核验并清空 8 条天气正文，Result=success、ExecMainStatus=0；15 分钟 timer active。HRRR 已写入解析后的 feed 事件，HRRR 原文采集记录为 0，市场非空正文为 0；两路 Paper 游标均追至当时 feed 末尾。KNYC、KLGA 相关服务共 11 个 active，terminal health 为 HTTP 200。17:27:51 UTC 根盘可用 19,057,070,080 / 30,083,776,512 字节（约 63.3%），符合用户更新后的容量接受口径。24 小时事件回收需等待新库数据到龄并且两 Paper 已消费，部署当天不能宣称已在生产触发；故障时以 1 GiB 采集空间保护为最后防线。
+
 ## 2026-09-28：人工清理完成后的发布安排
 
 用户已完成旧 KNYC feed 整库删除、新库及 Paper 游标重置，并接受根盘当前约 19.10 GB（63.5%）可用的结果。16:52 UTC KNYC feed、两 Paper、两 Live、终端与 R2 timer 已恢复 active，KLGA collector/R2 timer 继续 active；HRRR/backtest 待本轮保留策略和旧历史门禁发布后恢复。新库 feed 1,042 条，Paper 游标 1,034/1,039；不再以三分之二空间作为本轮发布前置条件。发布后验证 R2 天气正文 GET 回读后清空、市场原文为空、HRRR 不写索引/GRIB 原文、两 Paper 推进、超过 24 小时且已消费的市场/HRRR 事件回收、根盘容量趋势和两服务健康。若 Paper 停滞导致回收暂停，仍须按 1 GiB 空间保护处理故障；不能声称硬上限。
