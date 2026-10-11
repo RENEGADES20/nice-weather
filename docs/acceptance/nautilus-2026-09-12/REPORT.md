@@ -112,7 +112,7 @@ Python 最终 **111 项全部通过**，完整输出保存在 `pytest.txt`；回
 - `reproducible-evidence.zip`：不可变自采数据集、请求、各次运行的输入日志及净值 CSV。
 - `account-and-runs.json`：版本、运行配置、最终快照、恢复与确定性核对。
 - `trading-desktop.png`、`trading-mobile-order.png`、`trading-mobile-account.png`、`backtest-compare.png`、`backtest-curves.png`、`live-disabled.png`：浏览器证据。
-- 启动、数据导出、systemd 和回滚流程见 [TRADING_WORKBENCH.md](../../TRADING_WORKBENCH.md)。解压数据集至 `<trading-root>/datasets/` 后，可在回测页选择同一哈希并按保存参数重跑。
+- 启动、数据导出、systemd 和回滚流程见 [TRADING_WORKBENCH.md](../../history/legacy/TRADING_WORKBENCH.md)。解压数据集至 `<trading-root>/datasets/` 后，可在回测页选择同一哈希并按保存参数重跑。
 
 测试服务仅绑定 `127.0.0.1:8518`。之前绑定 `0.0.0.0` 的尝试被自动审批拒绝，已使用本机回环地址继续验收。
 

@@ -1,6 +1,6 @@
 # 产品范围与工作边界
 
-更新：2026-10-10。当前事实见 [CURRENT_STATE](CURRENT_STATE.md)，交付顺序见 [PROJECT_REBASELINE](PROJECT_REBASELINE.md)。
+更新：2026-10-10。当前事实见 [CURRENT_STATE](CURRENT_STATE.md)，交付顺序见 [PROJECT_REBASELINE](PROJECT_REBASELINE.md)。2026-10-10 审核后：Kalshi 允许以 CLI 模型代理；实盘额度功能完成后再定。
 
 ## 产品目标
 
@@ -41,7 +41,8 @@
 | SYSTEM_ARCHITECTURE | 当前实现、数据与引擎职责 |
 | KNYC_STRATEGY_DELIVERY | 策略定义及待研究项 |
 | KNYC_TERMINAL_DELIVERY | 用户行为与通过条件 |
-| PROJECT_REBASELINE | 根因分析、工作包、工程参考与天气文献 |
+| PROJECT_REBASELINE | 工作包 W0–W6 与排序 |
+| AUDIT_2026-10-10 | 独立审核缺陷编号与证据 |
 | DECISIONS / VM_DEPLOYMENT | 决策历史 / 发布程序 |
 
 历史范围全文保存在 [原文](history/2026-10-10-baseline/PROJECT_CONTEXT.md)，与本页冲突时以本页为准。

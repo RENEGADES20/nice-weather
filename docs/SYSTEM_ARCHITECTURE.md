@@ -31,6 +31,10 @@ Kalshi / Poly US + KNYC 天气 / HRRR
 
 路径均相对 `src/nice_weather/`，前端路径除外。`pyproject.toml` 将 Nautilus 固定为 1.231.0 / Python 3.12；在线 latest 文档仅供设计参考，实施须按该版本核验接口。
 
+## 已证实的实现阻断（2026-10-10 审核）
+
+Kalshi 合约全部 ambiguous 且无模型预测；实盘累计 $5 写死、无策略执行、Poly US 超时未知单锁账户；回测只读约 24 小时热库；终端浏览器测试全 mock。详见 [审核报告](AUDIT_2026-10-10.md)，修复顺序见 [W0–W6](PROJECT_REBASELINE.md)。
+
 ## 首要改进
 
 1. 给既有引擎增加外部历史数据导入边界和覆盖清单，避免将在线热库作为唯一回测数据源；先用下载样本验证，暂不另建服务。
