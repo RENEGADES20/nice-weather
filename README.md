@@ -4,7 +4,8 @@
 
 - [当前状态与证据](docs/CURRENT_STATE.md)
 - [产品范围](docs/PROJECT_CONTEXT.md)
-- [核查结果、改进计划与天气市场文献](docs/PROJECT_REBASELINE.md)
+- [改进计划 W0–W6](docs/PROJECT_REBASELINE.md)
+- [独立审核报告](docs/AUDIT_2026-10-10.md)
 - [真实用户流程验收](docs/KNYC_TERMINAL_DELIVERY.md)
 - [策略规格](docs/KNYC_STRATEGY_DELIVERY.md)
 - [实现架构](docs/SYSTEM_ARCHITECTURE.md)
