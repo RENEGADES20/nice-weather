@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { displaySamples, sampleAt } from "../src/ProbabilityChart";
-import { marketProbability, priceMinutes } from "../src/market-weather/data";
+import { marketProbability, priceMinutes, probabilityGap } from "../src/market-weather/data";
 
 async function setup(page:Page) {
   const now=Date.now()/1000;
@@ -112,6 +112,18 @@ test("nearby fills without market probability remain individually clickable",asy
     for(let i=1;i<layout.boxes.length;i++)expect(layout.boxes[i].top).toBeGreaterThan(layout.boxes[i-1].bottom);
     expect(layout.controlsTop).toBeGreaterThan(layout.boxes.at(-1)!.bottom);
   }
+});
+
+test("probability gap shows why the trade price is missing",async({page})=>{
+  expect(probabilityGap(null)).toBeNull();
+  expect(probabilityGap("trade_http_429")).toBe("成交价接口 HTTP 429");
+  expect(probabilityGap("trade_ConnectError")).toBe("成交价采集失败");
+  await setup(page);const now=Math.floor(Date.now()/1000);
+  await page.route("**/api/history?*",r=>r.fulfill({json:{
+    ...Object.fromEntries(new URL(r.request().url()).searchParams),points:[{seq:1,time:now-60,
+      received_at:now-60,probability:null,probability_error:"trade_timeout",bids:[],asks:[]}],next_before:null}}));
+  await page.goto("/?venue=poly_us&day=2026-09-22");
+  await expect(page.locator(".probability-evidence")).toContainText("市场概率缺口保留（成交价请求超时）");
 });
 
 test("adjacent dense groups without probability open their own original events",async({page})=>{

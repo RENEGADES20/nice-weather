@@ -274,3 +274,104 @@ def test_probability_prepare_bounds_online_captures_and_catches_up_next_run(tmp_
     with original_connect(store.path, readonly=True) as con:
         progress = con.execute("SELECT capture_id FROM probability_chart_progress").fetchone()[0]
         assert progress == con.execute("SELECT MAX(id) FROM captures").fetchone()[0]
+
+
+TICKER = "KXHIGHNY-26SEP27-T72"
+
+
+def _trade_payload(price):
+    return {"trades": [{"ticker": TICKER, "count_fp": "1", "yes_price_dollars": price,
+                        "created_time": STAMP}]}
+
+
+def test_slow_trade_lands_in_later_book_and_failures_carry_last_receipt(tmp_path, monkeypatch):
+    import nice_weather.trading.feed as feed
+
+    monkeypatch.setattr(feed, "TRADE_WAIT_SECONDS", 0.05)
+    store = FeedStore(tmp_path / "feed.sqlite3")
+    trade_calls, mode = [], {"value": "slow"}
+    gate = {}
+
+    async def transport(request):
+        if request.url.path.endswith("/trades"):
+            trade_calls.append(str(request.url))
+            if mode["value"] == "slow":
+                await gate["release"].wait()
+                return httpx.Response(200, json=_trade_payload("0.41"))
+            return httpx.Response(429, json={"error": "rate limited"})
+        return httpx.Response(200, json={"orderbook_fp": {"yes_dollars": [["0.1", "3"]]}})
+
+    async def run():
+        gate["release"] = asyncio.Event()
+        trades = feed.TradeProbabilities(carry_seconds=60)
+        contract = {"venue": "kalshi", "condition_id": TICKER}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            first = await capture_book(client, store, contract, trades)
+            second = await capture_book(client, store, contract, trades)  # Same request in flight.
+            calls_in_flight = len(trade_calls)
+            gate["release"].set()
+            while trades.tasks:
+                await asyncio.sleep(0.01)
+            mode["value"] = "fail"
+            third = await capture_book(client, store, contract, trades)
+            await trades.close()
+        return first, second, third, calls_in_flight
+
+    first, second, third, calls_in_flight = asyncio.run(run())
+    assert first["probability"] is None and first["probability_error"] == "trade_pending"
+    assert second["probability"] is None and calls_in_flight == 1
+    # A 429 keeps the earlier successful response with its own receipt and capture.
+    assert len(trade_calls) == 2
+    assert third["probability"] == 0.41 and third["probability_error"] is None
+    assert third["probability_received_at"] < third["received_at"]
+    assert third["probability_time"] == SOURCE_TIME
+    assert third["probability_capture_id"] is not None
+
+
+def test_carried_trade_expires_with_explicit_reason(tmp_path, monkeypatch):
+    import nice_weather.trading.feed as feed
+
+    store = FeedStore(tmp_path / "feed.sqlite3")
+    ok = {"value": True}
+
+    def transport(request):
+        if request.url.path.endswith("/trades"):
+            return (httpx.Response(200, json=_trade_payload("0.55")) if ok["value"]
+                    else httpx.Response(503, json={}))
+        return httpx.Response(200, json={"orderbook_fp": {"yes_dollars": []}})
+
+    async def run():
+        trades = feed.TradeProbabilities(carry_seconds=120)
+        contract = {"venue": "kalshi", "condition_id": TICKER}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            fresh = await capture_book(client, store, contract, trades)
+            ok["value"] = False
+            real = time.time
+            monkeypatch.setattr(feed.time, "time", lambda: real() + 121)
+            stale = await capture_book(client, store, contract, trades)
+            monkeypatch.setattr(feed.time, "time", real)
+            trades.latest.clear()
+            failed = await capture_book(client, store, contract, trades)
+        return fresh, stale, failed
+
+    fresh, stale, failed = asyncio.run(run())
+    assert fresh["probability"] == 0.55
+    assert stale["probability"] is None and stale["probability_error"] == "trade_stale"
+    assert failed["probability"] is None and failed["probability_error"] == "trade_http_503"
+
+
+def test_empty_trade_list_is_reported_as_no_trade(tmp_path):
+    store = FeedStore(tmp_path / "feed.sqlite3")
+
+    def transport(request):
+        if request.url.path.endswith("/trades"):
+            return httpx.Response(200, json={"trades": []})
+        return httpx.Response(200, json={"orderbook_fp": {"yes_dollars": []}})
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+            return await capture_book(client, store, {"venue": "kalshi",
+                                                      "condition_id": TICKER})
+
+    quote = asyncio.run(run())
+    assert quote["probability"] is None and quote["probability_error"] == "no_trade"

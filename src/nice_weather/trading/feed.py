@@ -303,30 +303,114 @@ async def capture_json(client, store, source, url):
     return response.json(), received, capture_id
 
 
-async def capture_book(client, store, contract):
+TRADE_WAIT_SECONDS = 1
+TRADE_TIMEOUT_SECONDS = 8
+TRADE_CARRY_SECONDS = 120
+
+
+class TradeProbabilities:
+    """Kalshi last-trade probabilities, fetched apart from the executable book.
+
+    A trade request may outlive one book poll; it keeps running in the background and at
+    most one request per ticker is in flight. A book may carry the last successful
+    response for a bounded window, keeping that response's own receipt and capture id.
+    """
+
+    def __init__(self, carry_seconds=TRADE_CARRY_SECONDS):
+        self.carry_seconds = carry_seconds
+        self.tasks: dict[str, asyncio.Task] = {}
+        self.latest: dict[str, dict] = {}
+        self.errors: dict[str, str] = {}
+
+    async def _fetch(self, client, store, ticker):
+        trades, received, capture_id = await asyncio.wait_for(capture_json(
+            client, store, "kalshi-trades",
+            f"{KALSHI}/markets/trades?ticker={ticker}&limit=1"), TRADE_TIMEOUT_SECONDS)
+        return kalshi_trade_probability(trades, received, ticker) | {
+            "probability_capture_id": capture_id, "trades_received_at": received}
+
+    def _collect(self, ticker, task):
+        if self.tasks.get(ticker) is not task:
+            return  # Already collected; a superseded result never overwrites newer state.
+        del self.tasks[ticker]
+        if task.cancelled():
+            self.errors[ticker] = "trade_cancelled"
+            return
+        exc = task.exception()
+        if exc is None:
+            result = task.result()
+            if result["probability"] is None:
+                self.latest.pop(ticker, None)
+                self.errors[ticker] = "no_trade"
+            else:
+                self.latest[ticker] = result
+                self.errors.pop(ticker, None)
+        elif isinstance(exc, TimeoutError):
+            self.errors[ticker] = "trade_timeout"
+        elif isinstance(exc, httpx.HTTPStatusError):
+            self.errors[ticker] = f"trade_http_{exc.response.status_code}"
+        else:
+            self.errors[ticker] = "trade_" + type(exc).__name__
+
+    async def probability(self, client, store, ticker):
+        task = self.tasks.get(ticker)
+        if task is None:
+            task = asyncio.create_task(self._fetch(client, store, ticker))
+            task.add_done_callback(lambda t: self._collect(ticker, t))
+            self.tasks[ticker] = task
+        # Display-only trades must not consume the book/API's full 10-second budget.
+        await asyncio.wait({task}, timeout=TRADE_WAIT_SECONDS)
+        if task.done():
+            self._collect(ticker, task)
+        latest = self.latest.get(ticker)
+        if latest and time.time() - latest["trades_received_at"] <= self.carry_seconds:
+            fields = {k: v for k, v in latest.items() if k != "trades_received_at"}
+            return fields | {"probability_error": None}
+        reason = self.errors.get(ticker) or ("trade_pending" if ticker in self.tasks
+                                             else "no_trade")
+        if latest:
+            reason = "trade_stale"
+        return {"probability": None, "probability_source": None, "probability_time": None,
+                "probability_received_at": None, "probability_error": reason}
+
+    async def close(self):
+        tasks = list(self.tasks.values())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def capture_book(client, store, contract, trades=None):
     """Capture executable book and venue chart value without deriving a midpoint."""
     venue = contract["venue"]
-    requests = [capture_json(client, store, venue, book_url(contract))]
-    if venue == "kalshi":
-        # Display-only trades must not consume the book/API's full 10-second budget.
-        requests.append(asyncio.wait_for(capture_json(
-            client, store, venue + "-trades",
-            f'{KALSHI}/markets/trades?ticker={contract["condition_id"]}&limit=1'), timeout=1))
-    results = await asyncio.gather(*requests, return_exceptions=True)
+    if venue != "kalshi":
+        payload, received, capture_id = await capture_json(
+            client, store, venue, book_url(contract))
+        book = normalize_book(venue, payload, received) | {"capture_id": capture_id,
+                                                           "time": received}
+        book["probability_capture_id"] = capture_id
+        return book
+    own = trades is None
+    trades = TradeProbabilities() if own else trades
+    try:
+        results = await asyncio.gather(
+            capture_json(client, store, venue, book_url(contract)),
+            trades.probability(client, store, contract["condition_id"]),
+            return_exceptions=True)
+    finally:
+        if own:
+            await trades.close()
     if isinstance(results[0], BaseException):
         raise results[0]
     payload, received, capture_id = results[0]
     book = normalize_book(venue, payload, received) | {"capture_id": capture_id, "time": received}
-    if venue == "poly_us":
-        book["probability_capture_id"] = capture_id
-    elif not isinstance(results[1], BaseException):
-        try:
-            trades, trade_received, trade_capture = results[1]
-            book.update(kalshi_trade_probability(trades, trade_received, contract["condition_id"]))
-            book.update(time=max(received, trade_received), probability_capture_id=trade_capture)
-        except (ValueError, KeyError, TypeError):
-            # A chart-data outage must not discard an independently received order book.
-            pass
+    if isinstance(results[1], BaseException):
+        # A chart-data outage must not discard an independently received order book.
+        book["probability_error"] = "trade_" + type(results[1]).__name__
+    else:
+        book.update(results[1])
+        if book["probability_received_at"] is not None:
+            book["time"] = max(received, book["probability_received_at"])
     return book
 
 
@@ -401,6 +485,7 @@ async def settlement_feed(store, stop):
 async def market_feed(store, venue, stop, interval=2):
     contracts, day, next_metadata = [], None, 0
     directory_task = None
+    trades = TradeProbabilities() if venue == "kalshi" else None
     async with httpx.AsyncClient(timeout=10, headers={"User-Agent": "nice-weather/0.1"}) as client:
         while not stop.is_set():
             started = time.monotonic()
@@ -427,7 +512,7 @@ async def market_feed(store, venue, stop, interval=2):
                             refresh_directory(client, store, venue, current, series))
 
                 async def fetch_book(contract):
-                    book = await capture_book(client, store, contract)
+                    book = await capture_book(client, store, contract, trades)
                     store.publish("book", contract["yes_token_id"], book, book["time"])
 
                 results = await asyncio.gather(
@@ -463,6 +548,8 @@ async def market_feed(store, venue, stop, interval=2):
             except TimeoutError:
                 pass
 
+        if trades is not None:
+            await trades.close()
         if directory_task is not None:
             directory_task.cancel()
             await asyncio.gather(directory_task, return_exceptions=True)

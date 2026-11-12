@@ -280,6 +280,7 @@ def scoped_history(feed, venue, day, token, before=None):
             "json_extract(body,'$.probability_time') AS probability_time,"
             "json_extract(body,'$.probability_received_at') AS probability_received_at,"
             "json_extract(body,'$.probability_capture_id') AS probability_capture_id,"
+            "json_extract(body,'$.probability_error') AS probability_error,"
             "json_extract(body,'$.capture_id') AS capture_id,"
             "json_extract(body,'$.bids[0]') AS bid,"
             "json_extract(body,'$.asks[0]') AS ask "
@@ -291,7 +292,7 @@ def scoped_history(feed, venue, day, token, before=None):
                         "exchange_time": r["exchange_time"], "source": "public_book",
                         **{key: r[key] for key in ("probability", "probability_source",
                             "probability_time", "probability_received_at",
-                            "probability_capture_id", "capture_id")},
+                            "probability_capture_id", "probability_error", "capture_id")},
                         "bids": [json.loads(r["bid"])] if r["bid"] else [],
                         "asks": [json.loads(r["ask"])] if r["ask"] else []}
                        for r in reversed(rows)]
