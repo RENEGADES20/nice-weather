@@ -14,7 +14,12 @@ export type WeatherHistory = { venue: string; day: string; start: number; end: n
   cli: { text: string; issued_at: string; received_at: number; finality: string }[] };
 export type Quote = { time: number; received_at: number; bids: number[][]; asks: number[][];
   source?: string; seq?: number; probability?: number | null; probability_source?: string;
-  probability_time?: number | null; probability_received_at?: number | null };
+  probability_time?: number | null; probability_received_at?: number | null;
+  probability_error?: string | null };
+const probabilityErrors: Record<string, string> = { trade_pending: "成交价请求未返回",
+  trade_timeout: "成交价请求超时", trade_stale: "成交价超过 2 分钟未更新", no_trade: "该档位暂无成交" };
+export const probabilityGap = (error?: string | null) => !error ? null
+  : probabilityErrors[error] ?? (error.startsWith("trade_http_") ? `成交价接口 HTTP ${error.slice(11)}` : "成交价采集失败");
 export type History = Selection & { points: Quote[]; next_before: number | null; reason: string | null };
 export const names: Record<string, string> = { metar: "METAR", nws_observations: "NWS 站点观测",
   hourly_temp: "官方小时温度", hrrr: "HRRR", nws_forecast: "NWS 预报" };

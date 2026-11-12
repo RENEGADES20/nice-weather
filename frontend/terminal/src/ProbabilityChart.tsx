@@ -3,7 +3,7 @@ import { EventDetails } from "./backtest/BacktestChart";
 import { EventList } from "./EventHistory";
 import { scopedEvents } from "./backtest/StrategyMarkers";
 import { stages, type StrategyEvent, type Venue } from "./backtest/types";
-import { marketProbability, nyTime, type Quote } from "./market-weather/data";
+import { marketProbability, nyTime, probabilityGap, type Quote } from "./market-weather/data";
 
 const ranges = { "1H": 3600, "6H": 21600, "1D": 86400, "1W": 604800, "1M": 2592000, ALL: 0 };
 const percent = (value: number | null) => value == null ? "—" : `${(value * 100).toFixed(1)}%`;
@@ -215,7 +215,8 @@ export function ProbabilityChart({ quotes, selection, title, endTime, events, fo
       {current?.value != null ? <>{source ?? "平台市场概率"}
         {current.quote.probability_time != null && <> · 来源 {nyTime(current.quote.probability_time)}</>}
         {current.quote.probability_received_at != null && <> · 收到 {nyTime(current.quote.probability_received_at)}</>}</>
-        : "市场概率缺口保留；盘口买卖报价单独显示。"}
+        : <>市场概率缺口保留{probabilityGap(current?.quote.probability_error)
+          ? `（${probabilityGap(current?.quote.probability_error)}）` : ""}；盘口买卖报价单独显示。</>}
       <span>● 策略信号　◆ 实际成交</span>
     </div>
     {group && <div className="probability-group">
